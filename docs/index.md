@@ -20,6 +20,7 @@ context.
 
 - [Workflow Guide](workflow-guide.md): common day-to-day workflows.
 - [CLI Reference](cli-reference.md): command summary for local scripts.
+- [Platform Setup](platform-setup.md): macOS and Windows launcher setup.
 - [Architecture](architecture.md): how the files and command flows fit
   together.
 - [Korean Operator Guide](ko-operator-guide.md): Korean setup and instruction

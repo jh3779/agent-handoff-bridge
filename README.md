@@ -20,6 +20,30 @@ Open the task controller:
 python3 handoff_control.py
 ```
 
+Open the cross-platform desktop controller with folder selection:
+
+```bash
+python3 handoff_desktop.py
+```
+
+macOS launcher:
+
+```bash
+./launchers/macos/handoff-bridge.command
+```
+
+Windows launcher:
+
+```bat
+launchers\windows\handoff-bridge.cmd
+```
+
+Build macOS and Windows zip packages:
+
+```bash
+python3 scripts/package_platforms.py
+```
+
 For phone-based instructions, prefer the official app remote features first:
 
 - Codex: ChatGPT mobile app -> **Remote**.
@@ -104,6 +128,7 @@ want to spend tokens.
 ## Documentation
 
 - [Documentation Index](docs/index.md)
+- [Platform Setup](docs/platform-setup.md)
 - [Architecture](docs/architecture.md)
 - [CLI Reference](docs/cli-reference.md)
 - [Workflow Guide](docs/workflow-guide.md)

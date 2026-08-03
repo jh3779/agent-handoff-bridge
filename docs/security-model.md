@@ -12,6 +12,7 @@ handoffs easier without hiding provider permissions or exposing credentials.
   provided.
 - Runtime state files are ignored by git.
 - Raw provider logs are stored under `.handoff/runs/` and ignored by git.
+- Remote server task state and generated mobile prompt files are ignored by git.
 
 ## Credential Boundaries
 
@@ -22,8 +23,10 @@ Never commit:
 - API keys;
 - browser cookies;
 - `.handoff/runs/`;
+- `.handoff/remote/`;
 - `.handoff/state.json`;
-- `.handoff/next-prompt.md`.
+- `.handoff/next-prompt.md`;
+- `.handoff/mobile-*-instruction.txt`.
 
 The bridge shells out to `codex` and `claude`; each provider uses its own local
 auth and permission model.

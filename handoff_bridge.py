@@ -30,6 +30,7 @@ PROVIDERS = ("codex", "claude")
 INSTALL_FILES = [
     ("handoff_bridge.py", "handoff_bridge.py"),
     ("handoff_control.py", "handoff_control.py"),
+    ("handoff_desktop.py", "handoff_desktop.py"),
     ("remote_handoff_server.py", "remote_handoff_server.py"),
     ("remote_handoff_submit.py", "remote_handoff_submit.py"),
     ("README.md", "README.md"),
@@ -45,14 +46,21 @@ INSTALL_FILES = [
     ("docs/cli-reference.md", "docs/cli-reference.md"),
     ("docs/workflow-guide.md", "docs/workflow-guide.md"),
     ("docs/ko-operator-guide.md", "docs/ko-operator-guide.md"),
+    ("docs/platform-setup.md", "docs/platform-setup.md"),
     ("docs/security-model.md", "docs/security-model.md"),
     ("docs/release-notes.md", "docs/release-notes.md"),
     ("docs/research.md", "docs/research.md"),
     ("schemas/handoff-summary.schema.json", "schemas/handoff-summary.schema.json"),
     ("scripts/handoff_hook.py", "scripts/handoff_hook.py"),
     ("scripts/validate_handoff.py", "scripts/validate_handoff.py"),
+    ("scripts/package_platforms.py", "scripts/package_platforms.py"),
     ("examples/claude-settings.handoff.json", "examples/claude-settings.handoff.json"),
     ("examples/codex-hooks.handoff.json", "examples/codex-hooks.handoff.json"),
+    ("launchers/macos/handoff-bridge.command", "launchers/macos/handoff-bridge.command"),
+    ("launchers/macos/install.sh", "launchers/macos/install.sh"),
+    ("launchers/windows/handoff-bridge.cmd", "launchers/windows/handoff-bridge.cmd"),
+    ("launchers/windows/handoff-bridge.ps1", "launchers/windows/handoff-bridge.ps1"),
+    ("launchers/windows/install.ps1", "launchers/windows/install.ps1"),
     (".handoff/.gitignore", ".handoff/.gitignore"),
     (".handoff/task-template.md", ".handoff/task-template.md"),
 ]
@@ -164,7 +172,7 @@ def install_standard_files(force: bool = False) -> list[tuple[str, str]]:
             continue
         existed = target.exists()
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        shutil.copy2(source, target)
         results.append((target_rel, "updated" if existed else "installed"))
     if not CURRENT_FILE.exists():
         CURRENT_FILE.write_text(

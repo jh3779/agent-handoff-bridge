@@ -22,6 +22,15 @@
    python3 handoff_bridge.py diagnose
    ```
 
+   GUI로 진행하려면 다음을 실행합니다.
+
+   ```bash
+   python3 handoff_desktop.py
+   ```
+
+   macOS에서는 `launchers/macos/handoff-bridge.command`, Windows에서는
+   `launchers\windows\handoff-bridge.cmd`를 사용할 수 있습니다.
+
 2. 작업할 프로젝트 폴더에 공통 파일 설치:
 
    ```bash

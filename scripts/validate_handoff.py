@@ -18,14 +18,17 @@ REQUIRED_FILES = [
     "README.md",
     "handoff_bridge.py",
     "handoff_control.py",
+    "handoff_desktop.py",
     "remote_handoff_server.py",
     "remote_handoff_submit.py",
     "scripts/handoff_hook.py",
+    "scripts/package_platforms.py",
     "docs/index.md",
     "docs/architecture.md",
     "docs/cli-reference.md",
     "docs/workflow-guide.md",
     "docs/ko-operator-guide.md",
+    "docs/platform-setup.md",
     "docs/security-model.md",
     "docs/release-notes.md",
     "docs/research.md",
@@ -35,6 +38,11 @@ REQUIRED_FILES = [
     "docs/shared-agent-contract.md",
     "docs/verification-playbook.md",
     "schemas/handoff-summary.schema.json",
+    "launchers/macos/handoff-bridge.command",
+    "launchers/macos/install.sh",
+    "launchers/windows/handoff-bridge.cmd",
+    "launchers/windows/handoff-bridge.ps1",
+    "launchers/windows/install.ps1",
     ".handoff/current.md",
     ".handoff/task-template.md",
 ]
@@ -48,10 +56,12 @@ JSON_FILES = [
 PYTHON_FILES = [
     "handoff_bridge.py",
     "handoff_control.py",
+    "handoff_desktop.py",
     "remote_handoff_server.py",
     "remote_handoff_submit.py",
     "scripts/handoff_hook.py",
     "scripts/validate_handoff.py",
+    "scripts/package_platforms.py",
 ]
 
 

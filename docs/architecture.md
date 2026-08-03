@@ -20,10 +20,15 @@ handoff_control.py  ->  handoff_bridge.py
 .handoff/current.md + shared docs + git workspace
 ```
 
+`handoff_desktop.py` provides the same control flow with a macOS/Windows GUI
+for folder selection and mobile prompt generation.
+
 ## File Roles
 
 - `handoff_control.py`: guided terminal controller for choosing a workspace and
   issuing instructions.
+- `handoff_desktop.py`: cross-platform desktop controller for macOS and
+  Windows.
 - `handoff_bridge.py`: scriptable bridge that installs support files, creates
   task packets, builds provider prompts, runs providers, and records results.
 - `remote_handoff_server.py`: optional HTTP task receiver for trusted

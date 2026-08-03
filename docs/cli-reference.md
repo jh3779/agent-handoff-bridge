@@ -111,6 +111,29 @@ python3 handoff_control.py --workspace /path/to/project \
 The controller asks for confirmation before spending tokens unless `--yes` is
 also supplied.
 
+## `handoff_desktop.py`
+
+Open the desktop controller:
+
+```bash
+python3 handoff_desktop.py
+```
+
+macOS:
+
+```bash
+./launchers/macos/handoff-bridge.command
+```
+
+Windows:
+
+```bat
+launchers\windows\handoff-bridge.cmd
+```
+
+The desktop controller exposes the same bridge actions with folder selection,
+mobile prompt generation, and preview-only remote server startup.
+
 ## Optional HTTP Remote
 
 Start a preview-only local server:
@@ -136,3 +159,18 @@ python3 remote_handoff_server.py --host 127.0.0.1 --port 8765 --allow-execute
 ```
 
 Do this only for trusted automation.
+
+## Platform Packages
+
+Build macOS and Windows zip packages:
+
+```bash
+python3 scripts/package_platforms.py
+```
+
+Build one platform:
+
+```bash
+python3 scripts/package_platforms.py --platform macos
+python3 scripts/package_platforms.py --platform windows
+```

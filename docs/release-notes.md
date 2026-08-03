@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Platform pass:
+  - added cross-platform desktop controller;
+  - added macOS `.command` and install launcher;
+  - added Windows `.cmd` and PowerShell launchers;
+  - added macOS/Windows zip package builder;
+  - added platform setup documentation.
+
 - Documentation pass:
   - added documentation index;
   - added architecture guide;
