@@ -101,6 +101,16 @@ python3 handoff_control.py --workspace /path/to/project "Implement the requested
 The bridge intentionally starts in preview mode. Add `--execute` only when you
 want to spend tokens.
 
+## Documentation
+
+- [Documentation Index](docs/index.md)
+- [Architecture](docs/architecture.md)
+- [CLI Reference](docs/cli-reference.md)
+- [Workflow Guide](docs/workflow-guide.md)
+- [Korean Operator Guide](docs/ko-operator-guide.md)
+- [Security Model](docs/security-model.md)
+- [Release Notes](docs/release-notes.md)
+
 ## Optional Hook Setup
 
 The hook examples are not active by default:
@@ -142,8 +152,8 @@ Run the no-token validation suite:
 python3 handoff_bridge.py check
 ```
 
-This confirms the shared contract, provider instruction files, JSON examples,
-and Python scripts are internally consistent.
+This confirms the shared contract, documentation set, provider instruction
+files, JSON examples, and Python scripts are internally consistent.
 
 ## Research
 

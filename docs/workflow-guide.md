@@ -1,0 +1,112 @@
+# Workflow Guide
+
+Use these workflows as the normal operator playbook.
+
+## New Project Setup
+
+1. Confirm local tools:
+
+   ```bash
+   python3 handoff_bridge.py diagnose
+   ```
+
+2. Install shared handoff files:
+
+   ```bash
+   python3 handoff_bridge.py --workspace /path/to/project install
+   ```
+
+3. Create a task packet:
+
+   ```bash
+   python3 handoff_bridge.py --workspace /path/to/project init \
+     "Describe the work" \
+     --primary codex \
+     --target-model "app-selected default"
+   ```
+
+4. Preview the next prompt:
+
+   ```bash
+   python3 handoff_bridge.py --workspace /path/to/project run auto \
+     "Start the task"
+   ```
+
+5. Execute only when ready:
+
+   ```bash
+   python3 handoff_bridge.py --workspace /path/to/project run auto \
+     --execute \
+     --auto-fallback \
+     "Start the task"
+   ```
+
+## Phone-Based Codex Work
+
+1. Follow [Preflight Setup Guide](preflight-setup-guide.md).
+2. Pair the host through ChatGPT desktop app **Set up Remote**.
+3. Open ChatGPT mobile **Remote**.
+4. Paste the header from [Agent Targeting Protocol](agent-targeting-protocol.md).
+5. Name `Provider: Codex` and the visible model or `app-selected default`.
+6. Ask Codex to update `.handoff/current.md` before stopping.
+
+## Phone-Based Claude Code Work
+
+1. Run `claude auth login`.
+2. Start local Remote Control:
+
+   ```bash
+   claude remote-control --name "Project Name"
+   ```
+
+3. Open Claude app **Code**.
+4. Paste the header from [Agent Targeting Protocol](agent-targeting-protocol.md).
+5. Name `Provider: Claude Code`.
+6. Ask Claude Code to update `.handoff/current.md` before stopping.
+
+## Provider Handoff
+
+Use this when one provider hits quota, auth, context, or tool limits.
+
+1. Confirm `.handoff/current.md` has the latest summary.
+2. Start or open the other provider surface.
+3. Send an instruction with:
+
+   ```text
+   Instruction type: handoff
+   Provider: Claude Code
+   Model: app-selected default
+   Continue from .handoff/current.md. Do not assume the Codex transcript is
+   available.
+   ```
+
+4. Verify changed files and update the packet again.
+
+## Review-Only Pass
+
+Use review mode when you want a second agent to inspect work without changing
+files.
+
+```text
+[작업 대상]
+- Provider: Codex
+- Model: app-selected default
+- Account/App: OpenAI ChatGPT Remote
+- Workspace: /path/to/project
+- Instruction type: review
+- Source of truth: .handoff/current.md, docs/shared-agent-contract.md, docs/verification-playbook.md
+
+[지시]
+현재 변경사항을 리뷰만 해줘. 파일은 수정하지 말고 위험, 누락 테스트,
+handoff packet 불일치를 찾아줘.
+```
+
+## Verification Pass
+
+Use verify mode when implementation is done but checks need to be repeated.
+
+```bash
+python3 handoff_bridge.py --workspace /path/to/project check
+```
+
+Then run project-specific commands from `docs/verification-playbook.md`.
