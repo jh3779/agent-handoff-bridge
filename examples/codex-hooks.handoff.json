@@ -1,0 +1,28 @@
+{
+  "description": "Optional Codex hooks for recording handoff state.",
+  "hooks": {
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/handoff_hook.py\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/scripts/handoff_hook.py\"",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "StopFailure": [
+      {
+        "matcher": "rate_limit|overloaded|authentication_failed|billing_error|max_output_tokens|unknown",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/scripts/handoff_hook.py"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/scripts/handoff_hook.py"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PROJECT_DIR}/scripts/handoff_hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}

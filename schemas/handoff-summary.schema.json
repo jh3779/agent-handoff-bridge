@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "HandoffSummary",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Provider, model, account/app, workspace, and instruction type used for this run.",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "account_app": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": "string"
+        },
+        "instruction_type": {
+          "type": "string"
+        }
+      },
+      "required": ["provider", "model", "account_app", "workspace", "instruction_type"]
+    },
+    "changed": {
+      "type": "array",
+      "description": "Files or behavior changed.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verified": {
+      "type": "array",
+      "description": "Checks run and their result.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "remaining": {
+      "type": "array",
+      "description": "Unfinished work.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blocked": {
+      "type": "array",
+      "description": "Quota, auth, tool, context, or other blockers.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next": {
+      "type": "array",
+      "description": "Next safe actions.",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": ["target", "changed", "verified", "remaining", "blocked", "next"]
+}

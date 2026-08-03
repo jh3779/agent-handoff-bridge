@@ -1,0 +1,5 @@
+runs/
+state.json
+next-prompt.md
+hook-events.jsonl
+*.log
