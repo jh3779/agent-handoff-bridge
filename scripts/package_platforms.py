@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from handoff_bridge import BRIDGE_VERSION  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = ROOT / "dist"
@@ -30,6 +33,10 @@ COMMON_FILES = [
     "scripts/handoff_hook.py",
     "scripts/validate_handoff.py",
     "scripts/package_platforms.py",
+    "scripts/scan_secrets.py",
+    "scripts/check_branch_name.py",
+    "tests/__init__.py",
+    "tests/test_handoff_bridge.py",
     "examples/claude-settings.handoff.json",
     "examples/codex-hooks.handoff.json",
     "launchers/macos/handoff-bridge.command",
@@ -41,7 +48,7 @@ COMMON_FILES = [
 
 
 START_HERE = {
-    "macos": """Agent Handoff Bridge for macOS
+    "macos": """Agent Handoff Bridge {version} for macOS
 
 1. Open Terminal in this folder.
 2. Run:
@@ -52,8 +59,13 @@ START_HERE = {
 If the GUI cannot start because tkinter is missing, the launcher falls back to
 the terminal controller. Install a Python 3 build with Tcl/Tk support for GUI
 folder selection.
+
+Verify the download without spending tokens:
+
+   python3 handoff_bridge.py --version
+   python3 handoff_bridge.py check
 """,
-    "windows": """Agent Handoff Bridge for Windows
+    "windows": """Agent Handoff Bridge {version} for Windows
 
 1. Open Command Prompt in this folder.
 2. Run:
@@ -68,6 +80,11 @@ PowerShell users can run:
 If the GUI cannot start because tkinter is missing, the launcher falls back to
 the terminal controller. Install a Python 3 build with Tcl/Tk support for GUI
 folder selection.
+
+Verify the download without spending tokens:
+
+   python3 handoff_bridge.py --version
+   python3 handoff_bridge.py check
 """,
 }
 
@@ -88,7 +105,8 @@ def copy_files(stage: Path) -> None:
 
 
 def write_start_here(stage: Path, platform_name: str) -> None:
-    (stage / f"START_HERE_{platform_name.upper()}.txt").write_text(START_HERE[platform_name], encoding="utf-8")
+    text = START_HERE[platform_name].format(version=BRIDGE_VERSION)
+    (stage / f"START_HERE_{platform_name.upper()}.txt").write_text(text, encoding="utf-8")
 
 
 def add_to_zip(zip_file: zipfile.ZipFile, path: Path, arcname: Path) -> None:
@@ -135,6 +153,7 @@ def main() -> int:
     output_dir = Path(args.output).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     platforms = ("macos", "windows") if args.platform == "all" else (args.platform,)
+    print(f"Building agent-handoff-bridge {BRIDGE_VERSION} packages...")
     for platform_name in platforms:
         output_zip = build_package(platform_name, output_dir)
         print(output_zip)

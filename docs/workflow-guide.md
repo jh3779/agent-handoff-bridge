@@ -110,3 +110,21 @@ python3 handoff_bridge.py --workspace /path/to/project check
 ```
 
 Then run project-specific commands from `docs/verification-playbook.md`.
+
+## Contributing To This Repo
+
+Use this when changing the bridge tool itself, not a downstream project.
+
+1. Install the local git hooks once per clone:
+
+   ```bash
+   ./scripts/install_git_hooks.sh
+   ```
+
+2. Branch as `type/short-description` (see
+   [Quality Gates](quality-gates.md)).
+3. `.githooks/pre-commit` scans staged files for secrets on every commit.
+4. `.githooks/pre-push` checks branch naming and runs
+   `python3 handoff_bridge.py check` before the push leaves the machine.
+5. The same checks run again in CI (`.github/workflows/ci.yml`) on every pull
+   request, so a skipped local hook still gets caught.

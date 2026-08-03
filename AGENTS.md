@@ -8,6 +8,9 @@ This repository is configured for handoff between Codex CLI and Claude Code CLI.
 - Read `docs/agent-targeting-protocol.md` when task scope, provider, or model changes.
 - Read `docs/shared-agent-contract.md` before planning or editing.
 - Use `docs/verification-playbook.md` to choose checks and record results.
+- Read `docs/quality-gates.md` before committing or pushing in this repo —
+  branch naming, secret scanning, failure-classification consistency, and
+  minimum test coverage are enforced, not just documented.
 - Treat those two files as the shared operating standard for both providers.
 
 ## Before Work
@@ -22,6 +25,8 @@ This repository is configured for handoff between Codex CLI and Claude Code CLI.
 ## During Work
 
 - Keep changes scoped to the active task.
+- Name any new branch `type/short-description` per `docs/quality-gates.md`
+  (types: feature, fix, docs, chore, refactor, test, release, hotfix).
 - Prefer the existing repo conventions and tooling once a real project is added.
 - If you are continuing from the other CLI, inspect `.handoff/runs/` only as
   needed; raw logs can be large.

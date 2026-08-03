@@ -11,10 +11,14 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+
+BRIDGE_VERSION = "0.1.0"
 
 BRIDGE_ROOT = Path(__file__).resolve().parent
 HANDOFF_DIR = Path(".handoff")
@@ -22,8 +26,23 @@ RUNS_DIR = HANDOFF_DIR / "runs"
 STATE_FILE = HANDOFF_DIR / "state.json"
 CURRENT_FILE = HANDOFF_DIR / "current.md"
 NEXT_PROMPT_FILE = HANDOFF_DIR / "next-prompt.md"
+WRITE_LOCK_FILE = HANDOFF_DIR / ".write.lock"
 CONTRACT_FILE = Path("docs/shared-agent-contract.md")
 VERIFICATION_FILE = Path("docs/verification-playbook.md")
+
+# Canonical handoff failure classification. Must stay in sync with the
+# enum documented in docs/shared-agent-contract.md ("Start Of Turn Checklist");
+# scripts/validate_handoff.py enforces that every label appears here.
+HANDOFF_LABELS = (
+    "quota",
+    "rate_limit",
+    "auth",
+    "billing",
+    "context_limit",
+    "overloaded",
+    "tool_failure",
+    "unknown",
+)
 
 PROVIDERS = ("codex", "claude")
 
@@ -50,10 +69,18 @@ INSTALL_FILES = [
     ("docs/security-model.md", "docs/security-model.md"),
     ("docs/release-notes.md", "docs/release-notes.md"),
     ("docs/research.md", "docs/research.md"),
+    ("docs/quality-gates.md", "docs/quality-gates.md"),
     ("schemas/handoff-summary.schema.json", "schemas/handoff-summary.schema.json"),
     ("scripts/handoff_hook.py", "scripts/handoff_hook.py"),
     ("scripts/validate_handoff.py", "scripts/validate_handoff.py"),
     ("scripts/package_platforms.py", "scripts/package_platforms.py"),
+    ("scripts/scan_secrets.py", "scripts/scan_secrets.py"),
+    ("scripts/check_branch_name.py", "scripts/check_branch_name.py"),
+    ("scripts/install_git_hooks.sh", "scripts/install_git_hooks.sh"),
+    ("tests/__init__.py", "tests/__init__.py"),
+    ("tests/test_handoff_bridge.py", "tests/test_handoff_bridge.py"),
+    (".githooks/pre-commit", ".githooks/pre-commit"),
+    (".githooks/pre-push", ".githooks/pre-push"),
     ("examples/claude-settings.handoff.json", "examples/claude-settings.handoff.json"),
     ("examples/codex-hooks.handoff.json", "examples/codex-hooks.handoff.json"),
     ("launchers/macos/handoff-bridge.command", "launchers/macos/handoff-bridge.command"),
@@ -72,7 +99,16 @@ ERROR_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("auth", re.compile(r"\b(not logged in|authentication_failed|unauthorized|forbidden)\b", re.I)),
     ("context_limit", re.compile(r"\b(context window|context length|maximum context|max_output_tokens)\b", re.I)),
     ("overloaded", re.compile(r"\b(overloaded|server overloaded|temporarily unavailable)\b", re.I)),
+    (
+        "tool_failure",
+        re.compile(
+            r"\b(tool_failure|tool execution failed|command not found|permission denied|no such file or directory)\b",
+            re.I,
+        ),
+    ),
 ]
+
+assert set(label for label, _ in ERROR_PATTERNS) <= set(HANDOFF_LABELS)
 
 
 def utc_now() -> str:
@@ -99,9 +135,61 @@ def read_workspace_or_bridge(rel_path: str, default: str = "") -> str:
     return default
 
 
-def write_json(path: Path, data: dict[str, Any]) -> None:
+class WriteLock:
+    """Cross-process advisory lock for shared handoff files.
+
+    Uses exclusive file creation (portable across macOS/Linux/Windows) rather
+    than fcntl/msvcrt so a single implementation covers every launcher path,
+    including the HTTP remote server where each task runs as its own
+    subprocess rather than a thread the interpreter can lock in-process.
+    """
+
+    def __init__(self, path: Path = WRITE_LOCK_FILE, timeout: float = 10.0):
+        self.path = path
+        self.timeout = timeout
+        self._fd: int | None = None
+
+    def __enter__(self) -> "WriteLock":
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                return self
+            except FileExistsError:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"timed out waiting for handoff write lock: {self.path}")
+                time.sleep(0.05)
+
+    def __exit__(self, *exc_info: Any) -> None:
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def atomic_write_text(path: Path, content: str) -> None:
+    """Write `content` to `path` without ever leaving a partial file behind."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.remove(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def write_json(path: Path, data: dict[str, Any]) -> None:
+    with WriteLock():
+        atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 def load_state() -> dict[str, Any]:
@@ -244,7 +332,7 @@ def diagnose(_: argparse.Namespace) -> int:
     codex_auth = short_run(["codex", "login", "status"])
     claude_auth = short_run(["claude", "auth", "status", "--text"])
 
-    print("Handoff bridge diagnostics")
+    print(f"Handoff bridge diagnostics (agent-handoff-bridge {BRIDGE_VERSION})")
     print(f"- cwd: {Path.cwd()}")
     for item in checks:
         print(f"- {item['provider']}: {item['path'] or 'missing'}")
@@ -515,15 +603,27 @@ def summarize_claude(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def classify_handoff(exit_code: int, stdout: str, stderr: str, parsed: dict[str, Any]) -> tuple[bool, str]:
-    if parsed.get("errors"):
-        return True, "provider emitted machine-readable error event"
+    """Classify whether the run needs a handoff.
+
+    The reason string always starts with one of `HANDOFF_LABELS` (or `none`
+    when no handoff is needed) so downstream tooling and `.handoff/current.md`
+    stay in the vocabulary defined by docs/shared-agent-contract.md.
+    """
     combined = "\n".join([stdout, stderr])
+    if parsed.get("errors"):
+        errors_text = json.dumps(parsed["errors"], ensure_ascii=False)
+        for label, pattern in ERROR_PATTERNS:
+            if pattern.search(combined) or pattern.search(errors_text):
+                return True, f"{label}: provider emitted a machine-readable error event"
+        return True, "unknown: provider emitted a machine-readable error event"
     for label, pattern in ERROR_PATTERNS:
         if pattern.search(combined):
-            return True, f"matched {label} signal"
+            return True, f"{label}: matched {label} signal"
+    if exit_code == 127:
+        return True, "tool_failure: provider command not found"
     if exit_code != 0:
-        return True, f"provider exited with code {exit_code}"
-    return False, "no handoff signal detected"
+        return True, f"tool_failure: provider exited with code {exit_code}"
+    return False, "none: no handoff signal detected"
 
 
 def excerpt(text: str, max_chars: int = 1200) -> str:
@@ -555,9 +655,11 @@ def append_current(record: dict[str, Any]) -> None:
     final_text = record.get("final_text")
     if final_text:
         block.extend(["", "### Final Output Excerpt", "", excerpt(final_text)])
-    CURRENT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with CURRENT_FILE.open("a", encoding="utf-8") as handle:
-        handle.write("\n".join(block) + "\n")
+    addition = "\n".join(block) + "\n"
+    with WriteLock():
+        CURRENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        existing = CURRENT_FILE.read_text(encoding="utf-8") if CURRENT_FILE.exists() else ""
+        atomic_write_text(CURRENT_FILE, existing + addition)
 
 
 def choose_auto_provider(state: dict[str, Any]) -> str:
@@ -717,6 +819,11 @@ def check(_: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bridge Claude Code CLI and Codex CLI.")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"agent-handoff-bridge {BRIDGE_VERSION}",
+    )
     parser.add_argument(
         "-W",
         "--workspace",

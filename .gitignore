@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 .DS_Store
 dist/
+
+# Personal work log / retrospective notes for later portfolio use.
+# Local-only by design — never tracked or shared.
+worklog/

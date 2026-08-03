@@ -40,7 +40,9 @@ conflict in `.handoff/current.md`.
 - Identify the current goal, known blockers, and the smallest useful next step.
 - If continuing after a failure, classify it as one of: `quota`, `rate_limit`,
   `auth`, `billing`, `context_limit`, `overloaded`, `tool_failure`, or
-  `unknown`.
+  `unknown`. `handoff_bridge.py`'s `classify_handoff()` uses this exact
+  vocabulary and `scripts/validate_handoff.py` fails `handoff_bridge.py check`
+  if the two ever drift apart — see [Quality Gates](quality-gates.md).
 
 ## Implementation Standard
 

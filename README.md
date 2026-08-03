@@ -6,6 +6,23 @@ a small bridge scaffold for the practical version: keep work state in shared
 files, run either CLI in a scriptable mode, detect quota/rate/context failures,
 then hand the task to the other CLI with the current workspace state.
 
+## Download
+
+No `git clone` required. Grab a zip from
+[GitHub Releases](https://github.com/jh3779/agent-handoff-bridge/releases/latest)
+(this repo is private, so the link only resolves for accounts with access),
+unzip it, and follow the `START_HERE_MACOS.txt` / `START_HERE_WINDOWS.txt`
+file inside. Verify the download without spending any provider tokens:
+
+```bash
+python3 handoff_bridge.py --version
+python3 handoff_bridge.py check
+```
+
+Both commands work from the extracted zip with no git repo present. See
+[docs/release-process.md](docs/release-process.md) for how releases are cut,
+and [docs/release-notes.md](docs/release-notes.md) for what changed.
+
 ## Current Local Status
 
 - Requires `codex`, `claude`, and `gh` for the full local workflow.
@@ -134,6 +151,7 @@ want to spend tokens.
 - [Workflow Guide](docs/workflow-guide.md)
 - [Korean Operator Guide](docs/ko-operator-guide.md)
 - [Security Model](docs/security-model.md)
+- [Quality Gates](docs/quality-gates.md)
 - [Release Notes](docs/release-notes.md)
 
 ## Optional Hook Setup
@@ -178,7 +196,24 @@ python3 handoff_bridge.py check
 ```
 
 This confirms the shared contract, documentation set, provider instruction
-files, JSON examples, and Python scripts are internally consistent.
+files, JSON examples, and Python scripts are internally consistent, that no
+likely secrets are tracked, that the handoff failure classification matches
+the contract, and that `tests/` passes.
+
+## Quality Gates And Branch Naming
+
+This repo enforces branch naming (`type/short-description`), secret
+scanning, failure-classification consistency, and a minimum unit test bar —
+see [docs/quality-gates.md](docs/quality-gates.md) for the full rule set and
+how each is checked. Install the local git hooks once per clone so they run
+automatically on commit/push:
+
+```bash
+./scripts/install_git_hooks.sh
+```
+
+The same rules run in CI on every pull request
+(`.github/workflows/ci.yml`).
 
 ## Research
 

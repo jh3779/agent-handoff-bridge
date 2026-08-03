@@ -15,6 +15,9 @@ context.
   standard both agents must follow.
 - [Verification Playbook](verification-playbook.md): checks and acceptance
   criteria.
+- [Quality Gates](quality-gates.md): every rule this repo actually enforces
+  (branch naming, secret scanning, failure-classification consistency,
+  minimum test coverage, atomic shared-state writes) and how each is checked.
 
 ## Operator Docs
 
@@ -26,6 +29,9 @@ context.
 - [Korean Operator Guide](ko-operator-guide.md): Korean setup and instruction
   templates for phone-based operation and handoff.
 - [Security Model](security-model.md): safety boundaries and operational risks.
+- [Release Process](release-process.md): how to cut a tagged, downloadable
+  release with macOS/Windows zip assets.
+- [Release Notes](release-notes.md): what changed in each version.
 
 ## Remote And Mobile
 
@@ -49,6 +55,10 @@ python3 handoff_bridge.py diagnose
 python3 handoff_bridge.py --workspace /path/to/project install
 python3 handoff_bridge.py --workspace /path/to/project init "Describe the task"
 ```
+
+Contributors working on this repo itself (not a downstream project) should
+also run `scripts/install_git_hooks.sh` once — see
+[Quality Gates](quality-gates.md).
 
 After that, direct work from the CLI, ChatGPT mobile **Remote**, or Claude app
 **Code**. Every instruction should identify the target provider and model.

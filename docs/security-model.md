@@ -10,6 +10,9 @@ handoffs easier without hiding provider permissions or exposing credentials.
   `--allow-execute`.
 - Existing support files are not overwritten by `install` unless `--force` is
   provided.
+- Tracked files are scanned for likely secrets by `scripts/scan_secrets.py`,
+  run automatically in `handoff_bridge.py check`, the `.githooks/pre-commit`
+  hook, and CI. See [Quality Gates](quality-gates.md).
 - Runtime state files are ignored by git.
 - Raw provider logs are stored under `.handoff/runs/` and ignored by git.
 - Remote server task state and generated mobile prompt files are ignored by git.

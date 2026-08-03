@@ -1,0 +1,30 @@
+#!/bin/sh
+# Full local gate before code leaves the machine: branch naming + the
+# complete no-token validation suite (secrets, classification consistency,
+# required files, JSON, python compile, unit tests).
+# Installed via scripts/install_git_hooks.sh; see docs/quality-gates.md.
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+failed=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$local_ref" in
+    refs/heads/*)
+      branch="${local_ref#refs/heads/}"
+      echo "pre-push: checking branch name '$branch'..."
+      if ! python3 scripts/check_branch_name.py "$branch" --root "$ROOT"; then
+        failed=1
+      fi
+      ;;
+  esac
+done
+
+if [ "$failed" -ne 0 ]; then
+  echo "pre-push: branch naming check failed; see docs/quality-gates.md" >&2
+  exit 1
+fi
+
+echo "pre-push: running full validation suite..."
+python3 handoff_bridge.py check

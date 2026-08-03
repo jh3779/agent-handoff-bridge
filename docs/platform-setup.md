@@ -101,6 +101,18 @@ Every prompt includes:
 - instruction type;
 - source-of-truth files.
 
+## Contributing To This Repo
+
+If you are changing this repo itself (not just installing it into a
+project), install the local git hooks once per clone:
+
+```bash
+./scripts/install_git_hooks.sh
+```
+
+This enforces branch naming and runs the secret scan / validation suite
+automatically on commit and push. See [Quality Gates](quality-gates.md).
+
 ## Verification
 
 Run this from the repo root after changing platform files:

@@ -1,0 +1,18 @@
+#!/bin/sh
+# Fast, staged-only checks. Full checks run in pre-push and CI.
+# Installed via scripts/install_git_hooks.sh; see docs/quality-gates.md.
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+echo "pre-commit: scanning staged files for secrets..."
+python3 scripts/scan_secrets.py --staged --root "$ROOT"
+
+staged_py=$(git diff --cached --name-only --diff-filter=ACM -- '*.py')
+if [ -n "$staged_py" ]; then
+  echo "pre-commit: compiling staged Python files..."
+  echo "$staged_py" | xargs -I{} python3 -m py_compile "{}"
+fi
+
+echo "pre-commit: OK"

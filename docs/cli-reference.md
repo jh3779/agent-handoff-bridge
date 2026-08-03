@@ -80,7 +80,22 @@ Records and passes the exact model ID as a provider override.
 python3 handoff_bridge.py check
 ```
 
-Runs no-token consistency checks for files, JSON, and Python syntax.
+Runs no-token consistency checks: required files, JSON, Python syntax, the
+secret scan, handoff failure-classification consistency, and `tests/`. See
+[Quality Gates](quality-gates.md).
+
+## Quality Gate Scripts
+
+```bash
+python3 scripts/scan_secrets.py [--staged]
+python3 scripts/check_branch_name.py [branch]
+./scripts/install_git_hooks.sh
+```
+
+`scan_secrets.py` and the test suite run automatically as part of
+`handoff_bridge.py check`. `check_branch_name.py` and the git hooks are this
+repo's own contribution rules and are not installed into downstream
+projects — see [Quality Gates](quality-gates.md).
 
 ## `handoff_control.py`
 

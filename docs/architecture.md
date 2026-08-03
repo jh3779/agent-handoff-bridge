@@ -86,6 +86,13 @@ The bridge does not copy credentials, auth files, provider transcripts, or
 hidden app state. Each provider continues from files on disk and the current git
 state.
 
+`.handoff/state.json` and `.handoff/current.md` are written through
+`atomic_write_text()` under a cross-process `WriteLock` so a torn write can't
+happen even when `remote_handoff_server.py` runs multiple task subprocesses
+against the same workspace concurrently. See
+[Quality Gates](quality-gates.md#rule-shared-state-files-are-written-atomically-and-under-lock)
+for what this does and does not guarantee.
+
 ## Recommended Extension Points
 
 - Add project-specific instructions to the target project's own `AGENTS.md` and

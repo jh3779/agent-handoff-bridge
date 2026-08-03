@@ -13,6 +13,12 @@ python3 handoff_bridge.py diagnose
 python3 handoff_bridge.py run auto "Preview next handoff prompt"
 ```
 
+`handoff_bridge.py check` now also runs a secret scan, verifies the handoff
+failure classification matches `docs/shared-agent-contract.md`, and runs
+`tests/`. See [Quality Gates](quality-gates.md) for the full rule set,
+including branch naming (checked separately, not part of `check` — it is a
+convention for this repo, not for downstream projects that install it).
+
 ## Generic Project Checks
 
 Run the narrowest relevant checks first:
@@ -41,7 +47,8 @@ If a check is unavailable, record `not run` with the reason.
 - The bridge prompt includes the shared contract, current handoff packet, and
   git snapshot.
 - Raw model/provider logs are ignored by git.
-- Secrets or auth tokens are not present in tracked files.
+- Secrets or auth tokens are not present in tracked files — enforced by
+  `scripts/scan_secrets.py`, not just a manual review step.
 - The final summary follows `Changed`, `Verified`, `Remaining`, `Blocked`,
   `Next`.
 - Machine-readable summaries conform to `schemas/handoff-summary.schema.json`
