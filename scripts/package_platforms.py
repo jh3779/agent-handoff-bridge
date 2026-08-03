@@ -37,6 +37,8 @@ COMMON_FILES = [
     "scripts/check_branch_name.py",
     "tests/__init__.py",
     "tests/test_handoff_bridge.py",
+    "tests/test_scan_secrets.py",
+    "tests/test_check_branch_name.py",
     "examples/claude-settings.handoff.json",
     "examples/codex-hooks.handoff.json",
     "launchers/macos/handoff-bridge.command",

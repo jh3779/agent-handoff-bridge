@@ -51,6 +51,8 @@ REQUIRED_FILES = [
     "launchers/windows/install.ps1",
     "tests/__init__.py",
     "tests/test_handoff_bridge.py",
+    "tests/test_scan_secrets.py",
+    "tests/test_check_branch_name.py",
     ".handoff/current.md",
     ".handoff/task-template.md",
 ]
@@ -73,6 +75,8 @@ PYTHON_FILES = [
     "scripts/scan_secrets.py",
     "scripts/check_branch_name.py",
     "tests/test_handoff_bridge.py",
+    "tests/test_scan_secrets.py",
+    "tests/test_check_branch_name.py",
 ]
 
 # Must match HANDOFF_LABELS in handoff_bridge.py and the enum documented in

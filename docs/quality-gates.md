@@ -90,18 +90,28 @@ depends on.
 ## Rule: Core Logic Has Unit Tests
 
 `handoff_bridge.py`'s provider fallback and classification logic
-(`classify_handoff`, `choose_auto_provider`, `model_override_arg`) and the
-shared-state write path (`atomic_write_text`, `WriteLock`) must have test
-coverage under `tests/`. This is the highest-risk untested surface in the
-repo: there is no CI provider integration test (that would spend real
-tokens), so these pure-logic paths are the only regression safety net.
+(`classify_handoff`, `choose_auto_provider`, `model_override_arg`), the
+shared-state write path (`atomic_write_text`, `WriteLock`), and the two
+quality-gate scripts that themselves gate everything else
+(`scan_secrets.py`'s pattern matching, `check_branch_name.py`'s pattern and
+subprocess-failure handling) must have test coverage under `tests/`. This is
+the highest-risk untested surface in the repo: there is no CI provider
+integration test (that would spend real tokens), so these pure-logic paths
+are the only regression safety net.
+
+`check_branch_name.py`'s `current_branch()` originally crashed with an
+uncaught `FileNotFoundError` when `root` didn't exist or `git` wasn't
+installed, instead of returning `None` like the rest of the module expects —
+found by writing `tests/test_check_branch_name.py`, not by inspection.
+Exactly the failure mode this rule exists to catch.
 
 - **Doc**: this section.
 - **CI / no-token check**: `handoff_bridge.py check` runs
   `python3 -m unittest discover -s tests` and fails the whole check if any
   test fails or if `tests/` has no `test_*.py` files.
 - **Script**: `check_tests()` in `scripts/validate_handoff.py`; tests live in
-  `tests/test_handoff_bridge.py`.
+  `tests/test_handoff_bridge.py`, `tests/test_scan_secrets.py`, and
+  `tests/test_check_branch_name.py`.
 
 Uses the standard library `unittest` rather than `pytest` deliberately — the
 repo has no dependency file (`requirements.txt`/`pyproject.toml`) and

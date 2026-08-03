@@ -79,6 +79,8 @@ INSTALL_FILES = [
     ("scripts/install_git_hooks.sh", "scripts/install_git_hooks.sh"),
     ("tests/__init__.py", "tests/__init__.py"),
     ("tests/test_handoff_bridge.py", "tests/test_handoff_bridge.py"),
+    ("tests/test_scan_secrets.py", "tests/test_scan_secrets.py"),
+    ("tests/test_check_branch_name.py", "tests/test_check_branch_name.py"),
     (".githooks/pre-commit", ".githooks/pre-commit"),
     (".githooks/pre-push", ".githooks/pre-push"),
     ("examples/claude-settings.handoff.json", "examples/claude-settings.handoff.json"),

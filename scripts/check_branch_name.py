@@ -34,13 +34,17 @@ EXEMPT_BRANCHES = ("main", "master")
 
 
 def current_branch(root: Path) -> str | None:
-    result = subprocess.run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=root,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except (FileNotFoundError, NotADirectoryError):
+        # `root` doesn't exist or `git` isn't installed -- nothing to validate.
+        return None
     if result.returncode != 0:
         return None
     branch = result.stdout.strip()
