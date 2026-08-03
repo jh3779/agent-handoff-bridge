@@ -66,6 +66,15 @@ Anthropic/OpenAI-style tokens, generic `key = "..."` assignments, and banned
 filenames like `auth.json`/`.env`). It is a safety net, not a guarantee —
 review diffs before pushing regardless.
 
+**Testing this scanner is self-referential**: its own test fixtures need
+secret-shaped strings to verify detection, but once `tests/test_scan_secrets.py`
+is committed, its literal fixtures would themselves be flagged by the
+full-tree scan (this happened once — CI failed on the first push of that
+file). `tests/test_scan_secrets.py` assembles every fixture at runtime via a
+`_fake()` helper (string concatenation) instead of writing the pattern as a
+contiguous literal, so the committed source text never matches the scanner's
+own regexes. Keep that pattern for any new scanner test fixture.
+
 ## Rule: Failure Classification Stays In Sync
 
 `docs/shared-agent-contract.md` defines the canonical handoff failure labels:
