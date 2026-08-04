@@ -521,6 +521,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
             records = webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+            print("DEBUG_CI records:", json.dumps(records, ensure_ascii=False), file=sys.stderr)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["provider"], "codex")
             self.assertFalse(records[0]["handoff_needed"])
