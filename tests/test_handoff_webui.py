@@ -452,6 +452,94 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         workspace = webui.create_workspace_for_first_message("hello", [])
         self.assertTrue((workspace / ".handoff" / "webui" / ".gitignore").exists())
 
+    def test_init_subprocess_failure_raises_and_cleans_up_the_directory(self):
+        # Regression: the subprocess result used to be discarded entirely --
+        # a failing `init` (bad permissions, disk full, a bug in
+        # handoff_bridge.py) would silently leave a half-scaffolded
+        # directory that append_chat_message() then wrote into as if it
+        # were a real workspace.
+        failed = mock.Mock(returncode=1, stdout="", stderr="boom: disk full")
+        with mock.patch("handoff_webui.subprocess.run", return_value=failed):
+            with self.assertRaises(webui.WorkspaceError) as ctx:
+                webui.create_workspace_for_first_message("hello", [])
+        self.assertIn("boom: disk full", str(ctx.exception))
+        # and it didn't leave an orphaned empty folder behind
+        self.assertEqual(list(self.base_dir.iterdir()), [])
+
+    def test_init_subprocess_timeout_raises_and_cleans_up_the_directory(self):
+        with mock.patch(
+            "handoff_webui.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="handoff_bridge.py", timeout=30),
+        ):
+            with self.assertRaises(webui.WorkspaceError):
+                webui.create_workspace_for_first_message("hello", [])
+        self.assertEqual(list(self.base_dir.iterdir()), [])
+
+
+class CreateWorkspaceConcurrencyTests(unittest.TestCase):
+    """A real live server + real concurrent HTTP requests -- verifies the
+    exact race an adversarial review reproduced: two near-simultaneous
+    first messages (double-clicked Send, two browser tabs against the same
+    server) both observing AppState.workspace as None. AUTO_WORKSPACE_BASE_DIR
+    is patched to a tempdir so this never touches the real
+    ~/Documents/Agent Handoff Bridge/."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = Path(self.tmp.name) / "Agent Handoff Bridge"
+        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+        self.state = webui.AppState(None)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def test_concurrent_first_messages_create_exactly_one_workspace(self):
+        url = f"http://127.0.0.1:{self.port}/api/chat"
+        payload = json.dumps({"role": "user", "text": "same topic", "attachments": []}).encode("utf-8")
+        statuses = []
+        errors = []
+        lock = threading.Lock()
+
+        def send():
+            try:
+                req = urllib.request.Request(
+                    url, data=payload, method="POST", headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    status = resp.status
+            except Exception as exc:  # pragma: no cover - failure path surfaced via errors list
+                with lock:
+                    errors.append(str(exc))
+                return
+            with lock:
+                statuses.append(status)
+
+        threads = [threading.Thread(target=send) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(statuses, [200] * 8)
+        # Exactly one workspace directory got created, not one per request
+        # -- the bug this regression-tests produced up to 8 real folders on
+        # disk with AppState.workspace pointing at only one of them.
+        self.assertEqual(len(list(self.base_dir.iterdir())), 1)
+        self.assertIsNotNone(self.state.workspace)
+
 
 class ChatStorageTests(unittest.TestCase):
     def test_append_then_read_current_month(self):

@@ -20,6 +20,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -230,6 +231,19 @@ def build_auto_workspace_name(text: str, attachments: list[dict], now: datetime)
     return f"{now.strftime('%Y-%m-%d')}-{slugify_for_folder_name(summary_source)}"
 
 
+# Guards the check-then-create in do_POST's /api/chat handler: without
+# this, two near-simultaneous first messages (a double-clicked Send, two
+# browser tabs against the same server) can both observe
+# AppState.workspace is None and both call create_workspace_for_first_message()
+# -- confirmed by reproduction, not theoretical: two real folders get
+# created and one request's persisted chat message ends up orphaned in
+# whichever folder AppState.workspace didn't end up pointing at. A plain
+# threading.Lock, not handoff_bridge.WriteLock or _RUN_LOCK -- this is a
+# separate, narrow critical section (mkdir + a sub-second init subprocess),
+# not the provider-call-duration concern _RUN_LOCK exists for.
+_WORKSPACE_CREATE_LOCK = threading.Lock()
+
+
 def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Path:
     """DEC-05/06: create the new workspace directory (numeric-suffixing on
     a name collision) and scaffold it exactly like a manually-picked folder
@@ -250,13 +264,22 @@ def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Pa
     new_workspace.mkdir()
 
     task = text.strip() or "Continue the current handoff task."
-    subprocess.run(
-        [sys.executable, str(BRIDGE_SCRIPT), "--workspace", str(new_workspace), "init", task],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, str(BRIDGE_SCRIPT), "--workspace", str(new_workspace), "init", task],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        shutil.rmtree(new_workspace, ignore_errors=True)
+        raise WorkspaceError(f"failed to scaffold new workspace: {exc}") from exc
+    if result.returncode != 0:
+        shutil.rmtree(new_workspace, ignore_errors=True)
+        stderr_tail = (result.stderr or "").strip()[-500:]
+        raise WorkspaceError(f"failed to scaffold new workspace (exit {result.returncode}): {stderr_tail}")
+
     ensure_chat_gitignore(new_workspace)
     return new_workspace
 
@@ -763,7 +786,14 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         # actually sending something.
                         if role != "user":
                             raise WorkspaceError("no workspace selected")
-                        state.workspace = create_workspace_for_first_message(text, attachments)
+                        # Double-checked locking: _WORKSPACE_CREATE_LOCK
+                        # serializes creation, and re-checking workspace is
+                        # None *after* acquiring it means a request that lost
+                        # the race just uses the workspace the winner already
+                        # created, instead of creating a second one.
+                        with _WORKSPACE_CREATE_LOCK:
+                            if state.workspace is None:
+                                state.workspace = create_workspace_for_first_message(text, attachments)
                     message = append_chat_message(state.workspace, role, text, attachments, utc_now())
                     self._send_json(200, message)
                 except WorkspaceError as exc:

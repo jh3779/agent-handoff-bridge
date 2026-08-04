@@ -172,7 +172,28 @@
     `AppState(None)`) plus a real end-to-end run: `$HOME` swapped to a
     temp directory so the manual smoke test couldn't touch the real
     `~/Documents/`, confirming a Korean first message produces a correctly
-    named, fully scaffolded workspace.
+    named, fully scaffolded workspace;
+  - fixed a real, **reproduced** race found in an independent adversarial
+    pass: the check-then-create in `POST /api/chat` (`if state.workspace is
+    None: ... state.workspace = create_workspace_for_first_message(...)`)
+    had no lock, unlike `/api/run`'s `_RUN_LOCK`. Two near-simultaneous
+    first messages (a double-clicked Send, two browser tabs against the
+    same server) could both observe `None` and both create a real folder
+    on disk -- confirmed with a script hitting the real server with
+    concurrent threads before the fix, not a theoretical concern. Fixed
+    with double-checked locking (`_WORKSPACE_CREATE_LOCK`) that
+    re-checks `state.workspace` after acquiring, so a request that loses
+    the race just uses the workspace the winner already created;
+  - fixed a related gap the same race exposed: `create_workspace_for_first_message()`
+    never inspected the `handoff_bridge.py init` subprocess's result at
+    all -- a failure (bad permissions, disk full) or a timeout past 30s
+    would silently continue (or crash uncaught, in the timeout case)
+    with `append_chat_message()` then writing into a folder whose
+    `.handoff/state.json` might not even exist. Now checked and surfaced
+    as a clear `WorkspaceError`, with the half-created directory cleaned
+    up rather than left behind as an orphan;
+  - 7 more tests for the above (a real concurrent-request test against a
+    live server, confirmed to fail without the fix) -- 175 total.
 
 ## v0.1.0 — 2026-08-03
 
