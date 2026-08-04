@@ -1,0 +1,246 @@
+/* ============================================================
+   Agent Handoff Bridge — Design System Docs
+   Base: Material 3 · 자체 완결형 HTML 디자인 문서
+   ColorScheme: "Bridge Indigo" (기본) / "Signal Amber" (tertiary — handoff
+   신호 한 곳에만 사용). 도메인 상태색은 --ds-st-*.
+   ============================================================ */
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css");
+@import url("https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..700,0..1,0");
+@import url("https://fonts.googleapis.com/css2?family=Nanum+Pen+Script&display=swap");
+
+/* ---------- Light (기본) — "Bridge Indigo" ---------- */
+:root{
+  --ds-primary:#3A5AA6; --ds-on-primary:#FFFFFF;
+  --ds-primary-container:#DAE2FF; --ds-on-primary-container:#00174A;
+  --ds-secondary:#5A5E72; --ds-on-secondary:#FFFFFF;
+  --ds-secondary-container:#DFE1F9; --ds-on-secondary-container:#171B2C;
+  --ds-tertiary:#8A5A15; --ds-on-tertiary:#FFFFFF;   /* handoff 신호 전용 */
+  --ds-tertiary-container:#FFDDB0; --ds-on-tertiary-container:#2B1700;
+  --ds-error:#BA1A1A; --ds-on-error:#FFFFFF;
+  --ds-error-container:#FFDAD6; --ds-on-error-container:#410002;
+  --ds-surface:#FAF8FF; --ds-on-surface:#1B1B21;
+  --ds-surface-variant:#E2E1EC; --ds-on-surface-variant:#45464F;
+  --ds-outline:#767680; --ds-outline-variant:#C6C5D0;
+  --ds-surface-container-lowest:#FFFFFF; --ds-surface-container-low:#F4F2FA;
+  --ds-surface-container:#EEECF4; --ds-surface-container-high:#E8E7EF;
+  --ds-surface-container-highest:#E2E1E9;
+  --ds-inverse-surface:#303036; --ds-inverse-on-surface:#F2EFF7;
+  --ds-inverse-primary:#B4C5FF; --ds-scrim:#000000; --ds-shadow:#000000;
+
+  /* 도메인 상태 색: 대기 / 실행 중 / 정상 종료(핸드오프 불필요) / 핸드오프 필요 / 실패 */
+  --ds-st-idle-bg:#DFE1F9;    --ds-st-idle-fg:#171B2C;
+  --ds-st-busy-bg:#DAE2FF;    --ds-st-busy-fg:#00174A;
+  --ds-st-success-bg:#C4EED0; --ds-st-success-fg:#00210B;
+  --ds-st-handoff-bg:#FFDDB0; --ds-st-handoff-fg:#2B1700;
+  --ds-st-fail-bg:#FFDAD6;    --ds-st-fail-fg:#410002;
+
+  --ds-font-plain:"Pretendard Variable",Pretendard,"Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;
+  --ds-font-mono:"Roboto Mono",ui-monospace,Menlo,monospace;
+
+  --ds-space-1:4px; --ds-space-2:8px; --ds-space-3:12px; --ds-space-4:16px;
+  --ds-space-5:20px; --ds-space-6:24px; --ds-space-7:32px; --ds-space-8:40px;
+  --ds-radius-xs:4px; --ds-radius-sm:8px; --ds-radius-md:12px;
+  --ds-radius-lg:16px; --ds-radius-xl:28px; --ds-radius-full:999px;
+  --ds-elev-1:0 1px 2px rgba(0,0,0,.30),0 1px 3px 1px rgba(0,0,0,.15);
+  --ds-elev-2:0 1px 2px rgba(0,0,0,.30),0 2px 6px 2px rgba(0,0,0,.15);
+  --ds-elev-3:0 1px 3px rgba(0,0,0,.30),0 4px 8px 3px rgba(0,0,0,.15);
+}
+/* ---------- Dark ---------- */
+[data-ds-theme="dark"]{
+  --ds-primary:#B4C5FF; --ds-on-primary:#062E7B;
+  --ds-primary-container:#1D4491; --ds-on-primary-container:#DAE2FF;
+  --ds-secondary:#C3C6DD; --ds-on-secondary:#2C3042;
+  --ds-secondary-container:#424659; --ds-on-secondary-container:#DFE1F9;
+  --ds-tertiary:#FFB868; --ds-on-tertiary:#472A00;
+  --ds-tertiary-container:#663F00; --ds-on-tertiary-container:#FFDDB0;
+  --ds-error:#FFB4AB; --ds-on-error:#690005;
+  --ds-error-container:#93000A; --ds-on-error-container:#FFDAD6;
+  --ds-surface:#131318; --ds-on-surface:#E4E1E9;
+  --ds-surface-variant:#45464F; --ds-on-surface-variant:#C6C5D0;
+  --ds-outline:#90909A; --ds-outline-variant:#45464F;
+  --ds-surface-container-lowest:#0D0E13; --ds-surface-container-low:#1B1B21;
+  --ds-surface-container:#1F1F25; --ds-surface-container-high:#29292F;
+  --ds-surface-container-highest:#34343B;
+  --ds-inverse-surface:#E4E1E9; --ds-inverse-on-surface:#303036;
+  --ds-inverse-primary:#3A5AA6;
+
+  --ds-st-idle-bg:#424659;    --ds-st-idle-fg:#DFE1F9;
+  --ds-st-busy-bg:#1D4491;    --ds-st-busy-fg:#DAE2FF;
+  --ds-st-success-bg:#1F4B2C; --ds-st-success-fg:#C4EED0;
+  --ds-st-handoff-bg:#663F00; --ds-st-handoff-fg:#FFDDB0;
+  --ds-st-fail-bg:#93000A;    --ds-st-fail-fg:#FFDAD6;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--ds-surface-container-high);font-family:var(--ds-font-plain);color:var(--ds-on-surface);-webkit-font-smoothing:antialiased}
+a{color:var(--ds-primary)}
+code{font-family:var(--ds-font-mono);font-size:.9em;background:rgba(0,0,0,.05);padding:1px 5px;border-radius:4px}
+[data-ds-theme="dark"] code{background:rgba(255,255,255,.08)}
+h2{margin:0}
+@keyframes dsspin{to{transform:rotate(360deg)}}
+
+.wrap{max-width:1180px;margin:0 auto;padding:28px 40px 72px;display:flex;flex-direction:column;gap:22px}
+@media (max-width:640px){.wrap{padding:18px 16px 56px}}
+
+.topnav{position:sticky;top:0;z-index:10;background:var(--ds-surface-container-high);border-bottom:1px solid var(--ds-outline-variant);padding:10px 40px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+@media (max-width:640px){.topnav{padding:10px 16px}}
+.topnav .brand{font-size:14px;font-weight:700;margin-right:6px}
+.topnav a,.topnav span.cur{text-decoration:none;font-size:12.5px;font-weight:600;border-radius:8px;padding:6px 11px}
+.topnav a{background:var(--ds-surface);border:1px solid var(--ds-outline-variant);color:var(--ds-on-surface)}
+.topnav a:hover{background:var(--ds-surface-container)}
+.topnav span.cur{background:var(--ds-inverse-surface);color:var(--ds-inverse-on-surface)}
+.topnav .spacer{flex:1}
+.topnav button{background:var(--ds-surface);border:1px solid var(--ds-outline-variant);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;color:var(--ds-on-surface);cursor:pointer;font-family:inherit}
+
+.toc{display:flex;gap:6px;flex-wrap:wrap;font-size:12px}
+.toc a{text-decoration:none;background:var(--ds-surface);border:1px solid var(--ds-outline-variant);border-radius:999px;padding:4px 11px;color:var(--ds-on-surface-variant)}
+.toc a:hover{color:var(--ds-primary);border-color:var(--ds-primary)}
+
+.pagehead{display:flex;flex-direction:column;gap:6px}
+.pagehead .t{font-size:24px;font-weight:700}
+.pagehead .s{font-size:12.5px;color:var(--ds-on-surface-variant)}
+
+.card{background:var(--ds-surface);border:1px solid var(--ds-outline-variant);border-radius:12px}
+.pad{padding:18px}
+.sec{display:flex;flex-direction:column;gap:12px;scroll-margin-top:64px}
+.sec-h{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.sec-num{font-family:var(--ds-font-mono);font-size:11px;font-weight:700;background:var(--ds-inverse-surface);color:var(--ds-inverse-on-surface);border-radius:5px;padding:3px 8px}
+.sec-t{font-size:16px;font-weight:700}
+.tag{font-family:var(--ds-font-mono);font-size:10.5px;color:var(--ds-outline)}
+.muted{color:var(--ds-on-surface-variant)}
+.grid{display:grid;gap:12px}
+.note{font-size:12px;line-height:1.65;color:var(--ds-on-surface-variant)}
+
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--ds-outline-variant);padding:7px 10px;text-align:left;font-size:12px;vertical-align:top;line-height:1.5}
+th{background:var(--ds-surface-container-low);font-weight:700}
+.mono{font-family:var(--ds-font-mono)}
+.tblwrap{overflow-x:auto}
+
+.msym{font-family:'Material Symbols Outlined';font-weight:400;font-style:normal;line-height:1;display:inline-block;font-variation-settings:'FILL' 0,'wght' 400,'GRAD' 0,'opsz' 24;vertical-align:middle}
+.msym.f{font-variation-settings:'FILL' 1,'wght' 500,'GRAD' 0,'opsz' 24}
+
+.btn{border-radius:999px;display:inline-flex;align-items:center;justify-content:center;gap:8px;font-size:14px;font-weight:600;height:40px;padding:0 24px}
+.btn-fill{background:var(--ds-primary);color:var(--ds-on-primary)}
+.btn-out{border:1px solid var(--ds-outline);color:var(--ds-primary)}
+.btn-text{color:var(--ds-primary);padding:0 12px}
+.btn-err{border:1px solid var(--ds-error);color:var(--ds-error)}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:dsspin .9s linear infinite}
+
+.badge{border-radius:999px;padding:4px 10px;font-size:11px;font-weight:600;display:inline-flex;align-items:center;gap:4px}
+
+.frame{display:flex;flex-direction:column;gap:9px}
+.ph{width:250px;height:500px;border:2px solid var(--ds-on-surface);border-radius:20px;background:var(--ds-surface-container-lowest);display:flex;flex-direction:column;overflow:hidden;flex:none}
+.appbar{display:flex;align-items:center;gap:6px;padding:12px 14px;border-bottom:1px solid var(--ds-outline-variant)}
+.hand{font-family:'Nanum Pen Script',cursive;font-size:15px;line-height:1.3;color:var(--ds-on-surface-variant);max-width:250px}
+
+/* ---------- 프로젝트 전용: 데스크톱 창 목업 ----------
+   handoff_desktop.py는 폰이 아니라 단일 데스크톱 창(tkinter)이므로
+   .ph(폰) 대신 이 목업을 쓴다. */
+.dwin{width:720px;max-width:100%;border:1px solid var(--ds-outline-variant);border-radius:12px;background:var(--ds-surface-container-lowest);box-shadow:var(--ds-elev-2);overflow:hidden;flex:none}
+.dwin .titlebar{display:flex;align-items:center;gap:8px;padding:9px 12px;background:var(--ds-surface-container);border-bottom:1px solid var(--ds-outline-variant);font-size:12px;font-weight:600}
+.dwin .titlebar .dots{display:flex;gap:6px}
+.dwin .titlebar .dots span{width:10px;height:10px;border-radius:50%;background:var(--ds-outline-variant)}
+.dwin .body{padding:14px;display:flex;flex-direction:column;gap:10px}
+.dwin .panel{border:1px solid var(--ds-outline-variant);border-radius:8px;padding:10px}
+.dwin .panel-t{font-size:10.5px;font-weight:700;color:var(--ds-on-surface-variant);text-transform:uppercase;letter-spacing:.02em;margin-bottom:8px}
+.dwin .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.dwin .field{flex:1;min-width:90px;background:var(--ds-surface);border:1px solid var(--ds-outline-variant);border-radius:6px;padding:6px 9px;font-size:11.5px;color:var(--ds-on-surface-variant)}
+.dwin .combo{background:var(--ds-surface);border:1px solid var(--ds-outline-variant);border-radius:6px;padding:6px 9px;font-size:11.5px;display:flex;align-items:center;gap:6px}
+.dwin .lbl{font-size:11px;color:var(--ds-on-surface-variant);white-space:nowrap}
+.dwin .dbtn{background:var(--ds-surface);border:1px solid var(--ds-outline);border-radius:6px;padding:6px 12px;font-size:11.5px;font-weight:600;color:var(--ds-on-surface);white-space:nowrap}
+.dwin .dbtn.primary{background:var(--ds-primary);color:var(--ds-on-primary);border-color:transparent}
+.dwin .dbtn:disabled,.dwin .dbtn.disabled{opacity:.4}
+.dwin .log{background:var(--ds-inverse-surface);color:var(--ds-inverse-on-surface);border-radius:8px;padding:10px;font-family:var(--ds-font-mono);font-size:10.5px;line-height:1.6;min-height:110px;white-space:pre-wrap}
+.dwin .ta{background:var(--ds-surface);border:1px solid var(--ds-outline-variant);border-radius:6px;padding:8px;font-size:11px;color:var(--ds-on-surface-variant);min-height:44px}
+.dwin .modal-overlay{position:relative}
+.dwin .modal{position:absolute;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;padding:20px}
+.dwin .modal .card{width:100%;max-width:320px;box-shadow:var(--ds-elev-3)}
+
+/* ---------- 프로젝트 전용: 터미널 목업 (handoff_control.py) ---------- */
+.term{width:520px;max-width:100%;border-radius:10px;overflow:hidden;background:#1b1b1f;color:#e4e1e9;font-family:var(--ds-font-mono);font-size:11.5px;line-height:1.7;box-shadow:var(--ds-elev-2);flex:none}
+.term .tbar{display:flex;gap:6px;padding:9px 12px;background:#262629}
+.term .tbar span{width:10px;height:10px;border-radius:50%;background:#45464f}
+.term .tbody{padding:14px 16px;white-space:pre-wrap}
+.term .prompt{color:#9fc0ff}
+.term .inp{color:#ffdd9a}
+.term .cur{display:inline-block;width:6px;height:12px;background:#e4e1e9;vertical-align:-2px;animation:dsspin 0s}
+
+/* ---------- 프로젝트 전용: 재설계 — 채팅형 에이전트 창 (2026-08 redesign) ----------
+   handoff_desktop.py의 폼 기반 창을 대체하는 제안. Codex/Claude Code류
+   작업지시 화면 패턴: 좌측 워크스페이스 트리 + 중앙 대화 스레드 + 하단 입력창
+   + 우상단 히스토리. 근거 코드 없음 — 이 재설계 요구사항 자체가 정본
+   (wireframes.html §REDESIGN 참고, flutter-mapping.html CFL-06). */
+.appshell{width:960px;max-width:100%;height:600px;border:1px solid var(--ds-outline-variant);border-radius:12px;background:var(--ds-surface-container-lowest);box-shadow:var(--ds-elev-2);overflow:hidden;display:flex;flex-direction:column;flex:none;position:relative}
+.appshell .titlebar{display:flex;align-items:center;gap:10px;padding:9px 14px;background:var(--ds-surface-container);border-bottom:1px solid var(--ds-outline-variant);font-size:12px;font-weight:600;flex:none}
+.appshell .titlebar .dots{display:flex;gap:6px}
+.appshell .titlebar .dots span{width:10px;height:10px;border-radius:50%;background:var(--ds-outline-variant)}
+.appshell .titlebar .ws-switch{display:flex;align-items:center;gap:5px;background:var(--ds-surface);border:1px solid var(--ds-outline-variant);border-radius:999px;padding:4px 10px 4px 8px;font-size:11px;font-weight:600}
+.appshell .titlebar .spacer{flex:1}
+.appshell .titlebar .tbtn{display:flex;align-items:center;gap:5px;background:var(--ds-surface);border:1px solid var(--ds-outline-variant);border-radius:8px;padding:6px 10px;font-size:11px;font-weight:600;color:var(--ds-on-surface)}
+.appshell .titlebar .tbtn .msym{font-size:16px}
+.appshell .body{flex:1;display:flex;min-height:0}
+
+/* 좌측 사이드바: 워크스페이스 파일 트리 */
+.appshell .sidebar{width:220px;flex:none;border-right:1px solid var(--ds-outline-variant);background:var(--ds-surface-container-low);display:flex;flex-direction:column;overflow:hidden}
+.appshell .sidebar-h{padding:10px 12px 6px;font-size:10px;font-weight:700;color:var(--ds-on-surface-variant);text-transform:uppercase;letter-spacing:.03em}
+.appshell .tree{flex:1;overflow-y:auto;padding:2px 6px 10px;font-size:12px}
+.tree-row{display:flex;align-items:center;gap:5px;padding:5px 6px;border-radius:6px;cursor:default}
+.tree-row:hover{background:var(--ds-surface-container)}
+.tree-row.sel{background:var(--ds-secondary-container);color:var(--ds-on-secondary-container)}
+.tree-row .msym{font-size:16px;color:var(--ds-on-surface-variant);flex:none}
+.tree-row .lbl{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-row .chk{width:14px;height:14px;border:1.5px solid var(--ds-outline);border-radius:3px;flex:none}
+.tree-row .chk.on{background:var(--ds-primary);border-color:var(--ds-primary);display:flex;align-items:center;justify-content:center}
+.tree-row .chk.on::after{content:"";width:7px;height:4px;border-left:1.5px solid var(--ds-on-primary);border-bottom:1.5px solid var(--ds-on-primary);transform:rotate(-45deg) translate(0,-1px)}
+.tree-indent-1{padding-left:18px} .tree-indent-2{padding-left:34px} .tree-indent-3{padding-left:50px}
+.appshell .sidebar-footer{border-top:1px solid var(--ds-outline-variant);padding:8px 10px;font-size:10.5px;color:var(--ds-on-surface-variant)}
+
+/* 중앙: 대화 스레드 */
+.appshell .chat-col{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
+.appshell .chat-thread{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px}
+.msg{display:flex;gap:9px;max-width:82%}
+.msg.user{align-self:flex-end;flex-direction:row-reverse}
+.msg.agent{align-self:flex-start}
+.msg .avatar{width:26px;height:26px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:14px}
+.msg.user .avatar{background:var(--ds-primary);color:var(--ds-on-primary)}
+.msg.agent .avatar{background:var(--ds-secondary-container);color:var(--ds-on-secondary-container)}
+.msg .bubble{border-radius:14px;padding:10px 13px;font-size:12.5px;line-height:1.6}
+.msg.user .bubble{background:var(--ds-primary-container);color:var(--ds-on-primary-container);border-bottom-right-radius:4px}
+.msg.agent .bubble{background:var(--ds-surface-container);color:var(--ds-on-surface);border:1px solid var(--ds-outline-variant);border-bottom-left-radius:4px}
+.msg .meta{font-size:10px;color:var(--ds-on-surface-variant);margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.msg .chip{display:inline-flex;align-items:center;gap:4px;background:var(--ds-surface-container-high);border:1px solid var(--ds-outline-variant);border-radius:999px;padding:3px 9px;font-size:10.5px;margin-top:6px}
+.msg .chip .msym{font-size:13px}
+.msg .log-excerpt{margin-top:8px;background:var(--ds-inverse-surface);color:var(--ds-inverse-on-surface);border-radius:8px;padding:8px 10px;font-family:var(--ds-font-mono);font-size:10px;line-height:1.6;white-space:pre-wrap}
+
+/* 드래그 오버 오버레이 */
+.dropzone{position:absolute;inset:0;background:color-mix(in srgb, var(--ds-primary) 10%, transparent);border:2.5px dashed var(--ds-primary);border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--ds-primary);font-size:13px;font-weight:700;backdrop-filter:blur(1px)}
+.dropzone .msym{font-size:34px}
+
+/* 하단 입력창(composer) */
+.appshell .composer{flex:none;border-top:1px solid var(--ds-outline-variant);padding:10px 14px 12px;display:flex;flex-direction:column;gap:8px;background:var(--ds-surface-container-lowest)}
+.appshell .composer-attachments{display:flex;gap:6px;flex-wrap:wrap}
+.appshell .composer-row{display:flex;align-items:flex-end;gap:8px}
+.appshell .composer-iconbtn{width:32px;height:32px;border-radius:8px;border:1px solid var(--ds-outline-variant);background:var(--ds-surface);display:flex;align-items:center;justify-content:center;flex:none;color:var(--ds-on-surface-variant)}
+.appshell .composer-input{flex:1;min-height:36px;max-height:90px;background:var(--ds-surface);border:1px solid var(--ds-outline-variant);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--ds-on-surface-variant)}
+.appshell .composer-meta{display:flex;gap:6px;align-items:center;font-size:10.5px}
+.appshell .composer-meta .combo{padding:4px 8px;font-size:10.5px}
+.appshell .send{width:36px;height:36px;border-radius:10px;background:var(--ds-primary);color:var(--ds-on-primary);display:flex;align-items:center;justify-content:center;flex:none}
+.appshell .send.disabled{opacity:.4}
+
+/* 우측 히스토리 드로어 */
+.history-drawer{position:absolute;top:0;right:0;bottom:0;width:280px;background:var(--ds-surface-container-lowest);border-left:1px solid var(--ds-outline-variant);box-shadow:var(--ds-elev-3);display:flex;flex-direction:column;z-index:5}
+.history-drawer .hd-h{padding:12px 14px;border-bottom:1px solid var(--ds-outline-variant);font-size:12.5px;font-weight:700;display:flex;align-items:center;justify-content:space-between}
+.history-drawer .hd-list{flex:1;overflow-y:auto;padding:8px}
+.hd-group{display:flex;align-items:center;gap:6px;padding:10px 8px 4px;font-size:10.5px;font-weight:700;color:var(--ds-on-surface-variant);text-transform:uppercase;letter-spacing:.02em}
+.hd-group .msym{font-size:14px}
+.hd-group .cnt{margin-left:auto;background:var(--ds-surface-container-high);border-radius:999px;padding:1px 7px;font-weight:700;text-transform:none;letter-spacing:0}
+.history-item{padding:9px 10px;border-radius:8px;margin-bottom:4px;cursor:default}
+.history-item:hover{background:var(--ds-surface-container)}
+.history-item.sel{background:var(--ds-secondary-container)}
+.history-item .hi-top{display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:700}
+.history-item .hi-task{font-size:10.5px;color:var(--ds-on-surface-variant);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scrim{position:absolute;inset:0;background:rgba(0,0,0,.25);z-index:4}
+
+footer.ds{font-size:12px;color:var(--ds-on-surface-variant);line-height:1.7;border-top:1px solid var(--ds-outline-variant);padding-top:16px;margin-top:6px}

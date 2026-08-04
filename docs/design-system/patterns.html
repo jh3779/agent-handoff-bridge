@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Handoff Bridge DS · 3 상태 패턴 · 접근성</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <span class="brand">Agent Handoff Bridge DS <span class="mono" style="font-size:11px;font-weight:500">v0.2</span></span>
+  <a href="design-system.html">1 · 원칙 &amp; 파운데이션</a>
+  <a href="components.html">2 · 컴포넌트</a>
+  <span class="cur">3 · 상태 패턴 · 접근성</span>
+  <a href="flutter-mapping.html">4 · 구현 매핑</a>
+  <a href="wireframes.html">5 · 화면 · 와이어프레임</a>
+  <span class="spacer"></span>
+  <button data-theme-toggle>◐ 테마</button>
+</nav>
+
+<div class="wrap">
+
+  <header class="pagehead">
+    <div class="t">상태 패턴 · 접근성</div>
+    <div class="s">provider 실행 1회의 실제 상태 전이(<code>classify_handoff()</code>)를 화면 상태로 옮긴다. 정본: <code>docs/shared-agent-contract.md</code> · <code>docs/security-model.md</code></div>
+    <div class="toc">
+      <a href="#s1">상태 전이도</a><a href="#s2">실행 상태 5종</a><a href="#s3">빈 상태</a>
+      <a href="#s4">비용/파괴 행동 확인</a><a href="#s5">접근성</a>
+    </div>
+  </header>
+
+  <section id="s1" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">1</span><span class="sec-t">Run 상태 전이도</span><span class="tag">handoff_bridge.py run_provider() 실제 로직</span></div>
+    <div class="note" style="font-family:var(--ds-font-mono);font-size:11.5px;line-height:2;white-space:pre-wrap">대기(idle)
+  └─ Preview 클릭 → 로그에 커맨드만 출력, 상태 변화 없음 (토큰 미사용)
+  └─ Execute 클릭 → 확인 다이얼로그
+       └─ 취소 → 대기로 복귀
+       └─ 확인 → 실행 중(busy, 모든 버튼 비활성)
+            └─ provider 종료
+                 ├─ exit 0 & 오류 신호 없음 → 완료 · 핸드오프 불필요 (success)
+                 ├─ quota/rate_limit/auth/billing/context_limit/overloaded 신호 매칭 → 핸드오프 필요 (amber)
+                 │     └─ auto-fallback 켜짐 → 즉시 다른 provider로 재귀 실행 → 실행 중으로 복귀
+                 │     └─ auto-fallback 꺼짐 → next-prompt.md 생성, 대기로 복귀(사람이 모바일/다른 CLI로 이어감)
+                 └─ tool_failure/unknown (exit≠0, 미분류) → 실패 (fail)</div>
+    <div class="tag" style="margin-top:8px">근거: handoff_bridge.py:588-791 run_provider(), classify_handoff()</div>
+  </section>
+
+  <section id="s2" class="sec">
+    <div class="sec-h"><span class="sec-num">2</span><span class="sec-t">실행 상태 5종 — 로그 미리보기</span></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
+      <div class="card pad">
+        <span class="badge" style="background:var(--ds-st-idle-bg);color:var(--ds-st-idle-fg)">대기</span>
+        <div class="log" style="margin-top:8px;min-height:auto">Preview mode: no provider was invoked and no tokens were spent.
+Add --execute to run it.</div>
+      </div>
+      <div class="card pad">
+        <span class="badge" style="background:var(--ds-st-busy-bg);color:var(--ds-st-busy-fg)"><span class="spin" style="border-top-color:var(--ds-st-busy-fg);border-color:rgba(0,0,0,.2)"></span>실행 중</span>
+        <div class="log" style="margin-top:8px;min-height:auto">Running codex; logs will be written to .handoff/runs/20260803T140512Z-codex</div>
+      </div>
+      <div class="card pad">
+        <span class="badge" style="background:var(--ds-st-success-bg);color:var(--ds-st-success-fg)">완료</span>
+        <div class="log" style="margin-top:8px;min-height:auto">codex exit code: 0
+handoff needed: False (none: no handoff signal detected)</div>
+      </div>
+      <div class="card pad">
+        <span class="badge" style="background:var(--ds-st-handoff-bg);color:var(--ds-st-handoff-fg)">핸드오프 필요</span>
+        <div class="log" style="margin-top:8px;min-height:auto">codex exit code: 1
+handoff needed: True (rate_limit: matched rate_limit signal)
+Next prompt written to: .handoff/next-prompt.md</div>
+      </div>
+      <div class="card pad">
+        <span class="badge" style="background:var(--ds-st-fail-bg);color:var(--ds-st-fail-fg)">실패</span>
+        <div class="log" style="margin-top:8px;min-height:auto">codex exit code: 127
+handoff needed: True (tool_failure: provider command not found)</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="s3" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">3</span><span class="sec-t">빈 상태</span><span class="tag">아직 아무 작업도 시작 안 함</span></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+      <div>
+        <div style="font-size:13px;font-weight:700">최초 실행 (install 전)</div>
+        <div class="log" style="margin-top:8px;min-height:auto">Agent Handoff Bridge desktop controller on Darwin.
+Select a workspace, install support files, then initialize or continue a task.</div>
+        <div class="note" style="margin-top:6px">빈 화면 대신 다음 행동을 문장으로 안내 — 별도 빈 상태 일러스트 없음(도구 성격상 불필요).</div>
+      </div>
+      <div>
+        <div style="font-size:13px;font-weight:700">"Open Packet" 클릭했는데 파일이 없음</div>
+        <div class="card pad" style="margin-top:8px"><div style="font-size:12px;font-weight:700">Missing file</div><div class="note" style="margin-top:4px">/path/.handoff/current.md does not exist yet.</div></div>
+        <div class="tag" style="margin-top:6px">handoff_desktop.py:271</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="s4" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">4</span><span class="sec-t">비용이 드는 행동 확인 패턴</span><span class="tag">파괴 행동 규칙 적용</span></div>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start">
+      <div class="dwin modal-overlay" style="width:360px">
+        <div class="modal">
+          <div class="card pad">
+            <div style="font-size:14px;font-weight:700;display:flex;align-items:center;gap:6px"><span class="msym" style="color:var(--ds-tertiary)">bolt</span>Execute provider</div>
+            <div class="note" style="margin-top:8px">This may spend provider tokens. Continue?</div>
+            <div class="row" style="justify-content:flex-end;margin-top:14px;gap:8px">
+              <div class="dbtn">Cancel</div>
+              <div class="dbtn" style="border-color:var(--ds-error);color:var(--ds-error)">Continue</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="note" style="max-width:320px">
+        <b>규칙</b>: 결과가 되돌릴 수 없거나(토큰 소비) 비용이 드는 행동은 outlined 스타일 + 확인 다이얼로그를 거친다. filled(강조) 금지, 기본 포커스는 안전한 선택지(Cancel).<br><br>
+        원격 서버의 <code>--allow-execute</code>도 동일 원칙 — 기본값은 항상 preview-only(<code>docs/security-model.md</code> "Default Safety Properties").
+      </div>
+    </div>
+    <div class="note" style="margin-top:12px"><b>v0.2 재설계 결정 (DEC-02)</b>: 채팅형 화면(<a href="wireframes.html#s3">SCR-01</a>)의 send 버튼은 <b>세션당 첫 전송만 확인 다이얼로그를 거치고, 이후로는 같은 세션 안에서 즉시 실행</b>된다 — v0.1의 "매번 확인"과 "확인 전혀 없음" 사이의 절충으로 2026-08-04 인터뷰에서 결정됨. 상세: <a href="flutter-mapping.html#s1c">구현 매핑 §1c 결정 기록</a>.</div>
+  </section>
+
+  <section id="s5" class="sec">
+    <div class="sec-h"><span class="sec-num">5</span><span class="sec-t">접근성</span><span class="tag">데스크톱 keyboard·screen reader 기준으로 재해석</span></div>
+    <div class="tblwrap">
+      <table>
+        <tr><th>항목</th><th>기준</th><th>현재 구현 메모</th></tr>
+        <tr><td>포커스 순서</td><td>Tab 이동이 시각적 순서(Workspace → Target → Task/Prompt → Actions → Output)와 일치</td><td>ttk grid 배치 순서와 위젯 생성 순서가 대체로 일치(자동 tab order) — 별도 검증 안 됨</td></tr>
+        <tr><td>포커스 시각화</td><td>키보드 포커스가 항상 시각적으로 구분됨</td><td>OS 네이티브 ttk 포커스 링에 의존 — 별도 커스텀 없음</td></tr>
+        <tr><td>아이콘 단독 버튼</td><td>접근성 이름 필수</td><td>해당 없음 — 모든 버튼이 텍스트 라벨을 가짐(아이콘 전용 버튼 없음)</td></tr>
+        <tr><td>색 대비</td><td>텍스트 4.5:1 이상</td><td>Bridge Indigo 라이트/다크 모두 WCAG AA 목표로 조정. 실제 tkinter 앱은 OS 테마 상속 — 이 문서의 색 토큰은 <i>제안</i>이지 현재 구현 값이 아님</td></tr>
+        <tr><td>오류 위치</td><td>오류는 토스트가 아니라 필드/행동에 인접</td><td>messagebox 모달로 항상 표시 — 토스트 없음(부합). 단, provider 실행 실패는 모달이 아니라 로그 append(의도적, S2 참조)</td></tr>
+        <tr><td>로그 가독성</td><td>결과를 선택·복사 가능해야 함</td><td>ScrolledText는 기본적으로 텍스트 선택/복사 가능 — 부합</td></tr>
+        <tr><td>상태 이중 부호화</td><td>색만으로 상태 구분 금지</td><td>현재는 색 배지 자체가 없고 텍스트 문장으로만 표시되어 오히려 이중부호화는 자연히 지켜짐 — 배지를 도입할 경우 아이콘+텍스트 필수(컴포넌트 §3)</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <footer class="ds">이전 <a href="components.html">2 · 컴포넌트</a> · 다음 → <a href="flutter-mapping.html">4 · 구현 매핑</a></footer>
+</div>
+
+<script src="ds.js"></script>
+</body>
+</html>

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Handoff Bridge DS · 1 원칙 &amp; 파운데이션</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <span class="brand">Agent Handoff Bridge DS <span class="mono" style="font-size:11px;font-weight:500">v0.2</span></span>
+  <span class="cur">1 · 원칙 &amp; 파운데이션</span>
+  <a href="components.html">2 · 컴포넌트</a>
+  <a href="patterns.html">3 · 상태 패턴 · 접근성</a>
+  <a href="flutter-mapping.html">4 · 구현 매핑</a>
+  <a href="wireframes.html">5 · 화면 · 와이어프레임</a>
+  <span class="spacer"></span>
+  <button data-theme-toggle>◐ 테마</button>
+</nav>
+
+<div class="wrap">
+
+  <header class="pagehead">
+    <div class="t">원칙 &amp; 파운데이션</div>
+    <div class="s">이 문서는 시각 토큰·컴포넌트·상태 표현·화면 흐름만 소유한다. 동작 정본:
+      <code>docs/architecture.md</code> · <code>docs/shared-agent-contract.md</code> ·
+      <code>docs/security-model.md</code></div>
+    <div class="toc">
+      <a href="#s1">원칙</a><a href="#s2">색</a><a href="#s3">타이포그래피</a>
+      <a href="#s4">간격 · 모양 · 고도</a><a href="#s5">모션</a>
+    </div>
+  </header>
+
+  <section id="s1" class="sec">
+    <div class="sec-h"><span class="sec-num">1</span><span class="sec-t">디자인 원칙</span><span class="muted" style="font-size:11.5px">이 프로젝트의 실제 동작 규칙에서 도출</span></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr))">
+      <div class="card pad">
+        <div style="display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700"><span class="msym" style="font-size:20px;color:var(--ds-primary)">visibility</span>토큰을 쓰기 전엔 항상 미리보기</div>
+        <div class="note" style="margin-top:8px">Preview는 기본값, 실행(Execute)은 항상 명시적 동의. <code>--execute</code> 없이는 provider를 호출하지 않는다.</div>
+        <div class="tag" style="margin-top:10px">근거: handoff_bridge.py run_provider() · docs/security-model.md "Default Safety Properties"</div>
+      </div>
+      <div class="card pad">
+        <div style="display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700"><span class="msym" style="font-size:20px;color:var(--ds-primary)">fact_check</span>정직한 상태</div>
+        <div class="note" style="margin-top:8px">완료 전 성공을 미리 보여주지 않는다. 실패는 실패라고 말하고 원인 라벨(quota/rate_limit/auth/…)과 다음 행동을 함께 보여준다.</div>
+        <div class="tag" style="margin-top:10px">근거: handoff_bridge.py classify_handoff() · docs/shared-agent-contract.md</div>
+      </div>
+      <div class="card pad">
+        <div style="display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700"><span class="msym" style="font-size:20px;color:var(--ds-primary)">description</span>파일이 화면보다 정본</div>
+        <div class="note" style="margin-top:8px">GUI/터미널은 <code>.handoff/current.md</code>·<code>.handoff/state.json</code>의 얇은 창일 뿐이다. 화면에 없는 정보는 "Open Packet"으로 실제 파일을 연다.</div>
+        <div class="tag" style="margin-top:10px">근거: docs/architecture.md "State Boundaries"</div>
+      </div>
+      <div class="card pad">
+        <div style="display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700"><span class="msym" style="font-size:20px;color:var(--ds-error)">warning</span>비용이 드는 행동은 확인을 거친다</div>
+        <div class="note" style="margin-top:8px">Execute와 원격 서버의 <code>--allow-execute</code>는 토큰을 소비하거나 외부 실행을 여는 행동이라 confirm 다이얼로그를 거친다. 기본 포커스는 취소.</div>
+        <div class="tag" style="margin-top:10px">근거: handoff_desktop.py:254 execute_run() · docs/security-model.md</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="s2" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">C-01</span><span class="sec-t">색 — "Bridge Indigo" / "Signal Amber"</span><span class="tag">tertiary는 핸드오프 신호 한 곳에만</span></div>
+    <div class="note">Primary는 이 도구의 중립적 "브릿지" 정체성. Tertiary(amber)는 오직 <b>핸드오프 필요</b> 상태 하나에만 격리해서 쓴다 — 다른 곳에 쓰면 신호가 무뎌진다.</div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-top:6px">
+      <div><div style="height:56px;border-radius:10px;background:var(--ds-primary);display:flex;align-items:center;justify-content:center;color:var(--ds-on-primary);font-size:12px;font-weight:700">primary</div><div class="tag" style="margin-top:4px">기본 행동 · 브랜드</div></div>
+      <div><div style="height:56px;border-radius:10px;background:var(--ds-secondary);display:flex;align-items:center;justify-content:center;color:var(--ds-on-secondary);font-size:12px;font-weight:700">secondary</div><div class="tag" style="margin-top:4px">보조 UI</div></div>
+      <div><div style="height:56px;border-radius:10px;background:var(--ds-tertiary);display:flex;align-items:center;justify-content:center;color:var(--ds-on-tertiary);font-size:12px;font-weight:700">tertiary</div><div class="tag" style="margin-top:4px">핸드오프 신호 전용</div></div>
+      <div><div style="height:56px;border-radius:10px;background:var(--ds-error);display:flex;align-items:center;justify-content:center;color:var(--ds-on-error);font-size:12px;font-weight:700">error</div><div class="tag" style="margin-top:4px">실패 · 파괴 행동</div></div>
+    </div>
+    <div class="note" style="margin-top:14px">도메인 상태색 (실행 결과 5종 — <code>classify_handoff()</code>의 실제 반환값과 1:1 대응):</div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+      <div><div style="height:44px;border-radius:999px;background:var(--ds-st-idle-bg);color:var(--ds-st-idle-fg);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">대기 idle</div></div>
+      <div><div style="height:44px;border-radius:999px;background:var(--ds-st-busy-bg);color:var(--ds-st-busy-fg);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">실행 중 busy</div></div>
+      <div><div style="height:44px;border-radius:999px;background:var(--ds-st-success-bg);color:var(--ds-st-success-fg);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">완료 none</div></div>
+      <div><div style="height:44px;border-radius:999px;background:var(--ds-st-handoff-bg);color:var(--ds-st-handoff-fg);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">핸드오프 필요</div></div>
+      <div><div style="height:44px;border-radius:999px;background:var(--ds-st-fail-bg);color:var(--ds-st-fail-fg);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700">실패 tool_failure 등</div></div>
+    </div>
+    <div class="tag" style="margin-top:8px">근거: handoff_bridge.py:34-43 HANDOFF_LABELS, classify_handoff() 반환 라벨</div>
+  </section>
+
+  <section id="s3" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">C-02</span><span class="sec-t">타이포그래피</span><span class="tag">Pretendard + Roboto Mono</span></div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:24px">
+      <div>
+        <div style="font-size:22px;font-weight:700">본문 · 라벨 (Pretendard)</div>
+        <div class="note" style="margin-top:6px">화면 라벨, 버튼 텍스트, 다이얼로그 문구, 문서 산문. 강조는 <b style="font-weight:600">SemiBold 600</b> — 한글 Medium 500은 변별력이 약하다.</div>
+      </div>
+      <div>
+        <div class="mono" style="font-size:22px;font-weight:700">데이터 · 로그 (Roboto Mono)</div>
+        <div class="note mono" style="margin-top:6px">세션 ID, 종료 코드, 워크스페이스 경로, 모델 문자열, provider 커맨드, Output 로그 전체. 자간이 흔들리지 않아야 로그를 눈으로 훑기 쉽다.</div>
+      </div>
+    </div>
+    <div class="tblwrap" style="margin-top:6px">
+      <table>
+        <tr><th>용도</th><th>서체</th><th>실제 예</th></tr>
+        <tr><td>패널 제목 (Workspace/Target/Actions/Output)</td><td>Pretendard SemiBold 12px</td><td>WORKSPACE</td></tr>
+        <tr><td>버튼 라벨</td><td>Pretendard SemiBold 14px</td><td>Execute</td></tr>
+        <tr><td>Output 로그, 커맨드 에코</td><td class="mono">Roboto Mono 11–12px</td><td class="mono">$ python3 handoff_bridge.py run auto --execute</td></tr>
+        <tr><td>Exit code · Handoff 라벨</td><td class="mono">Roboto Mono 11px</td><td class="mono">handoff needed: True (tool_failure: exit 127)</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section id="s4" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">C-03</span><span class="sec-t">간격 · 모양 · 고도</span></div>
+    <div class="note">데스크톱 창 내부 패널 간격은 8–12px (실제 <code>ttk</code> grid padx/pady 8을 그대로 반영). 라운드는 패널 8px · 버튼 pill · 다이얼로그 12px. 고도는 다이얼로그·오버레이에만 (elev-2/3) — 상시 떠 있는 패널에는 그림자를 쓰지 않는다(데스크톱 창은 이미 창 자체가 최상위).</div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(120px,1fr));margin-top:10px">
+      <div class="card pad" style="box-shadow:var(--ds-elev-1)"><div class="tag">elev-1</div><div class="note">버튼 hover</div></div>
+      <div class="card pad" style="box-shadow:var(--ds-elev-2)"><div class="tag">elev-2</div><div class="note">데스크톱 창 자체</div></div>
+      <div class="card pad" style="box-shadow:var(--ds-elev-3)"><div class="tag">elev-3</div><div class="note">확인 다이얼로그</div></div>
+    </div>
+  </section>
+
+  <section id="s5" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">C-04</span><span class="sec-t">모션</span><span class="tag">현재 구현 vs 권장</span></div>
+    <div class="tblwrap">
+      <table>
+        <tr><th>상황</th><th>현재 구현</th><th>권장</th></tr>
+        <tr><td>Provider 실행 중</td><td>버튼 전체 disable만 (<code class="mono">set_busy(True)</code>)</td><td>버튼 disable + 스피너 배지로 "무엇이 실행 중인지" 이중 신호 — <a href="patterns.html#s2">패턴 3 참조</a></td></tr>
+        <tr><td>로그 갱신</td><td>ScrolledText에 append 후 <code class="mono">see("end")</code>로 자동 스크롤</td><td>유지 — 로그는 최신이 항상 보이는 편이 맞다</td></tr>
+        <tr><td>테마 전환(본 문서)</td><td>즉시 전환, transition 없음</td><td>즉시 전환 유지 (모션보다 즉시성이 중요한 도구 문서)</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <footer class="ds">다음 → <a href="components.html">2 · 컴포넌트</a></footer>
+</div>
+
+<script src="ds.js"></script>
+</body>
+</html>
