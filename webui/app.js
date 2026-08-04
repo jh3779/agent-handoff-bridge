@@ -41,6 +41,11 @@
   // duplicate an already-persisted agent message (server-side backstop:
   // handoff_webui.RunAlreadyInProgressError).
   let runInFlight = false;
+  // Phase 2 (SCR-05, DEC-04~07): AppState.workspace can be null server-side
+  // until the first message auto-creates one. Mirrors that so the UI knows
+  // whether to show the "no workspace" card and which composer placeholder
+  // to use, without re-fetching /api/info on every keystroke.
+  let hasWorkspace = true;
 
   const STATUS_LABEL = { success: "완료", handoff: "핸드오프 필요", fail: "실패" };
   const STATUS_ICON = { success: "✅", handoff: "🔀", fail: "⚠️" };
@@ -89,10 +94,18 @@
 
   // ---------- workspace label + open folder ----------
 
+  function updateComposerPlaceholder() {
+    composerInput.placeholder = hasWorkspace
+      ? "메시지를 입력하세요…"
+      : "메시지를 입력하면 자동으로 폴더가 만들어집니다…";
+  }
+
   function refreshWorkspaceLabel() {
     return fetchJSON("/api/info").then((info) => {
-      workspaceLabel.textContent = info.name;
-      openFolderBtn.title = info.workspace;
+      hasWorkspace = info.workspace !== null;
+      workspaceLabel.textContent = hasWorkspace ? info.name : "워크스페이스 없음";
+      openFolderBtn.title = hasWorkspace ? info.workspace : "워크스페이스 없음";
+      updateComposerPlaceholder();
       return info;
     });
   }
@@ -121,7 +134,11 @@
     folderPromptOverlay.classList.remove("show");
   }
 
-  openFolderBtn.addEventListener("click", async () => {
+  // Shared by the titlebar Open Folder button and the "폴더 직접 선택…"
+  // button in the no-workspace card (SCR-05) -- exactly one code path
+  // picks a folder, same invariant AppState/Api's docstring already
+  // establishes for switching one.
+  async function pickFolder() {
     if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) {
       // Native app window: real OS folder picker via the pywebview JS bridge.
       let chosen;
@@ -136,7 +153,8 @@
     }
     // Plain browser tab: no native folder dialog available -- ask for a path.
     openFolderPrompt();
-  });
+  }
+  openFolderBtn.addEventListener("click", pickFolder);
 
   folderPromptCancel.addEventListener("click", closeFolderPrompt);
   folderPromptOverlay.addEventListener("click", (e) => {
@@ -309,8 +327,11 @@
   // ---------- chat thread rendering (shared by history load + live send) ----------
 
   function clearChatEmptyState() {
-    const emptyState = chatThread.querySelector(".chat-empty");
-    if (emptyState) emptyState.remove();
+    // Also strips the no-workspace card (SCR-05): once a real message
+    // renders, that placeholder is stale regardless of which one was
+    // showing.
+    const placeholder = chatThread.querySelector(".chat-empty, .no-workspace-card");
+    if (placeholder) placeholder.remove();
   }
 
   function showChatEmptyState() {
@@ -320,6 +341,31 @@
         document.createTextNode("아직 메시지가 없습니다."),
         el("br", {}, []),
         document.createTextNode("왼쪽에서 파일을 클릭하거나, 이 영역에 파일을 드래그해서 놓아보세요."),
+      ])
+    );
+  }
+
+  // SCR-05 (docs/design-system/wireframes.html#s7): AppState.workspace is
+  // None. DEC-05 -- "새 폴더 자동 생성" doesn't create anything itself, it
+  // just nudges focus to the composer, since the actual creation is
+  // deferred to whichever message gets sent first regardless of which
+  // button (if either) was clicked.
+  function showNoWorkspaceState() {
+    chatThread.innerHTML = "";
+    const autoBtn = el("button", { type: "button", class: "primary", text: "새 폴더 자동 생성" }, []);
+    autoBtn.addEventListener("click", () => composerInput.focus());
+    const pickBtn = el("button", { type: "button", text: "폴더 직접 선택…" }, []);
+    pickBtn.addEventListener("click", pickFolder);
+    chatThread.appendChild(
+      el("div", { class: "no-workspace-card" }, [
+        el("div", { class: "nw-icon", text: "📂" }, []),
+        el("div", { class: "nw-title", text: "작업할 폴더가 아직 없습니다" }, []),
+        el("div", { class: "nw-note", text: "기존 폴더를 고르거나, 새 프로젝트 폴더를 자동으로 만들 수 있습니다." }, []),
+        el("div", { class: "nw-actions" }, [autoBtn, pickBtn]),
+        el("div", { class: "nw-path" }, [
+          document.createTextNode("자동 생성 위치: "),
+          el("span", { class: "mono", text: "~/Documents/Agent Handoff Bridge/" }, []),
+        ]),
       ])
     );
   }
@@ -461,8 +507,17 @@
     renderAttachments();
     updateSendState();
 
+    const workspaceWasMissing = !hasWorkspace;
     try {
       await postJSON("/api/chat", userMessage);
+      if (workspaceWasMissing) {
+        // SCR-05: this /api/chat call is what just auto-created the
+        // workspace server-side (handoff_webui.create_workspace_for_first_message())
+        // -- bring the titlebar and file tree up to date with it before the
+        // provider call that's about to follow.
+        await refreshWorkspaceLabel();
+        await renderTree(treeEl, "");
+      }
     } catch (err) {
       showToast(`대화 기록 저장 실패(화면에는 남아있음): ${err.message}`);
     }
@@ -488,7 +543,22 @@
 
   // ---------- boot ----------
 
-  refreshWorkspaceLabel().catch(() => { workspaceLabel.textContent = "workspace"; });
-  renderTree(treeEl, "");
-  loadChatHistory();
+  async function boot() {
+    let info;
+    try {
+      info = await refreshWorkspaceLabel();
+    } catch {
+      workspaceLabel.textContent = "workspace";
+      return;
+    }
+    if (info.workspace === null) {
+      // SCR-05: nothing to browse or load yet -- the tree/chat GET
+      // endpoints would just return empty results anyway, so skip them.
+      showNoWorkspaceState();
+      return;
+    }
+    await renderTree(treeEl, "");
+    await loadChatHistory();
+  }
+  boot();
 })();

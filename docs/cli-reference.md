@@ -182,9 +182,24 @@ python3 handoff_webui.py --workspace /path/to/project
 ```
 
 Chat redesign from [`docs/design-system/`](design-system/README.md) — as of
-Phase 1, this actually calls Codex/Claude. A local stdlib HTTP server. What
-it does:
+Phase 1, this actually calls Codex/Claude; as of Phase 2, `--workspace` is
+optional. A local stdlib HTTP server. What it does:
 
+- **`--workspace` is optional.** Omit it and the current directory is used
+  automatically *if* it's already an initialized handoff workspace (has a
+  `.handoff/` dir) — otherwise the server starts in the "no workspace"
+  state (`AppState.workspace = None`) instead of assuming an arbitrary cwd
+  (e.g. wherever a launcher happened to be double-clicked from) is the
+  intended project. In that state, sending the first message (or an
+  attachments-only send) auto-creates
+  `~/Documents/Agent Handoff Bridge/<date>-<slug>/` and scaffolds it
+  exactly like a manually-picked folder (`handoff_bridge.py init`, which
+  installs the standard files too) — see
+  [`design-system/wireframes.html#s7`](design-system/wireframes.html#s7)
+  (SCR-05) and [DEC-04~07](design-system/flutter-mapping.html#s1c) for the
+  exact rules (folder-naming, collision handling, why no confirmation
+  dialog). An **explicitly** wrong `--workspace` path still fails loudly
+  as before — auto-create only ever applies to the no-flag default.
 - Serves a page with a workspace file-tree sidebar and a chat-style composer.
 - Lets you click a file in the tree, or drag a file onto the chat area, to
   attach it to the draft message. Attachments are folded into the actual

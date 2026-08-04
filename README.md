@@ -56,12 +56,14 @@ launchers\windows\handoff-bridge.cmd
 ```
 
 Try the v0.2 chat-style redesign (file browsing, drag/click attaching,
-VS Code-style Open Folder, local per-folder chat history, and — as of
-Phase 1 — real Codex/Claude calls with auto-fallback):
+VS Code-style Open Folder, local per-folder chat history, real Codex/Claude
+calls with auto-fallback since Phase 1, and — as of Phase 2 — `--workspace`
+is optional, auto-creating a folder under `~/Documents/Agent Handoff
+Bridge/` from your first message if you don't pick one):
 
 ```bash
 pip install pywebview   # optional, for a real app window instead of a browser tab
-python3 handoff_webui.py --workspace /path/to/project
+python3 handoff_webui.py --workspace /path/to/project   # or omit --workspace entirely
 ```
 
 Opens as a native app window (falls back to a browser tab automatically if

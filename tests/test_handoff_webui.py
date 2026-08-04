@@ -313,6 +313,299 @@ class ValidateWorkspaceCandidateTests(unittest.TestCase):
                 webui.validate_workspace_candidate(str(file_path))
 
 
+class HasHandoffMarkerTests(unittest.TestCase):
+    def test_true_when_dot_handoff_dir_exists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".handoff").mkdir()
+            self.assertTrue(webui.has_handoff_marker(root))
+
+    def test_false_when_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(webui.has_handoff_marker(Path(tmp)))
+
+    def test_false_when_dot_handoff_is_a_file_not_a_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".handoff").write_text("not a dir", encoding="utf-8")
+            self.assertFalse(webui.has_handoff_marker(root))
+
+
+class ResolveStartupWorkspaceTests(unittest.TestCase):
+    def test_explicit_valid_path_resolves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace, error = webui.resolve_startup_workspace(tmp, Path("/irrelevant"))
+            self.assertIsNone(error)
+            self.assertEqual(workspace, Path(tmp).resolve())
+
+    def test_explicit_invalid_path_is_an_error_not_auto_create(self):
+        # DEC-04: an explicit --workspace typo must fail loudly, never
+        # silently fall into the "no workspace" auto-create flow -- an
+        # explicit path means the user is confident about where they meant
+        # to point.
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist"
+            workspace, error = webui.resolve_startup_workspace(str(missing), Path("/irrelevant"))
+            self.assertIsNone(workspace)
+            self.assertIsNotNone(error)
+            self.assertIn("does not exist", error)
+
+    def test_no_arg_with_initialized_cwd_resolves_to_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            (cwd / ".handoff").mkdir()
+            workspace, error = webui.resolve_startup_workspace(None, cwd)
+            self.assertIsNone(error)
+            self.assertEqual(workspace, cwd.resolve())
+
+    def test_no_arg_with_uninitialized_cwd_returns_no_workspace_not_an_error(self):
+        # 2026-08-04 DEC-04 revision: "cwd invalid" barely ever happens (a
+        # running process's cwd essentially always exists), which would
+        # make the whole Phase 2 flow unreachable in practice -- the real
+        # condition is "not yet an initialized handoff workspace".
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)  # no .handoff/ -- e.g. launcher double-clicked from Downloads
+            workspace, error = webui.resolve_startup_workspace(None, cwd)
+            self.assertIsNone(workspace)
+            self.assertIsNone(error)
+
+
+class SlugifyForFolderNameTests(unittest.TestCase):
+    def test_ascii_text_becomes_hyphenated_slug(self):
+        self.assertEqual(webui.slugify_for_folder_name("Fix the deploy script"), "Fix-the-deploy-script")
+
+    def test_korean_text_is_preserved(self):
+        # DEC-05's whole point: unlike a typical ASCII-only slugify library
+        # that would strip/transliterate this to nothing, \w is
+        # Unicode-aware and keeps Hangul -- matching the wireframe's own
+        # example folder name.
+        slug = webui.slugify_for_folder_name("배포 스크립트에 있는 버그를 점검해줘.")
+        self.assertEqual(slug, "배포-스크립트에-있는-버그를-점검해줘")
+
+    def test_empty_text_becomes_untitled(self):
+        self.assertEqual(webui.slugify_for_folder_name(""), "untitled")
+
+    def test_whitespace_only_becomes_untitled(self):
+        self.assertEqual(webui.slugify_for_folder_name("   \n\t  "), "untitled")
+
+    def test_punctuation_only_becomes_untitled(self):
+        self.assertEqual(webui.slugify_for_folder_name("... !!! ???"), "untitled")
+
+    def test_long_text_is_truncated_to_max_length(self):
+        slug = webui.slugify_for_folder_name("word " * 30)
+        self.assertLessEqual(len(slug), webui.MAX_SLUG_LENGTH)
+        self.assertFalse(slug.endswith("-"))
+
+
+class BuildAutoWorkspaceNameTests(unittest.TestCase):
+    def test_uses_text_when_present(self):
+        now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+        name = webui.build_auto_workspace_name("Fix bug", [], now)
+        self.assertEqual(name, "2026-08-04-Fix-bug")
+
+    def test_falls_back_to_attachment_name_when_no_text(self):
+        now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+        name = webui.build_auto_workspace_name("", [{"name": "report.pdf"}], now)
+        self.assertEqual(name, "2026-08-04-report-pdf")
+
+    def test_falls_back_to_untitled_when_neither_text_nor_attachments(self):
+        now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+        name = webui.build_auto_workspace_name("", [], now)
+        self.assertEqual(name, "2026-08-04-untitled")
+
+
+class ResolveTaskForFirstMessageTests(unittest.TestCase):
+    def test_uses_text_when_present(self):
+        self.assertEqual(webui.resolve_task_for_first_message("Fix bug", []), "Fix bug")
+
+    def test_attachments_only_produces_a_meaningful_task_not_a_generic_placeholder(self):
+        # Regression: the folder name already fell back to the attachment's
+        # name (build_auto_workspace_name), but state.json's task -- which
+        # feeds every future prompt's "## Task" section -- used to ignore
+        # that and always record the generic placeholder for an
+        # attachments-only first message.
+        task = webui.resolve_task_for_first_message("", [{"name": "report.pdf"}])
+        self.assertIn("report.pdf", task)
+        self.assertNotEqual(task, "Continue the current handoff task.")
+
+    def test_falls_back_to_placeholder_when_neither_text_nor_attachments(self):
+        self.assertEqual(webui.resolve_task_for_first_message("", []), "Continue the current handoff task.")
+
+
+class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
+    """AUTO_WORKSPACE_BASE_DIR is patched to a tempdir for every test here
+    -- these must never touch the real ~/Documents/Agent Handoff Bridge/ on
+    whatever machine runs the suite."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = Path(self.tmp.name) / "Agent Handoff Bridge"
+        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_creates_directory_under_base_dir_with_date_and_slug(self):
+        workspace = webui.create_workspace_for_first_message("Fix the deploy script", [])
+        self.assertEqual(workspace.parent, self.base_dir)
+        self.assertTrue(workspace.is_dir())
+        self.assertIn("Fix-the-deploy-script", workspace.name)
+
+    def test_runs_init_and_produces_state_json_with_task_set_to_the_message(self):
+        workspace = webui.create_workspace_for_first_message("investigate the flaky test", [])
+        state_path = workspace / ".handoff" / "state.json"
+        self.assertTrue(state_path.exists())
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(state["task"], "investigate the flaky test")
+
+    def test_attachments_only_message_records_a_meaningful_task(self):
+        workspace = webui.create_workspace_for_first_message("", [{"name": "report.pdf"}])
+        state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+        self.assertIn("report.pdf", state["task"])
+
+    def test_produces_current_md_too_not_just_state_json(self):
+        # init_handoff() writes both unconditionally on success -- the
+        # explicit post-condition check in create_workspace_for_first_message()
+        # relies on that being true.
+        workspace = webui.create_workspace_for_first_message("hello", [])
+        self.assertTrue((workspace / ".handoff" / "current.md").exists())
+
+    def test_collision_appends_numeric_suffix_and_never_reuses_the_folder(self):
+        first = webui.create_workspace_for_first_message("same summary", [])
+        second = webui.create_workspace_for_first_message("same summary", [])
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.is_dir())
+        self.assertTrue(second.is_dir())
+        self.assertTrue(second.name.endswith("-2"))
+
+    def test_ensures_chat_gitignore_is_written(self):
+        workspace = webui.create_workspace_for_first_message("hello", [])
+        self.assertTrue((workspace / ".handoff" / "webui" / ".gitignore").exists())
+
+    def test_message_matching_an_init_flag_name_is_still_treated_as_the_task(self):
+        # Without "--" before the task in the subprocess argv, argparse
+        # would consume a first message that's literally "--no-install"
+        # (or any other real flag of `init`) as that option instead of the
+        # positional task, and fail with "the following arguments are
+        # required: task" -- a real user message shouldn't be able to
+        # break scaffolding just by looking like a CLI flag.
+        workspace = webui.create_workspace_for_first_message("--no-install", [])
+        state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["task"], "--no-install")
+
+    def test_base_dir_creation_failure_becomes_a_workspace_error(self):
+        # AUTO_WORKSPACE_BASE_DIR.mkdir()/new_workspace.mkdir() used to sit
+        # outside the try block -- an OSError there (e.g. the base dir path
+        # exists as a *file*, permissions, a full disk) would propagate
+        # uncaught instead of becoming the same clean WorkspaceError -> 400
+        # JSON every other failure path here produces.
+        self.base_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.base_dir.write_text("not a directory", encoding="utf-8")
+        with self.assertRaises(webui.WorkspaceError):
+            webui.create_workspace_for_first_message("hello", [])
+
+    def test_init_subprocess_failure_raises_and_cleans_up_the_directory(self):
+        # Regression: the subprocess result used to be discarded entirely --
+        # a failing `init` (bad permissions, disk full, a bug in
+        # handoff_bridge.py) would silently leave a half-scaffolded
+        # directory that append_chat_message() then wrote into as if it
+        # were a real workspace.
+        failed = mock.Mock(returncode=1, stdout="", stderr="boom: disk full")
+        with mock.patch("handoff_webui.subprocess.run", return_value=failed):
+            with self.assertRaises(webui.WorkspaceError) as ctx:
+                webui.create_workspace_for_first_message("hello", [])
+        self.assertIn("boom: disk full", str(ctx.exception))
+        # and it didn't leave an orphaned empty folder behind
+        self.assertEqual(list(self.base_dir.iterdir()), [])
+
+    def test_init_subprocess_timeout_raises_and_cleans_up_the_directory(self):
+        with mock.patch(
+            "handoff_webui.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="handoff_bridge.py", timeout=30),
+        ):
+            with self.assertRaises(webui.WorkspaceError):
+                webui.create_workspace_for_first_message("hello", [])
+        self.assertEqual(list(self.base_dir.iterdir()), [])
+
+    def test_exit_zero_without_the_expected_handoff_files_is_still_a_failure(self):
+        # Defense in depth: don't trust the exit code alone. A "successful"
+        # init that -- for whatever reason -- didn't actually produce
+        # .handoff/state.json or .handoff/current.md must not be confirmed
+        # as a real workspace (docs/architecture.md: those are the durable
+        # handoff surface).
+        fake_success_but_did_nothing = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("handoff_webui.subprocess.run", return_value=fake_success_but_did_nothing):
+            with self.assertRaises(webui.WorkspaceError) as ctx:
+                webui.create_workspace_for_first_message("hello", [])
+        self.assertIn(".handoff/", str(ctx.exception))
+        self.assertEqual(list(self.base_dir.iterdir()), [])
+
+
+class CreateWorkspaceConcurrencyTests(unittest.TestCase):
+    """A real live server + real concurrent HTTP requests -- verifies the
+    exact race an adversarial review reproduced: two near-simultaneous
+    first messages (double-clicked Send, two browser tabs against the same
+    server) both observing AppState.workspace as None. AUTO_WORKSPACE_BASE_DIR
+    is patched to a tempdir so this never touches the real
+    ~/Documents/Agent Handoff Bridge/."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = Path(self.tmp.name) / "Agent Handoff Bridge"
+        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+        self.state = webui.AppState(None)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def test_concurrent_first_messages_create_exactly_one_workspace(self):
+        url = f"http://127.0.0.1:{self.port}/api/chat"
+        payload = json.dumps({"role": "user", "text": "same topic", "attachments": []}).encode("utf-8")
+        statuses = []
+        errors = []
+        lock = threading.Lock()
+
+        def send():
+            try:
+                req = urllib.request.Request(
+                    url, data=payload, method="POST", headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    status = resp.status
+            except Exception as exc:  # pragma: no cover - failure path surfaced via errors list
+                with lock:
+                    errors.append(str(exc))
+                return
+            with lock:
+                statuses.append(status)
+
+        threads = [threading.Thread(target=send) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(statuses, [200] * 8)
+        # Exactly one workspace directory got created, not one per request
+        # -- the bug this regression-tests produced up to 8 real folders on
+        # disk with AppState.workspace pointing at only one of them.
+        self.assertEqual(len(list(self.base_dir.iterdir())), 1)
+        self.assertIsNotNone(self.state.workspace)
+
+
 class ChatStorageTests(unittest.TestCase):
     def test_append_then_read_current_month(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -977,6 +1270,122 @@ class MutableStateLiveServerTests(unittest.TestCase):
         status, data = self._post("/api/open-folder", {"path": "relative/path"})
         self.assertEqual(status, 400)
         self.assertIn("error", data)
+
+
+class NoWorkspaceLiveServerTests(unittest.TestCase):
+    """AppState.workspace starts as None (SCR-05 / DEC-04~07) -- every read
+    endpoint must degrade gracefully instead of crashing on a None path,
+    and POST /api/chat's "user" role is the one path that's supposed to
+    auto-create a workspace as a side effect. AUTO_WORKSPACE_BASE_DIR is
+    patched to a tempdir so this never touches the real
+    ~/Documents/Agent Handoff Bridge/."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = Path(self.tmp.name) / "Agent Handoff Bridge"
+        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+        self.state = webui.AppState(None)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def _get(self, path: str) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def _post(self, path: str, payload: dict) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def test_api_info_reports_null_workspace(self):
+        status, data = self._get("/api/info")
+        self.assertEqual(status, 200)
+        self.assertIsNone(data["workspace"])
+        self.assertIsNone(data["name"])
+
+    def test_api_tree_returns_empty_entries_not_an_error(self):
+        status, data = self._get("/api/tree?path=")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["entries"], [])
+
+    def test_api_file_is_rejected_with_a_clear_error(self):
+        status, data = self._get("/api/file?path=whatever.txt")
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_api_chat_get_returns_empty_history_not_an_error(self):
+        status, data = self._get("/api/chat")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["messages"], [])
+        self.assertEqual(data["months"], [])
+
+    def test_api_run_is_rejected_when_no_workspace_exists_yet(self):
+        status, data = self._post("/api/run", {"provider": "codex", "text": "hi"})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_posting_a_user_chat_message_auto_creates_a_workspace(self):
+        status, message = self._post("/api/chat", {"role": "user", "text": "fix the deploy script", "attachments": []})
+        self.assertEqual(status, 200)
+        self.assertEqual(message["text"], "fix the deploy script")
+
+        status, info = self._get("/api/info")
+        self.assertEqual(status, 200)
+        self.assertIsNotNone(info["workspace"])
+        self.assertIn("fix-the-deploy-script", info["workspace"].lower())
+
+        # and it's a real, scaffolded workspace on disk under the (patched) base dir
+        created = Path(info["workspace"])
+        self.assertEqual(created.parent, self.base_dir)
+        self.assertTrue((created / ".handoff" / "state.json").exists())
+
+        # subsequent requests see the now-real workspace, not None anymore
+        status, tree = self._get("/api/tree?path=")
+        self.assertEqual(status, 200)
+
+    def test_posting_a_system_chat_message_without_a_workspace_is_rejected(self):
+        # "system" can't carry a folder-name summary and shouldn't silently
+        # create a workspace as a side effect of something other than the
+        # user actually sending a message.
+        status, data = self._post("/api/chat", {"role": "system", "text": "note", "attachments": []})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_second_auto_create_from_a_fresh_state_does_not_collide_with_the_first(self):
+        self._post("/api/chat", {"role": "user", "text": "same topic", "attachments": []})
+        status1, info1 = self._get("/api/info")
+
+        self.state.workspace = None  # simulate a second fresh "no workspace" session
+        self._post("/api/chat", {"role": "user", "text": "same topic", "attachments": []})
+        status2, info2 = self._get("/api/info")
+
+        self.assertEqual(status1, 200)
+        self.assertEqual(status2, 200)
+        self.assertNotEqual(info1["workspace"], info2["workspace"])
 
 
 if __name__ == "__main__":

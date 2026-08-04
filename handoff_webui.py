@@ -19,6 +19,8 @@ import gzip
 import json
 import mimetypes
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from handoff_bridge import WriteLock, choose_auto_provider
+from handoff_bridge import HANDOFF_DIR, WriteLock, choose_auto_provider
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
@@ -158,6 +160,176 @@ def validate_workspace_candidate(raw_path: str) -> Path:
     if not resolved.is_dir():
         raise WorkspaceError(f"not a directory: {raw_path}")
     return resolved
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 (docs/design-system/roadmap.md, SCR-05): auto-create a workspace
+# under ~/Documents/Agent Handoff Bridge/ when none is selected, instead of
+# forcing a folder pick before the user can send a single message. Design
+# decisions (DEC-04~07) recorded in
+# docs/design-system/flutter-mapping.html#s1c -- resolved via a pre-
+# implementation interview, not invented here.
+# ---------------------------------------------------------------------------
+
+# DEC-05: exact location the wireframe promises the user.
+AUTO_WORKSPACE_BASE_DIR = Path.home() / "Documents" / "Agent Handoff Bridge"
+
+_SLUG_NON_WORD_RE = re.compile(r"[^\w]+")
+MAX_SLUG_LENGTH = 40
+
+
+def has_handoff_marker(path: Path) -> bool:
+    """True if `path` already looks like an initialized handoff workspace.
+
+    DEC-04: the no-flag default (cwd) only opens directly if this is true;
+    otherwise the "no workspace" flow (this section) takes over instead of
+    assuming a random directory is the intended project.
+    """
+    return (path / HANDOFF_DIR).is_dir()
+
+
+def resolve_startup_workspace(raw_arg: str | None, cwd: Path) -> tuple[Path | None, str | None]:
+    """Implements DEC-04. Returns (workspace, error) -- exactly one is set.
+
+    An explicitly-given `--workspace` is validated exactly as before (a
+    typo'd path fails loudly, never silently falls into auto-create --
+    an explicit path means the user is confident about where they meant to
+    point, so a mistake there should be surfaced, not "fixed" for them).
+    The no-flag default only resolves to cwd if it already looks like an
+    initialized workspace (`has_handoff_marker`); otherwise this returns
+    (None, None) so the caller starts in the "no workspace" state instead
+    of assuming the process's cwd -- often just wherever a launcher was
+    double-clicked from -- is the intended project.
+    """
+    if raw_arg is not None:
+        candidate = Path(raw_arg).expanduser().resolve()
+        if not candidate.exists() or not candidate.is_dir():
+            return None, f"workspace does not exist or is not a directory: {candidate}"
+        return candidate, None
+    candidate = cwd.expanduser().resolve()
+    if has_handoff_marker(candidate):
+        return candidate, None
+    return None, None
+
+
+def slugify_for_folder_name(text: str) -> str:
+    """Local-only, no-token folder-name slug (DEC-05) -- deliberately not a
+    provider-generated summary, so opening a fresh chat never spends
+    tokens just to name its own folder. `\\w` is Unicode-aware, so this
+    preserves non-ASCII text (Hangul etc.) instead of stripping it the way
+    a typical ASCII-only slugify would -- the wireframe's own example
+    keeps Korean text in the folder name.
+    """
+    collapsed = _SLUG_NON_WORD_RE.sub("-", text.strip()).strip("-")
+    if not collapsed:
+        return "untitled"
+    return collapsed[:MAX_SLUG_LENGTH].strip("-") or "untitled"
+
+
+def resolve_first_message_summary_source(text: str, attachments: list[dict]) -> str:
+    """Shared by the folder-name slug and the recorded task (below) so an
+    attachments-only first message (composer allows sending with no typed
+    text) gets a meaningful task instead of the two drifting independently."""
+    return text.strip() or next((a.get("name") for a in attachments if a.get("name")), "")
+
+
+def build_auto_workspace_name(text: str, attachments: list[dict], now: datetime) -> str:
+    summary_source = resolve_first_message_summary_source(text, attachments)
+    return f"{now.strftime('%Y-%m-%d')}-{slugify_for_folder_name(summary_source)}"
+
+
+def resolve_task_for_first_message(text: str, attachments: list[dict]) -> str:
+    """The folder name can fall back to an attachment's name (above), but
+    that alone used to never reach `.handoff/state.json`'s `task` -- an
+    attachments-only first message got the generic "Continue the current
+    handoff task." placeholder there instead, weakening every future
+    prompt's "## Task" section (docs/architecture.md: state.json's task is
+    durable context) even though the folder name itself was meaningful.
+    """
+    stripped = text.strip()
+    if stripped:
+        return stripped
+    summary_source = resolve_first_message_summary_source(text, attachments)
+    if summary_source:
+        return f"Review attached file: {summary_source}"
+    return "Continue the current handoff task."
+
+
+# Guards the check-then-create in do_POST's /api/chat handler: without
+# this, two near-simultaneous first messages (a double-clicked Send, two
+# browser tabs against the same server) can both observe
+# AppState.workspace is None and both call create_workspace_for_first_message()
+# -- confirmed by reproduction, not theoretical: two real folders get
+# created and one request's persisted chat message ends up orphaned in
+# whichever folder AppState.workspace didn't end up pointing at. A plain
+# threading.Lock, not handoff_bridge.WriteLock or _RUN_LOCK -- this is a
+# separate, narrow critical section (mkdir + a sub-second init subprocess),
+# not the provider-call-duration concern _RUN_LOCK exists for.
+_WORKSPACE_CREATE_LOCK = threading.Lock()
+
+
+def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Path:
+    """DEC-05/06: create the new workspace directory (numeric-suffixing on
+    a name collision) and scaffold it exactly like a manually-picked folder
+    would be -- `handoff_bridge.py init` (which installs the standard
+    files first unless told not to) run as a subprocess for the same
+    chdir-safety reason `run_provider_via_bridge()` shells out instead of
+    calling in-process. `resolve_task_for_first_message()`'s result becomes
+    the recorded task, so it also feeds the "## Task" section of every
+    future prompt in this workspace.
+    """
+    base_name = build_auto_workspace_name(text, attachments, utc_now())
+    try:
+        AUTO_WORKSPACE_BASE_DIR.mkdir(parents=True, exist_ok=True)
+        candidate_name = base_name
+        suffix = 2
+        while (AUTO_WORKSPACE_BASE_DIR / candidate_name).exists():
+            candidate_name = f"{base_name}-{suffix}"
+            suffix += 1
+        new_workspace = AUTO_WORKSPACE_BASE_DIR / candidate_name
+        new_workspace.mkdir()
+    except OSError as exc:
+        # e.g. ~/Documents/Agent Handoff Bridge exists as a *file*, a
+        # permissions error, or a full disk -- must become the same clean
+        # WorkspaceError -> 400 JSON the do_POST handler already expects,
+        # not an uncaught exception that breaks the HTTP response.
+        raise WorkspaceError(f"failed to create new workspace directory: {exc}") from exc
+
+    task = resolve_task_for_first_message(text, attachments)
+    try:
+        result = subprocess.run(
+            # "--" guarantees `task` is always treated as the positional
+            # argument, even if the user's first message happens to be (or
+            # start with) something that looks like one of init's own
+            # flags, e.g. a literal "--no-install" or "-h" -- without it,
+            # argparse would consume that as an option instead and fail
+            # with "the following arguments are required: task".
+            [sys.executable, str(BRIDGE_SCRIPT), "--workspace", str(new_workspace), "init", "--", task],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        shutil.rmtree(new_workspace, ignore_errors=True)
+        raise WorkspaceError(f"failed to scaffold new workspace: {exc}") from exc
+    if result.returncode != 0:
+        shutil.rmtree(new_workspace, ignore_errors=True)
+        stderr_tail = (result.stderr or "").strip()[-500:]
+        raise WorkspaceError(f"failed to scaffold new workspace (exit {result.returncode}): {stderr_tail}")
+
+    # Defense in depth beyond the exit code: `init` succeeding is *supposed*
+    # to mean these two files exist (handoff_bridge.init_handoff() writes
+    # both unconditionally on success) -- don't let a workspace get
+    # confirmed as real (state.workspace assigned, 200 returned) on the
+    # strength of an exit code alone if the durable handoff surface
+    # (docs/architecture.md) it's supposed to guarantee isn't actually there.
+    if not (new_workspace / HANDOFF_DIR / "state.json").exists() or not (new_workspace / HANDOFF_DIR / "current.md").exists():
+        shutil.rmtree(new_workspace, ignore_errors=True)
+        raise WorkspaceError("workspace scaffolding did not produce the expected .handoff/ files")
+
+    ensure_chat_gitignore(new_workspace)
+    return new_workspace
 
 
 # ---------------------------------------------------------------------------
@@ -599,23 +771,40 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
             elif parsed.path in ("/app.css", "/app.js"):
                 self._send_static(parsed.path.lstrip("/"))
             elif parsed.path == "/api/info":
-                self._send_json(200, {"workspace": str(workspace), "name": workspace.name or str(workspace)})
+                if workspace is None:
+                    self._send_json(200, {"workspace": None, "name": None})
+                else:
+                    self._send_json(200, {"workspace": str(workspace), "name": workspace.name or str(workspace)})
             elif parsed.path == "/api/tree":
-                try:
-                    entries = list_tree_entries(workspace, rel_path)
-                    self._send_json(200, {"path": rel_path, "entries": entries})
-                except WorkspaceError as exc:
-                    self._send_json(400, {"error": str(exc)})
+                if workspace is None:
+                    # Nothing to browse yet -- an empty tree, not an error;
+                    # the "no workspace" screen is the expected state here.
+                    self._send_json(200, {"path": rel_path, "entries": []})
+                else:
+                    try:
+                        entries = list_tree_entries(workspace, rel_path)
+                        self._send_json(200, {"path": rel_path, "entries": entries})
+                    except WorkspaceError as exc:
+                        self._send_json(400, {"error": str(exc)})
             elif parsed.path == "/api/file":
-                try:
-                    preview = read_file_preview(workspace, rel_path)
-                    self._send_json(200, preview)
-                except WorkspaceError as exc:
-                    self._send_json(400, {"error": str(exc)})
+                if workspace is None:
+                    self._send_json(400, {"error": "no workspace selected"})
+                else:
+                    try:
+                        preview = read_file_preview(workspace, rel_path)
+                        self._send_json(200, preview)
+                    except WorkspaceError as exc:
+                        self._send_json(400, {"error": str(exc)})
             elif parsed.path == "/api/chat":
-                month = (query.get("month", [""])[0]).strip() or month_key(utc_now())
-                messages = read_month_messages(workspace, month)
-                self._send_json(200, {"month": month, "months": list_available_months(workspace), "messages": messages})
+                if workspace is None:
+                    month = (query.get("month", [""])[0]).strip() or month_key(utc_now())
+                    self._send_json(200, {"month": month, "months": [], "messages": []})
+                else:
+                    month = (query.get("month", [""])[0]).strip() or month_key(utc_now())
+                    messages = read_month_messages(workspace, month)
+                    self._send_json(
+                        200, {"month": month, "months": list_available_months(workspace), "messages": messages}
+                    )
             else:
                 self.send_error(404, "not found")
 
@@ -635,6 +824,24 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     attachments = body.get("attachments") or []
                     if not isinstance(attachments, list):
                         raise WorkspaceError("attachments must be a list")
+                    if state.workspace is None:
+                        # DEC-05: creation is deferred all the way to here --
+                        # the first *user* message, regardless of whether the
+                        # "새 폴더 자동 생성" button was clicked first. A
+                        # "system"-role post can't carry a summary and
+                        # shouldn't silently create a workspace as a
+                        # side effect of something other than the user
+                        # actually sending something.
+                        if role != "user":
+                            raise WorkspaceError("no workspace selected")
+                        # Double-checked locking: _WORKSPACE_CREATE_LOCK
+                        # serializes creation, and re-checking workspace is
+                        # None *after* acquiring it means a request that lost
+                        # the race just uses the workspace the winner already
+                        # created, instead of creating a second one.
+                        with _WORKSPACE_CREATE_LOCK:
+                            if state.workspace is None:
+                                state.workspace = create_workspace_for_first_message(text, attachments)
                     message = append_chat_message(state.workspace, role, text, attachments, utc_now())
                     self._send_json(200, message)
                 except WorkspaceError as exc:
@@ -661,6 +868,12 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         raise WorkspaceError("attachments must be a list")
                     if not text and not attachments:
                         raise WorkspaceError("text or attachments required")
+                    if state.workspace is None:
+                        # Normal flow always creates the workspace as a side
+                        # effect of the preceding POST /api/chat -- this is
+                        # only reachable via a client bug or direct API use
+                        # that skips it.
+                        raise WorkspaceError("no workspace selected")
                     model = body.get("model") or None
                     workspace = state.workspace
                     prompt = build_run_prompt(text, attachments)
@@ -695,9 +908,14 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
 
 class AppState:
     """Mutable holder for the active workspace so "Open Folder" can switch
-    it at runtime without restarting the server."""
+    it at runtime without restarting the server.
 
-    def __init__(self, workspace: Path):
+    `workspace` is `None` in Phase 2's "no workspace" state (DEC-04) --
+    every handler that reads it must handle that case explicitly rather
+    than assuming a `Path`.
+    """
+
+    def __init__(self, workspace: Path | None):
         self.workspace = workspace
 
 
@@ -721,7 +939,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="MVP web UI: browse/switch workspace, chat, and run Codex/Claude (Phase 1: POST /api/run)."
     )
-    parser.add_argument("--workspace", default=".", help="Initial workspace folder. Switchable at runtime.")
+    parser.add_argument(
+        "--workspace",
+        default=None,
+        help="Initial workspace folder. Switchable at runtime. Defaults to the current "
+        "directory if it's already an initialized handoff workspace (has .handoff/); "
+        "otherwise starts in the Phase 2 'no workspace' state instead of assuming cwd "
+        "is the intended project.",
+    )
     parser.add_argument(
         "--host",
         default="127.0.0.1",
@@ -766,19 +991,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refusing to bind to non-loopback host: {args.host!r}", file=sys.stderr)
         print(f"this server has no authentication -- only {sorted(LOOPBACK_HOSTS)} are allowed", file=sys.stderr)
         return 1
-    workspace = Path(args.workspace).expanduser().resolve()
-    if not workspace.exists() or not workspace.is_dir():
-        print(f"workspace does not exist or is not a directory: {workspace}", file=sys.stderr)
+    workspace, error = resolve_startup_workspace(args.workspace, Path.cwd())
+    if error:
+        print(error, file=sys.stderr)
         return 1
 
     state = AppState(workspace)
-    ensure_chat_gitignore(state.workspace)
-    archive_old_months(state.workspace, utc_now())
+    if state.workspace is not None:
+        ensure_chat_gitignore(state.workspace)
+        archive_old_months(state.workspace, utc_now())
 
     handler = build_handler(state)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)
     url = f"http://{args.host}:{args.port}/"
-    print(f"Agent Handoff Bridge web UI (MVP) serving {workspace}")
+    if workspace is not None:
+        print(f"Agent Handoff Bridge web UI (MVP) serving {workspace}")
+    else:
+        print("Agent Handoff Bridge web UI (MVP) -- no workspace yet")
+        print(f"  Send a message or use Open Folder; a folder is auto-created under {AUTO_WORKSPACE_BASE_DIR} otherwise.")
     print(f"  {url}")
     print("  File browsing + local chat, and POST /api/run actually calls Codex/Claude.")
     print(f"  Chat history: <workspace>/{CHAT_DIR_RELATIVE.as_posix()}/ (monthly, compressed after month-end)")
@@ -798,7 +1028,7 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             pass
     elif mode == "native":
-        window_title = f"Agent Handoff Bridge — {workspace.name}"
+        window_title = f"Agent Handoff Bridge — {workspace.name if workspace is not None else '워크스페이스 없음'}"
         webview.create_window(window_title, url, width=1100, height=760, min_size=(720, 480), js_api=Api())
         webview.start()  # blocks until the window is closed
     else:

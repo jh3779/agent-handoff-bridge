@@ -132,6 +132,102 @@
     count rather than trusting a number pinned here; it drifts every time a
     test is added (see prior review finding on this exact line).
 
+- Web UI Phase 2 (`--workspace` becomes optional, SCR-05):
+  - a pre-implementation design interview resolved DEC-04~07
+    (`docs/design-system/flutter-mapping.html#s1c`) before any code
+    changed, including a real revision mid-review: the first cut of DEC-04
+    ("no workspace" only when cwd is invalid) would have almost never
+    fired, since a running process's cwd essentially always exists --
+    corrected to "cwd has no `.handoff/` marker yet";
+  - `AppState.workspace` is now `Path | None`. Omitting `--workspace`
+    opens cwd directly only if it's already an initialized handoff
+    workspace (`has_handoff_marker()`); otherwise the server starts with
+    no workspace selected instead of assuming an arbitrary cwd (e.g.
+    wherever a launcher was double-clicked from) is the intended project.
+    An explicitly-given `--workspace` that doesn't exist still fails
+    loudly, exactly as before -- `resolve_startup_workspace()`;
+  - every GET endpoint degrades gracefully instead of crashing when
+    `workspace is None`: `/api/info` returns `{workspace: null}`,
+    `/api/tree` and `/api/chat` return empty results, `/api/file` and
+    `/api/run` return a clear 400;
+  - sending the first message (attachments-only sends included) with no
+    workspace selected auto-creates
+    `~/Documents/Agent Handoff Bridge/<date>-<slug>/` and scaffolds it
+    exactly like a manually-picked folder --
+    `create_workspace_for_first_message()` shells out to `handoff_bridge.py
+    init` (which installs the standard files too) for the same
+    chdir-safety reason `run_provider_via_bridge()` already does;
+  - `slugify_for_folder_name()` is local-only (no provider call just to
+    name a folder) and Unicode-aware (`\w`), so Korean text survives
+    intact instead of being stripped the way an ASCII-only slugify
+    library would; name collisions get a numeric suffix, never reuse an
+    existing folder;
+  - the "새 폴더 자동 생성" button doesn't actually create anything --
+    creation is deferred all the way to whichever message is sent first,
+    so the button-first and message-first UI paths converge to one
+    trigger instead of needing separate code;
+  - verified with 28 new tests (pure-function coverage for the resolution/
+    slugify/naming logic, a `AUTO_WORKSPACE_BASE_DIR`-patched-to-a-tempdir
+    suite for real directory creation, and a live-server suite booted with
+    `AppState(None)`) plus a real end-to-end run: `$HOME` swapped to a
+    temp directory so the manual smoke test couldn't touch the real
+    `~/Documents/`, confirming a Korean first message produces a correctly
+    named, fully scaffolded workspace;
+  - fixed a real, **reproduced** race found in an independent adversarial
+    pass: the check-then-create in `POST /api/chat` (`if state.workspace is
+    None: ... state.workspace = create_workspace_for_first_message(...)`)
+    had no lock, unlike `/api/run`'s `_RUN_LOCK`. Two near-simultaneous
+    first messages (a double-clicked Send, two browser tabs against the
+    same server) could both observe `None` and both create a real folder
+    on disk -- confirmed with a script hitting the real server with
+    concurrent threads before the fix, not a theoretical concern. Fixed
+    with double-checked locking (`_WORKSPACE_CREATE_LOCK`) that
+    re-checks `state.workspace` after acquiring, so a request that loses
+    the race just uses the workspace the winner already created;
+  - fixed a related gap the same race exposed: `create_workspace_for_first_message()`
+    never inspected the `handoff_bridge.py init` subprocess's result at
+    all -- a failure (bad permissions, disk full) or a timeout past 30s
+    would silently continue (or crash uncaught, in the timeout case)
+    with `append_chat_message()` then writing into a folder whose
+    `.handoff/state.json` might not even exist. Now checked and surfaced
+    as a clear `WorkspaceError`, with the half-created directory cleaned
+    up rather than left behind as an orphan;
+  - 7 more tests for the above (a real concurrent-request test against a
+    live server, confirmed to fail without the fix) -- 175 total;
+  - hardened `create_workspace_for_first_message()` further, from review:
+    a "successful" (exit 0) `init` is now also verified to have actually
+    produced `.handoff/state.json` *and* `.handoff/current.md` before the
+    workspace is confirmed -- not just trusted on the exit code alone
+    (`init_handoff()` writes both unconditionally on success, so their
+    absence despite exit 0 means something drifted and shouldn't be
+    silently treated as a real workspace);
+  - fixed a real gap: an attachments-only first message (the composer
+    allows sending with no typed text) got a meaningful folder name
+    (falls back to the attachment's name) but the *task* recorded in
+    `.handoff/state.json` -- which feeds every future prompt's "## Task"
+    section -- still fell back to the generic "Continue the current
+    handoff task." placeholder, because the two fallbacks weren't sharing
+    logic. `resolve_task_for_first_message()` now reuses the same summary
+    source as the folder name;
+  - fixed a documentation inconsistency: `docs/design-system/roadmap.md`
+    said "사전 인터뷰 8건 → DEC-04~07", reading as a 8-vs-4 mismatch --
+    reworded to make clear 8 is the number of interview *questions* across
+    3 rounds, consolidated into 4 *decisions* (DEC-04~07);
+  - 6 more tests -- 181 total;
+  - fixed two more real gaps from a fourth review round:
+    `AUTO_WORKSPACE_BASE_DIR.mkdir()`/`new_workspace.mkdir()` sat outside
+    `create_workspace_for_first_message()`'s `try` block -- an `OSError`
+    there (the base dir existing as a *file*, permissions, a full disk)
+    propagated uncaught instead of the clean `WorkspaceError` -> 400 JSON
+    every other failure path here already produces; and the `task` was
+    passed to `handoff_bridge.py init` without a `--` end-of-options
+    separator, so a first message that happened to literally be one of
+    `init`'s own flag spellings (e.g. `--no-install`) would make argparse
+    consume it as that option instead of the positional task and fail
+    scaffolding outright -- verified by direct reproduction on the CLI
+    before and after;
+  - 2 more tests -- 183 total.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

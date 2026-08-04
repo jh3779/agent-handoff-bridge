@@ -121,8 +121,14 @@ before being called done.
 
 ```bash
 pip install pywebview   # optional; auto-falls-back to a browser tab without it
-python3 handoff_webui.py --workspace /path/to/project
+python3 handoff_webui.py --workspace /path/to/project   # or omit --workspace (Phase 2)
 ```
+
+`--workspace` is optional as of Phase 2: omit it and the current directory
+is used automatically if it's already an initialized handoff workspace,
+otherwise the app starts with no workspace selected and auto-creates one
+under `~/Documents/Agent Handoff Bridge/` from your first message (or click
+"폴더 직접 선택…" to pick an existing folder instead).
 
 Click a file in the sidebar, or drag one onto the chat area, to attach it to
 the draft message. Use **Open Folder** (top-left, VS Code-style) to switch

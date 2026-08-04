@@ -44,7 +44,15 @@ DEC-03(코드블록 렌더링)도 이 단계에서 실제 구현됨. 가짜 `cod
 압축된다. 자세한 내용은
 [CLI Reference § Web UI (MVP)](../cli-reference.md#web-ui-mvp).
 
-**로드맵**: 지금(Phase 0, 완료)부터 DEC-01이 가리키는 최종 목표까지를
+**자동 폴더 생성** (2026-08-04, Phase 2): `--workspace`가 이제 선택사항이다
+— 생략하면 cwd가 이미 초기화된 workspace일 때만 그대로 열리고, 아니면
+"워크스페이스 없음" 상태로 시작해 첫 메시지 전송 시
+`~/Documents/Agent Handoff Bridge/<날짜-요약>`을 자동 생성한다(한글 요약
+보존, install+init까지 실행). 구현 전 사전 인터뷰로 DEC-04~07 확정 후
+착수 — 자세한 내용은 [roadmap.md](roadmap.md) Phase 2와
+[flutter-mapping.html §1c](flutter-mapping.html#s1c).
+
+**로드맵**: 지금(Phase 0~2, 완료)부터 DEC-01이 가리키는 최종 목표까지를
 순서 있는 단계로 쪼갠 [roadmap.md](roadmap.md) 참고 — Provider 연결(CLI) →
 자동 폴더 생성 → 멀티 프로젝트 히스토리 → API 키 모드 → Gemini →
 자동 업데이트 확인 → 프레임워크 전환.
@@ -104,7 +112,8 @@ open docs/design-system/design-system.html   # macOS
 
 ## 결정된 것 / 아직 미해결인 것
 
-2026-08-04 인터뷰로 3건 결정됨 — 자세한 내용은
+2026-08-04 인터뷰로 7건 결정됨(v0.2 재설계 3건 + Phase 2 착수 전 사전
+인터뷰 4건) — 자세한 내용은
 [flutter-mapping.html §1c 결정 기록](flutter-mapping.html#s1c):
 
 - **DEC-01**: 구현 기술 스택 = 프레임워크 전환(Tauri/Electron류). 순정
@@ -114,6 +123,15 @@ open docs/design-system/design-system.html   # macOS
   **Phase 1에서 실제 구현됨.**
 - **DEC-03**: 메시지 렌더링 = 코드블록만 지원(전체 마크다운·무지원 기각).
   **Phase 1에서 실제 구현됨.**
+- **DEC-04**: "워크스페이스 없음" 진입 조건 = cwd에 handoff 흔적이 없을
+  때만(명시적 `--workspace` 오류는 기존처럼 즉시 에러). **Phase 2에서
+  실제 구현됨.**
+- **DEC-05**: 자동 생성 폴더명 = 토큰 미사용 로컬 slugify, 생성은 첫
+  메시지 전송 시점으로 미룸. **Phase 2에서 실제 구현됨.**
+- **DEC-06**: 자동 생성 폴더 초기 구성 = 기존 폴더 선택과 동일하게
+  install+init 전부. **Phase 2에서 실제 구현됨.**
+- **DEC-07**: 생성 확인 UX = 다이얼로그 없이 조용히 생성. **Phase 2에서
+  실제 구현됨.**
 
 남은 미해결 사항은 [flutter-mapping.html §Conflict List](flutter-mapping.html#s2)
 (CFL-03, 05, 09~16)에 있다 — CFL-01은 Phase 1로 완전히 해소되어 목록에서
@@ -129,5 +147,5 @@ open docs/design-system/design-system.html   # macOS
   provider 실행 이력(`.handoff/runs/`) 중 무엇을 보여줄지 — Phase 1로
   둘 다 실제 존재하게 됐지만 아직 결정하지 않음.
 
-결정 전에는 실제 코드를 바꾸지 않았다 — Phase 1도 위 3개 결정을 실제
+결정 전에는 실제 코드를 바꾸지 않았다 — Phase 1·2도 위 결정들을 실제
 코드로 옮긴 것이지 새 결정을 내린 게 아니다.
