@@ -69,7 +69,14 @@ Claude가 응답하고, 핸드오프가 발생하면 자동으로 다른 provide
 끝났으므로, 남은 건 "최근에 연 워크스페이스 목록"을 앱 레벨에 기억하는
 레지스트리와 그걸 보여주는 드로어 UI뿐이다.
 
-**해소하는 항목**: [CFL-10](flutter-mapping.html#s2) 완전 해소.
+**선행 질문**: 이 드로어가 "채팅 메시지"(Phase 0의 `.handoff/webui/chat/`)
+와 "provider 실행 세션"(Phase 1의 `.handoff/runs/`) 중 무엇을 보여줄지
+[CFL-16](flutter-mapping.html#s2)이 아직 미결정이다 — Phase 1이 끝나고
+둘 다 실제로 존재하게 된 뒤에 결정하는 편이 낫다(둘 중 하나는 아직
+가짜 데이터이므로). 그래서 Phase 3을 Phase 1 뒤에 배치했다.
+
+**해소하는 항목**: [CFL-10](flutter-mapping.html#s2) 완전 해소,
+[CFL-16](flutter-mapping.html#s2) 해소.
 
 ## Phase 4 — CLI 미설치 사용자 온보딩 + API 키 모드
 

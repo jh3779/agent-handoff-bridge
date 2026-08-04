@@ -43,6 +43,48 @@ class ChooseUiModeTests(unittest.TestCase):
         self.assertEqual(webui.choose_ui_mode(prefer_browser=True, webview_available=False), "browser")
 
 
+class IsLoopbackHostTests(unittest.TestCase):
+    def test_ipv4_loopback_is_allowed(self):
+        self.assertTrue(webui.is_loopback_host("127.0.0.1"))
+
+    def test_localhost_is_allowed(self):
+        self.assertTrue(webui.is_loopback_host("localhost"))
+
+    def test_ipv6_loopback_is_allowed(self):
+        self.assertTrue(webui.is_loopback_host("::1"))
+
+    def test_wildcard_bind_is_rejected(self):
+        self.assertFalse(webui.is_loopback_host("0.0.0.0"))
+
+    def test_lan_address_is_rejected(self):
+        self.assertFalse(webui.is_loopback_host("192.168.1.50"))
+
+    def test_empty_string_is_rejected(self):
+        self.assertFalse(webui.is_loopback_host(""))
+
+
+class MainRefusesNonLoopbackHostTests(unittest.TestCase):
+    """Integration-level: main() must refuse before ever opening a socket,
+    so this must return fast and never hang waiting on a server thread."""
+
+    def test_main_returns_error_for_wildcard_host_without_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exit_code = webui.main(["--workspace", tmp, "--host", "0.0.0.0", "--no-browser"])
+        self.assertEqual(exit_code, 1)
+
+    def test_main_returns_error_for_lan_host_without_binding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exit_code = webui.main(["--workspace", tmp, "--host", "192.168.1.50", "--no-browser"])
+        self.assertEqual(exit_code, 1)
+
+    def test_host_validation_happens_before_workspace_validation(self):
+        # A bad host with a bad workspace should fail on the host check
+        # (cheaper, and the more important guard) -- not silently pass
+        # through to the workspace check first.
+        exit_code = webui.main(["--workspace", "/does/not/exist", "--host", "0.0.0.0", "--no-browser"])
+        self.assertEqual(exit_code, 1)
+
+
 class SafeJoinTests(unittest.TestCase):
     def test_relative_path_within_root_resolves(self):
         with tempfile.TemporaryDirectory() as tmp:

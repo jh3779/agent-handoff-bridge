@@ -408,7 +408,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="MVP web UI: browse/switch workspace and draft attachments (no provider calls)."
     )
     parser.add_argument("--workspace", default=".", help="Initial workspace folder. Switchable at runtime.")
-    parser.add_argument("--host", default="127.0.0.1", help="Bind address. Keep this local-only.")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind address. Must be loopback (127.0.0.1/localhost/::1) -- this server has no auth, so non-loopback hosts are refused at startup.",
+    )
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument(
         "--browser",
@@ -431,8 +435,23 @@ def choose_ui_mode(prefer_browser: bool, webview_available: bool) -> str:
     return "native" if webview_available else "browser"
 
 
+# Same set remote_handoff_server.py checks before allowing --no-auth. This
+# server has no auth mechanism at all -- unlike remote_handoff_server.py,
+# there is no flag that makes a non-loopback bind acceptable here, so the
+# check is unconditional rather than gated behind --no-auth.
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def is_loopback_host(host: str) -> bool:
+    return host in LOOPBACK_HOSTS
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not is_loopback_host(args.host):
+        print(f"refusing to bind to non-loopback host: {args.host!r}", file=sys.stderr)
+        print(f"this server has no authentication -- only {sorted(LOOPBACK_HOSTS)} are allowed", file=sys.stderr)
+        return 1
     workspace = Path(args.workspace).expanduser().resolve()
     if not workspace.exists() or not workspace.is_dir():
         print(f"workspace does not exist or is not a directory: {workspace}", file=sys.stderr)
