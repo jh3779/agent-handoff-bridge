@@ -140,14 +140,32 @@ auto-fallback 포함), 그리고 **워크스페이스 미선택 시 자동 폴�
 끝났으므로, 남은 건 "최근에 연 워크스페이스 목록"을 앱 레벨에 기억하는
 레지스트리와 그걸 보여주는 드로어 UI뿐이다.
 
-**선행 질문**: 이 드로어가 "채팅 메시지"(Phase 0의 `.handoff/webui/chat/`)
-와 "provider 실행 세션"(Phase 1의 `.handoff/runs/`) 중 무엇을 보여줄지
-[CFL-16](flutter-mapping.html#s2)이 아직 미결정이다 — Phase 1이 끝나고
-둘 다 실제로 존재하게 된 뒤에 결정하는 편이 낫다(둘 중 하나는 아직
-가짜 데이터이므로). 그래서 Phase 3을 Phase 1 뒤에 배치했다.
+**선행 질문**(착수 전 해소됨): 이 드로어가 "채팅 메시지"(Phase 0의
+`.handoff/webui/chat/`)와 "provider 실행 세션"(Phase 1의
+`.handoff/runs/`) 중 무엇을 보여줄지 [CFL-16](flutter-mapping.html#s2)이
+미결정이었다 — Phase 1이 끝나 둘 다 실제로 존재하게 된 뒤에 결정하는
+편이 낫다고 보고 Phase 3을 Phase 1 뒤에 배치했었다.
+
+**설계 확정** (2026-08-04, 구현 전 사전 인터뷰 5건 →
+[flutter-mapping.html DEC-08~12](flutter-mapping.html#s1c)):
+- 데이터 출처: `.handoff/webui/chat/` 로그(원래 가정이던 provider 실행
+  이력 `.handoff/runs/`+`state.json` `history[]` 기각) — 사용자가 실제
+  입력한 문장은 채팅 로그에만 있음(DEC-08).
+- 레지스트리: `~/Documents/Agent Handoff Bridge/` 안에 저장(Phase 2가
+  확립한 "앱 소유 위치" 재사용, OS별 app-data 경로 기각), 최대 50개
+  LRU, 더 존재하지 않는 폴더는 렌더링 시 조용히 걸러냄(DEC-09).
+- 갱신 시점: `AppState.workspace`가 설정되는 모든 지점 — Open
+  Folder·자동생성뿐 아니라 `--workspace`로 시작하는 CLI 기동도 포함
+  (DEC-10).
+- 그룹당 항목: 워크스페이스당 최근 5개까지만. 클릭 시: 워크스페이스
+  전환 + 해당 월 채팅 로드, 이후 정상 편집 가능(진짜 읽기 전용 뷰어
+  기각, DEC-11).
+- auto-fallback으로 한 turn에 agent 메시지가 여러 개면 마지막 메시지
+  (최종 provider/상태) 기준으로 표시(DEC-12).
 
 **해소하는 항목**: [CFL-10](flutter-mapping.html#s2) 완전 해소,
-[CFL-16](flutter-mapping.html#s2) 해소.
+[CFL-16](flutter-mapping.html#s2) 완전 해소 — 둘 다 Conflict List에서
+제거됨.
 
 ## Phase 4 — CLI 미설치 사용자 온보딩 + API 키 모드
 
@@ -212,8 +230,8 @@ DEC-01이 가리키는 실제 프로덕션 스택(Tauri/Electron류)으로 이�
 |---|---|---|
 | 0 — 로컬 MVP | ✅ 완료 | — |
 | 1 — Provider 연결(CLI) | ✅ 완료 | CFL-01, CFL-03, DEC-02/03 적용 |
-| 2 — 자동 폴더 생성 | 미착수 | (SCR-05 구현) |
-| 3 — 멀티 프로젝트 히스토리 | 미착수 | CFL-10 |
+| 2 — 자동 폴더 생성 | ✅ 완료 | SCR-05 구현, DEC-04~07 적용 |
+| 3 — 멀티 프로젝트 히스토리 | 설계 확정(구현 전) | CFL-10/16 해소, DEC-08~12 적용 예정 |
 | 4 — API 키 모드 | 미착수 | CFL-12 |
 | 5 — Gemini + provider 확장성 | 미착수 | CFL-13 |
 | 6 — 자동 업데이트 확인 | 미착수 | CFL-11 |

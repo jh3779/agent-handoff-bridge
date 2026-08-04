@@ -112,8 +112,8 @@ open docs/design-system/design-system.html   # macOS
 
 ## 결정된 것 / 아직 미해결인 것
 
-2026-08-04 인터뷰로 7건 결정됨(v0.2 재설계 3건 + Phase 2 착수 전 사전
-인터뷰 4건) — 자세한 내용은
+2026-08-04 인터뷰로 12건 결정됨(v0.2 재설계 3건 + Phase 2 착수 전 사전
+인터뷰 4건 + Phase 3 착수 전 사전 인터뷰 5건) — 자세한 내용은
 [flutter-mapping.html §1c 결정 기록](flutter-mapping.html#s1c):
 
 - **DEC-01**: 구현 기술 스택 = 프레임워크 전환(Tauri/Electron류). 순정
@@ -132,10 +132,20 @@ open docs/design-system/design-system.html   # macOS
   install+init 전부. **Phase 2에서 실제 구현됨.**
 - **DEC-07**: 생성 확인 UX = 다이얼로그 없이 조용히 생성. **Phase 2에서
   실제 구현됨.**
+- **DEC-08**: 히스토리 드로어 데이터 출처 = `.handoff/webui/chat/` 로그
+  (CFL-16 해소).
+- **DEC-09**: "최근 워크스페이스" 레지스트리 = `~/Documents/Agent Handoff
+  Bridge/` 안에 저장, 최대 50개 LRU(CFL-10 잔여분 해소).
+- **DEC-10**: 레지스트리 갱신 시점 = `AppState.workspace`가 설정되는
+  모든 지점(Open Folder·자동생성·CLI 시작 포함).
+- **DEC-11**: 그룹당 항목 5개까지, 클릭 시 워크스페이스 전환 + 해당 월
+  채팅 로드(이후 정상 편집).
+- **DEC-12**: auto-fallback으로 agent 메시지가 여러 개면 마지막 메시지
+  기준으로 표시.
 
 남은 미해결 사항은 [flutter-mapping.html §Conflict List](flutter-mapping.html#s2)
-(CFL-03, 05, 09~16)에 있다 — CFL-01은 Phase 1로 완전히 해소되어 목록에서
-빠졌다. 그중 무게가 큰 것:
+(CFL-03, 05, 09, 11~15)에 있다 — CFL-01은 Phase 1로, CFL-10/16은 Phase 3
+착수 전 인터뷰로 완전히 해소되어 목록에서 빠졌다. 그중 무게가 큰 것:
 
 - **CFL-09**: 프레임워크 전환(DEC-01) 시 현재 "zip 하나로 git 없이 실행"
   배포 모델이 깨진다 — 릴리즈 프로세스 자체를 다시 설계해야 함.
@@ -143,9 +153,6 @@ open docs/design-system/design-system.html   # macOS
   재개, 이벤트 파싱)는 현재 CLI 서브프로세스 구조와 근본적으로 다르다.
 - **CFL-11**: 자동 업데이트 확인이 조회해야 할 GitHub Releases가 private
   저장소라 익명 조회가 안 된다.
-- **CFL-16**: 히스토리 드로어(Phase 3)가 채팅 로그(`webui/chat/`)와
-  provider 실행 이력(`.handoff/runs/`) 중 무엇을 보여줄지 — Phase 1로
-  둘 다 실제 존재하게 됐지만 아직 결정하지 않음.
 
-결정 전에는 실제 코드를 바꾸지 않았다 — Phase 1·2도 위 결정들을 실제
+결정 전에는 실제 코드를 바꾸지 않았다 — Phase 1·2·3도 위 결정들을 실제
 코드로 옮긴 것이지 새 결정을 내린 게 아니다.
