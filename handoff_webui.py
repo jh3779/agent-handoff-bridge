@@ -278,20 +278,33 @@ def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Pa
     the recorded task, so it also feeds the "## Task" section of every
     future prompt in this workspace.
     """
-    AUTO_WORKSPACE_BASE_DIR.mkdir(parents=True, exist_ok=True)
     base_name = build_auto_workspace_name(text, attachments, utc_now())
-    candidate_name = base_name
-    suffix = 2
-    while (AUTO_WORKSPACE_BASE_DIR / candidate_name).exists():
-        candidate_name = f"{base_name}-{suffix}"
-        suffix += 1
-    new_workspace = AUTO_WORKSPACE_BASE_DIR / candidate_name
-    new_workspace.mkdir()
+    try:
+        AUTO_WORKSPACE_BASE_DIR.mkdir(parents=True, exist_ok=True)
+        candidate_name = base_name
+        suffix = 2
+        while (AUTO_WORKSPACE_BASE_DIR / candidate_name).exists():
+            candidate_name = f"{base_name}-{suffix}"
+            suffix += 1
+        new_workspace = AUTO_WORKSPACE_BASE_DIR / candidate_name
+        new_workspace.mkdir()
+    except OSError as exc:
+        # e.g. ~/Documents/Agent Handoff Bridge exists as a *file*, a
+        # permissions error, or a full disk -- must become the same clean
+        # WorkspaceError -> 400 JSON the do_POST handler already expects,
+        # not an uncaught exception that breaks the HTTP response.
+        raise WorkspaceError(f"failed to create new workspace directory: {exc}") from exc
 
     task = resolve_task_for_first_message(text, attachments)
     try:
         result = subprocess.run(
-            [sys.executable, str(BRIDGE_SCRIPT), "--workspace", str(new_workspace), "init", task],
+            # "--" guarantees `task` is always treated as the positional
+            # argument, even if the user's first message happens to be (or
+            # start with) something that looks like one of init's own
+            # flags, e.g. a literal "--no-install" or "-h" -- without it,
+            # argparse would consume that as an option instead and fail
+            # with "the following arguments are required: task".
+            [sys.executable, str(BRIDGE_SCRIPT), "--workspace", str(new_workspace), "init", "--", task],
             capture_output=True,
             text=True,
             timeout=30,

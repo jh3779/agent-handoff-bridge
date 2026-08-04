@@ -213,7 +213,20 @@
     said "사전 인터뷰 8건 → DEC-04~07", reading as a 8-vs-4 mismatch --
     reworded to make clear 8 is the number of interview *questions* across
     3 rounds, consolidated into 4 *decisions* (DEC-04~07);
-  - 6 more tests -- 181 total.
+  - 6 more tests -- 181 total;
+  - fixed two more real gaps from a fourth review round:
+    `AUTO_WORKSPACE_BASE_DIR.mkdir()`/`new_workspace.mkdir()` sat outside
+    `create_workspace_for_first_message()`'s `try` block -- an `OSError`
+    there (the base dir existing as a *file*, permissions, a full disk)
+    propagated uncaught instead of the clean `WorkspaceError` -> 400 JSON
+    every other failure path here already produces; and the `task` was
+    passed to `handoff_bridge.py init` without a `--` end-of-options
+    separator, so a first message that happened to literally be one of
+    `init`'s own flag spellings (e.g. `--no-install`) would make argparse
+    consume it as that option instead of the positional task and fail
+    scaffolding outright -- verified by direct reproduction on the CLI
+    before and after;
+  - 2 more tests -- 183 total.
 
 ## v0.1.0 — 2026-08-03
 

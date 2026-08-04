@@ -482,6 +482,28 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         workspace = webui.create_workspace_for_first_message("hello", [])
         self.assertTrue((workspace / ".handoff" / "webui" / ".gitignore").exists())
 
+    def test_message_matching_an_init_flag_name_is_still_treated_as_the_task(self):
+        # Without "--" before the task in the subprocess argv, argparse
+        # would consume a first message that's literally "--no-install"
+        # (or any other real flag of `init`) as that option instead of the
+        # positional task, and fail with "the following arguments are
+        # required: task" -- a real user message shouldn't be able to
+        # break scaffolding just by looking like a CLI flag.
+        workspace = webui.create_workspace_for_first_message("--no-install", [])
+        state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["task"], "--no-install")
+
+    def test_base_dir_creation_failure_becomes_a_workspace_error(self):
+        # AUTO_WORKSPACE_BASE_DIR.mkdir()/new_workspace.mkdir() used to sit
+        # outside the try block -- an OSError there (e.g. the base dir path
+        # exists as a *file*, permissions, a full disk) would propagate
+        # uncaught instead of becoming the same clean WorkspaceError -> 400
+        # JSON every other failure path here produces.
+        self.base_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.base_dir.write_text("not a directory", encoding="utf-8")
+        with self.assertRaises(webui.WorkspaceError):
+            webui.create_workspace_for_first_message("hello", [])
+
     def test_init_subprocess_failure_raises_and_cleans_up_the_directory(self):
         # Regression: the subprocess result used to be discarded entirely --
         # a failing `init` (bad permissions, disk full, a bug in
