@@ -62,13 +62,17 @@
   </section>
 
   <section id="s1c" class="sec card pad">
-    <div class="sec-h"><span class="sec-num">1c</span><span class="sec-t">결정 기록 (Decision Log)</span><span class="tag">2026-08-04 사용자 인터뷰 응답 3건</span></div>
+    <div class="sec-h"><span class="sec-num">1c</span><span class="sec-t">결정 기록 (Decision Log)</span><span class="tag">2026-08-04 사용자 인터뷰 응답 3건 + Phase 2 인터뷰 4건</span></div>
     <div class="tblwrap">
       <table>
         <tr><th>결정</th><th>내용</th><th>영향받는 문서/화면</th></tr>
         <tr><td class="mono">DEC-01<br>(구 CFL-06)</td><td>v0.2 구현 기술 스택 = <b>프레임워크 전환</b>(Tauri/Electron류). tkinter/pywebview 옵션 폐기.</td><td>§1b 위 표 · <a href="#s2">CFL-09 신규 파생</a></td></tr>
         <tr><td class="mono">DEC-02<br>(구 CFL-08)</td><td>입력창 send 버튼 = <b>세션당 첫 전송만 확인 다이얼로그, 이후 즉시 실행</b>. v0.1의 "매번 확인"과 "확인 없이 항상 실행" 둘 다 기각. <b>Phase 1에서 실제 구현됨</b>(<code>webui/app.js</code>의 <code>sessionRunConfirmed</code>).</td><td><a href="wireframes.html#s3">SCR-01</a> · <a href="patterns.html#s4">패턴 §4</a> · <a href="components.html#s10">컴포넌트 §10</a></td></tr>
         <tr><td class="mono">DEC-03<br>(구 CFL-07)</td><td>메시지 버블 렌더링 = <b>코드블록만 지원</b>(펜스 <code>```</code> 안만 모노스페이스 박스). 전체 마크다운·무지원 둘 다 기각. <b>Phase 1에서 실제 구현됨</b>(<code>renderTextWithCodeBlocks()</code>, textContent만 사용 — provider 응답을 innerHTML로 꽂지 않음).</td><td><a href="wireframes.html#s3">SCR-01</a> · <a href="components.html#s9">컴포넌트 §9</a></td></tr>
+        <tr><td class="mono">DEC-04<br>(Phase 2 인터뷰)</td><td>"워크스페이스 없음" 진입 조건 = <b>기본값(cwd)이 무효할 때만</b> — <code>--workspace</code>가 명시되지 않고 cwd도 유효한 디렉터리가 아닐 때 진입. 사용자가 <code>--workspace</code>를 <b>명시적으로</b> 줬는데 그 경로가 없으면(오타 등) 자동 생성으로 넘기지 않고 <b>기존처럼 즉시 에러 종료</b> — 명시적 경로는 오타/의도 확인이 우선.</td><td><a href="wireframes.html#s7">SCR-05</a> · <code>handoff_webui.py main()</code></td></tr>
+        <tr><td class="mono">DEC-05<br>(Phase 2 인터뷰)</td><td>자동 생성 폴더명 = <b>로컬 규칙 기반 slugify</b>(토큰 미사용 — 미리보기/설정 단계는 무료라는 기존 원칙과 일치), 날짜+요약. <b>생성 시점은 첫 메시지 전송 시</b> — "새 폴더 자동 생성" 버튼을 메시지 입력 전에 눌러도 그 자리에서 폴더를 만들지 않고 첫 메시지를 받을 때까지 미룬다(버튼-먼저 경로와 메시지-먼저 경로가 하나의 트리거로 수렴 — 별도 코드 경로 불필요). 이름 충돌 시 숫자 접미사(<code>-2</code>, <code>-3</code>…)로 구분, 기존 폴더 재사용 없음.</td><td><a href="wireframes.html#s7">SCR-05</a></td></tr>
+        <tr><td class="mono">DEC-06<br>(Phase 2 인터뷰)</td><td>자동 생성 폴더의 초기 구성 = <b>기존 폴더 선택 경로와 동일하게 <code>install</code>+<code>init</code> 전부 실행</b>(가벼운 <code>.handoff/</code>-only 버전 기각) — 와이어프레임 주석("최종적으로 같은 상태로 수렴") 그대로.</td><td><a href="wireframes.html#s7">SCR-05</a></td></tr>
+        <tr><td class="mono">DEC-07<br>(Phase 2 인터뷰)</td><td>생성 확인 UX = <b>확인 다이얼로그 없이 조용히 생성 + 시스템 메시지로 안내</b>(와이어프레임 그대로). 순수 로컬 파일시스템 작업(토큰 소비 없음)이라 DEC-02(토큰 소비 확인)의 대상이 아니라고 판단.</td><td><a href="wireframes.html#s7">SCR-05</a></td></tr>
       </table>
     </div>
   </section>
