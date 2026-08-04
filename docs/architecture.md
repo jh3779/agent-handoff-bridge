@@ -93,6 +93,15 @@ against the same workspace concurrently. See
 [Quality Gates](quality-gates.md#rule-shared-state-files-are-written-atomically-and-under-lock)
 for what this does and does not guarantee.
 
+The same `WriteLock` (imported directly from `handoff_bridge`, not
+reimplemented) guards the Web UI MVP's local chat log at
+`.handoff/webui/chat/` (`handoff_webui.py`'s `append_chat_message()` and
+`archive_old_months()`) — this repo's storage-policy stance (shared
+`.handoff/` state, locked/atomic writes, gitignored runtime data) applies to
+that store the same way it applies to `state.json`/`current.md`. Full
+schema, atomicity, retention, and git-visibility details for that specific
+store: [Web UI Chat Storage](webui-chat-storage.md).
+
 ## Recommended Extension Points
 
 - Add project-specific instructions to the target project's own `AGENTS.md` and
