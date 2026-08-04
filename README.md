@@ -55,6 +55,21 @@ Windows launcher:
 launchers\windows\handoff-bridge.cmd
 ```
 
+Preview the v0.2 chat-style redesign (MVP — file browsing, drag/click
+attaching, VS Code-style Open Folder, and local per-folder chat history;
+still no provider is called):
+
+```bash
+pip install pywebview   # optional, for a real app window instead of a browser tab
+python3 handoff_webui.py --workspace /path/to/project
+```
+
+Opens as a native app window (falls back to a browser tab automatically if
+`pywebview` isn't installed). See
+[Web UI (MVP)](docs/cli-reference.md#web-ui-mvp) for what it does and does
+not do yet, and [docs/design-system/](docs/design-system/README.md) for the
+full redesign this is the first slice of.
+
 Build macOS and Windows zip packages:
 
 ```bash

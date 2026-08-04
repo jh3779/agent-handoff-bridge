@@ -111,6 +111,31 @@ python3 handoff_bridge.py --workspace /path/to/project check
 
 Then run project-specific commands from `docs/verification-playbook.md`.
 
+## Web UI Preview (MVP)
+
+Use this to browse a workspace and draft attachments in the v0.2 chat-style
+layout before any provider wiring exists. Opens as a native app window (not
+a browser tab) when `pywebview` is installed — this was tested end-to-end,
+including a real screenshot of the rendered window, before being called
+done.
+
+```bash
+pip install pywebview   # optional; auto-falls-back to a browser tab without it
+python3 handoff_webui.py --workspace /path/to/project
+```
+
+Click a file in the sidebar, or drag one onto the chat area, to attach it to
+the draft message. Use **Open Folder** (top-left, VS Code-style) to switch
+workspace at runtime instead of restarting with a different `--workspace`.
+"Send" persists the message to that workspace's own
+`.handoff/webui/chat/` (monthly files, older months auto-compressed) and
+renders it — it does not call Codex, Claude, or anything else. History is
+per-folder: switching to a different project shows that project's own
+history, not a mixed feed. See
+[CLI Reference § Web UI (MVP)](cli-reference.md#web-ui-mvp) for the endpoint
+details and [Design System Docs](design-system/README.md) for where this is
+headed.
+
 ## Contributing To This Repo
 
 Use this when changing the bridge tool itself, not a downstream project.

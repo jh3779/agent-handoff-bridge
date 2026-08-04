@@ -5,3 +5,4 @@ hook-events.jsonl
 remote/
 mobile-*-instruction.txt
 *.log
+webui/chat/
