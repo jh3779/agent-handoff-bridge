@@ -234,7 +234,9 @@ would leave a still-running, still-token-spending provider process behind,
 since neither process runs in its own process group. Auto-fallback means
 up to two sequential provider calls, each with its own 600s budget; the
 outer `run_provider_via_bridge()` wrapper adds a second, more generous
-timeout (`OUTER_SUBPROCESS_TIMEOUT_SECONDS`, `600 * 2 + 30`) as a hard-kill
+timeout (`OUTER_SUBPROCESS_TIMEOUT_SECONDS`, `600 * 2 + 60` — the extra 60s
+covers up to two rounds of `handoff_bridge.WriteLock` contention, 10s each,
+on top of ordinary process-startup overhead) as a hard-kill
 backstop for cases outside normal provider execution (e.g. the bridge
 process itself hanging on I/O) — this one *can* leave a child process
 running if it ever fires, but it's sized to rarely need to. This is a Web

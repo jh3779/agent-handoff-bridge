@@ -328,8 +328,12 @@ PROVIDER_RUN_TIMEOUT_SECONDS = 600
 # provider execution (e.g. the bridge process itself hanging on I/O) --
 # generous enough to cover two sequential --timeout-seconds budgets (a
 # rate-limited first provider auto-falling-back into a second one that also
-# times out) plus some slack for the bridge to write its history record.
-OUTER_SUBPROCESS_TIMEOUT_SECONDS = PROVIDER_RUN_TIMEOUT_SECONDS * 2 + 30
+# times out), plus real slack: each provider call's save_state()/
+# append_current() also goes through handoff_bridge.WriteLock, which alone
+# can block up to its own 10s timeout under contention (e.g. a second
+# browser tab's /api/run racing this one) -- up to 2x that across both
+# calls in a fallback chain, on top of ordinary process-startup overhead.
+OUTER_SUBPROCESS_TIMEOUT_SECONDS = PROVIDER_RUN_TIMEOUT_SECONDS * 2 + 60
 
 
 def classify_run_status(handoff_needed: bool, reason: str) -> str:

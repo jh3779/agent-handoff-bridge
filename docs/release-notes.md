@@ -69,13 +69,33 @@
     having actually run, contradicting the documented contract that only
     `POST /api/run` writes `agent` messages -- now rejected with 400
     (`CLIENT_WRITABLE_CHAT_ROLES`);
-  - the Web UI's 600s provider-run timeout is now documented (CLI
-    reference), and if it fires mid-auto-fallback -- after the first
-    provider's record is saved but before the recursive fallback call
-    finishes -- a synthetic "timed out" agent message is appended instead
-    of the caller silently seeing only the first reply;
-  - added tests for the timeout-partial-output decode fix and the
-    synthetic-record `provider: "auto"` fix from review follow-up -- run
+  - fixed a real gap: the Web UI's 600s timeout only killed the outer
+    `handoff_bridge.py` wrapper, not the real codex/claude child it
+    spawned -- `subprocess.run()` signals just the immediate child, and
+    neither process runs in its own process group, so a hung provider
+    could keep running (and spending tokens) after the Web UI gave up on
+    it. `--timeout-seconds` is now forwarded so the budget is enforced on
+    the actual provider subprocess, which can really terminate it; the
+    outer wrapper keeps a wider hard-kill backstop
+    (`OUTER_SUBPROCESS_TIMEOUT_SECONDS = 600 * 2 + 60`, sized for two
+    sequential auto-fallback timeouts plus `handoff_bridge.WriteLock`
+    contention) for cases outside normal provider execution, and appends a
+    synthetic "timed out" agent message if that backstop ever fires
+    mid-fallback rather than silently showing only the first reply;
+  - fixed a real crash found once `--timeout-seconds` was actually being
+    forwarded: `subprocess.TimeoutExpired.stdout`/`.stderr` can still be
+    `bytes` even under `text=True` -- CPython's `_communicate()` only
+    decodes on the successful-return path, not the timeout path -- so a
+    provider timing out mid-partial-JSONL-output would crash
+    `run_provider()` before its history record was ever saved
+    (`decode_timeout_output()`, `handoff_bridge.py`);
+  - fixed a real schema violation: the no-history synthetic-failure record
+    in `run_provider_via_bridge()` could persist `provider: "auto"`
+    literally when a caller requested `"auto"` and the subprocess failed
+    before any real history record existed to resolve it from --
+    `docs/webui-chat-storage.md`'s schema says `provider` is "never
+    `auto`"; now resolved via `choose_auto_provider()` on that path;
+  - added tests for all of the above -- run
     `python3 -m unittest discover -s tests -v` for the current pass/fail
     count rather than trusting a number pinned here; it drifts every time a
     test is added (see prior review finding on this exact line).
