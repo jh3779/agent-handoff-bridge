@@ -57,7 +57,24 @@
     auto-fallback chain (rate-limited codex -> successful claude) producing
     two history records and two agent messages in one call
     (`RunProviderViaBridgeTests`, `ApiRunLiveServerTests`);
-  - 14 new tests -- 121 total for the whole suite, 72 in
+  - fixed a real CI-only bug found after this landed: the prompt was
+    appended to `handoff_bridge.py`'s argv as a trailing positional, which
+    Python 3.11's argparse rejected ("unrecognized arguments") when
+    interleaved after `--instruction-type <value>` even though 3.14
+    accepted it -- `run_provider_via_bridge()` now writes the prompt to a
+    temp file and passes `--prompt-file` instead, sidestepping both that
+    and the separate argv-length/process-list-exposure concern;
+  - fixed a real gap: `POST /api/chat` accepted `role: "agent"` from the
+    client, letting a raw POST forge a fake agent reply with no provider
+    having actually run, contradicting the documented contract that only
+    `POST /api/run` writes `agent` messages -- now rejected with 400
+    (`CLIENT_WRITABLE_CHAT_ROLES`);
+  - the Web UI's 600s provider-run timeout is now documented (CLI
+    reference), and if it fires mid-auto-fallback -- after the first
+    provider's record is saved but before the recursive fallback call
+    finishes -- a synthetic "timed out" agent message is appended instead
+    of the caller silently seeing only the first reply;
+  - 16 new tests -- 123 total for the whole suite, 74 in
     `tests/test_handoff_webui.py`.
 
 ## v0.1.0 — 2026-08-03

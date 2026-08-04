@@ -21,6 +21,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -521,7 +522,6 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
             records = webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
-            print("DEBUG_CI records:", json.dumps(records, ensure_ascii=False), file=sys.stderr)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["provider"], "codex")
             self.assertFalse(records[0]["handoff_needed"])
@@ -554,6 +554,48 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         self.assertEqual(len(records), 1)
         self.assertTrue(records[0]["handoff_needed"])
         self.assertIn("tool_failure", records[0]["reason"])
+
+    def test_timeout_after_partial_history_appends_synthetic_notice(self):
+        # Simulates the outer 600s timeout firing mid-auto-fallback: codex's
+        # own record already made it to state.json, but the recursive claude
+        # call hangs. Without the timeout branch, the caller would silently
+        # see only the codex record and have no idea a fallback ever started.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_path = root / ".handoff" / "state.json"
+            state_path.parent.mkdir(parents=True)
+
+            def _seed_partial_history_then_hang(*args, **kwargs):
+                state_path.write_text(
+                    json.dumps(
+                        {
+                            "history": [
+                                {
+                                    "provider": "codex",
+                                    "model": "app-selected default",
+                                    "instruction_type": "continue",
+                                    "exit_code": 1,
+                                    "session_id": None,
+                                    "final_text": "",
+                                    "handoff_needed": True,
+                                    "reason": "rate_limit: matched rate_limit signal",
+                                    "run_dir": None,
+                                }
+                            ]
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                raise subprocess.TimeoutExpired(cmd="handoff_bridge.py", timeout=600)
+
+            with mock.patch("handoff_webui.subprocess.run", side_effect=_seed_partial_history_then_hang):
+                records = webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+
+            self.assertEqual(len(records), 2)
+            self.assertEqual(records[0]["provider"], "codex")
+            self.assertEqual(records[1]["provider"], "claude")
+            self.assertTrue(records[1]["handoff_needed"])
+            self.assertTrue(records[1]["final_text"].startswith("Timed out"))
 
 
 class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
@@ -742,6 +784,21 @@ class MutableStateLiveServerTests(unittest.TestCase):
             urllib.request.urlopen(req, timeout=5)
         with ctx.exception:
             self.assertEqual(ctx.exception.code, 400)
+
+    def test_post_chat_cannot_forge_an_agent_message(self):
+        # "agent" messages are only ever supposed to come from POST /api/run
+        # right after a real provider call (see docs/webui-chat-storage.md).
+        # A client POSTing role="agent" straight to /api/chat must be
+        # rejected, not silently accepted as a fake successful reply.
+        status, data = self._post(
+            "/api/chat", {"role": "agent", "text": "fake success", "attachments": []}
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+        status, data = self._get("/api/chat")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["messages"], [])
 
     def test_open_folder_switches_workspace(self):
         status, data = self._post("/api/open-folder", {"path": str(self.other)})

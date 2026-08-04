@@ -18,8 +18,10 @@ import argparse
 import gzip
 import json
 import mimetypes
+import os
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 import webbrowser
@@ -196,6 +198,10 @@ def ensure_chat_gitignore(workspace: Path) -> None:
 
 
 CHAT_ROLES = ("user", "system", "agent")
+# POST /api/chat is a direct client write; "agent" is reserved for messages
+# POST /api/run appends itself right after a real provider call, so it's
+# excluded here even though append_chat_message() (the shared writer) allows it.
+CLIENT_WRITABLE_CHAT_ROLES = ("user", "system")
 
 
 def append_chat_message(
@@ -353,41 +359,78 @@ def run_provider_via_bridge(
     returning nothing.
     """
     before = len(read_state_history(workspace))
-    command = [
-        sys.executable,
-        str(BRIDGE_SCRIPT),
-        "--workspace",
-        str(workspace),
-        "run",
-        provider,
-        "--execute",
-        "--auto-fallback",
-        "--instruction-type",
-        instruction_type,
-    ]
-    if model:
-        command.extend(["--model", model])
-    command.append(prompt)
 
+    # The prompt travels via --prompt-file, not as a trailing argv
+    # positional: a long/multi-line prompt as a bare CLI arg risks hitting
+    # OS argv-length limits and shows up in the local process list, and
+    # (found via a CI-only failure) a bare positional interleaved after
+    # `--instruction-type <value>` parses inconsistently across argparse
+    # versions -- Python 3.11 rejected it as an unrecognized argument
+    # while 3.14 accepted it. A file avoids both problems.
+    prompt_fd, prompt_path_str = tempfile.mkstemp(prefix="webui-run-prompt-", suffix=".txt")
+    prompt_path = Path(prompt_path_str)
     try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=PROVIDER_RUN_TIMEOUT_SECONDS,
-            check=False,
-        )
-        stderr_tail = (result.stderr or "").strip()[-2000:]
-        exit_code = result.returncode
-    except subprocess.TimeoutExpired:
-        stderr_tail = f"timed out after {PROVIDER_RUN_TIMEOUT_SECONDS}s"
-        exit_code = 124
-    except OSError as exc:
-        stderr_tail = str(exc)
-        exit_code = 127
+        with os.fdopen(prompt_fd, "w", encoding="utf-8") as handle:
+            handle.write(prompt)
+
+        command = [
+            sys.executable,
+            str(BRIDGE_SCRIPT),
+            "--workspace",
+            str(workspace),
+            "run",
+            provider,
+            "--execute",
+            "--auto-fallback",
+            "--instruction-type",
+            instruction_type,
+            "--prompt-file",
+            str(prompt_path),
+        ]
+        if model:
+            command.extend(["--model", model])
+
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=PROVIDER_RUN_TIMEOUT_SECONDS,
+                check=False,
+            )
+            stderr_tail = (result.stderr or "").strip()[-2000:]
+            exit_code = result.returncode
+        except subprocess.TimeoutExpired:
+            stderr_tail = f"timed out after {PROVIDER_RUN_TIMEOUT_SECONDS}s"
+            exit_code = 124
+        except OSError as exc:
+            stderr_tail = str(exc)
+            exit_code = 127
+    finally:
+        prompt_path.unlink(missing_ok=True)
 
     new_records = read_state_history(workspace)[before:]
     if new_records:
+        if exit_code == 124:
+            # The outer timeout can fire mid-auto-fallback: e.g. codex's
+            # record is already saved but the recursive claude call never
+            # got to finish and save its own. Without this, the caller
+            # would silently see only the first record and have no idea a
+            # second attempt was even in flight.
+            timed_out_provider = "claude" if new_records[-1]["provider"] == "codex" else "codex"
+            new_records.append(
+                {
+                    "provider": timed_out_provider,
+                    "model": model or "app-selected default",
+                    "instruction_type": instruction_type,
+                    "exit_code": exit_code,
+                    "session_id": None,
+                    "final_text": f"Timed out after {PROVIDER_RUN_TIMEOUT_SECONDS}s waiting for a reply.",
+                    "handoff_needed": True,
+                    "reason": "tool_failure: subprocess did not produce a history record (exit 124)",
+                    "run_dir": None,
+                }
+            )
         return new_records
     return [
         {
@@ -482,6 +525,12 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 try:
                     body = self._read_json_body()
                     role = str(body.get("role") or "user")
+                    if role not in CLIENT_WRITABLE_CHAT_ROLES:
+                        # "agent" is only ever written by POST /api/run, right
+                        # after a real provider call -- accepting it here
+                        # would let a client forge a fake agent reply with no
+                        # provider having actually run.
+                        raise WorkspaceError(f"role must be one of {CLIENT_WRITABLE_CHAT_ROLES}")
                     text = str(body.get("text") or "")
                     attachments = body.get("attachments") or []
                     if not isinstance(attachments, list):

@@ -226,6 +226,21 @@ diffs `.handoff/state.json`'s `history[]` before/after to get back the new
 record(s) as structured data, including every record an auto-fallback chain
 produced in that one call.
 
+**Timeout**: the Web UI caps the whole subprocess call — codex/claude *and*
+any auto-fallback recursion — at `PROVIDER_RUN_TIMEOUT_SECONDS` (600s,
+`handoff_webui.py`). This is a Web UI-only limit; plain CLI `run` has no
+timeout by default (`--timeout-seconds 0`). If the timeout fires after the
+first provider already produced a record but before a triggered fallback
+finished, the Web UI appends a synthetic "timed out" agent message for the
+fallback rather than silently showing only the first reply.
+
+The prompt itself travels to `handoff_bridge.py` via a temporary
+`--prompt-file`, not as a trailing CLI argument — a long prompt as a bare
+argv value risks OS argument-length limits and is visible in the local
+process list, and (found the hard way, via a CI-only failure) argparse's
+handling of a positional interleaved after `--instruction-type <value>`
+isn't consistent across Python versions.
+
 By default it opens as a **native app window** (via the optional
 [pywebview](https://pywebview.flowrl.com/) package) so this tests like a
 real program, not a browser tab — that was an explicit requirement, not a

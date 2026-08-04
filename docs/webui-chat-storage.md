@@ -63,7 +63,12 @@ between the source file and the JSONL log — monthly gzip compression
 original request that introduced this feature.
 
 **`agent` role messages** (Phase 1) are never written by the client directly
-— `POST /api/run` is the only writer. `run_provider_via_bridge()` shells out
+— `POST /api/run` is the only writer; `POST /api/chat` rejects `role: "agent"`
+with 400 (`CLIENT_WRITABLE_CHAT_ROLES = ("user", "system")` in
+`handoff_webui.py`), even though the shared `append_chat_message()` writer it
+calls into would otherwise accept any role in `CHAT_ROLES`. Without that
+check a client could POST a fake agent reply straight to `/api/chat` with no
+provider having actually run. `run_provider_via_bridge()` shells out
 to `handoff_bridge.py run <provider> --execute --auto-fallback`, diffs
 `.handoff/state.json`'s `history[]` before/after to find the new record(s)
 that run produced (more than one if auto-fallback chained into a second
