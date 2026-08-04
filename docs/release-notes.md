@@ -132,6 +132,48 @@
     count rather than trusting a number pinned here; it drifts every time a
     test is added (see prior review finding on this exact line).
 
+- Web UI Phase 2 (`--workspace` becomes optional, SCR-05):
+  - a pre-implementation design interview resolved DEC-04~07
+    (`docs/design-system/flutter-mapping.html#s1c`) before any code
+    changed, including a real revision mid-review: the first cut of DEC-04
+    ("no workspace" only when cwd is invalid) would have almost never
+    fired, since a running process's cwd essentially always exists --
+    corrected to "cwd has no `.handoff/` marker yet";
+  - `AppState.workspace` is now `Path | None`. Omitting `--workspace`
+    opens cwd directly only if it's already an initialized handoff
+    workspace (`has_handoff_marker()`); otherwise the server starts with
+    no workspace selected instead of assuming an arbitrary cwd (e.g.
+    wherever a launcher was double-clicked from) is the intended project.
+    An explicitly-given `--workspace` that doesn't exist still fails
+    loudly, exactly as before -- `resolve_startup_workspace()`;
+  - every GET endpoint degrades gracefully instead of crashing when
+    `workspace is None`: `/api/info` returns `{workspace: null}`,
+    `/api/tree` and `/api/chat` return empty results, `/api/file` and
+    `/api/run` return a clear 400;
+  - sending the first message (attachments-only sends included) with no
+    workspace selected auto-creates
+    `~/Documents/Agent Handoff Bridge/<date>-<slug>/` and scaffolds it
+    exactly like a manually-picked folder --
+    `create_workspace_for_first_message()` shells out to `handoff_bridge.py
+    init` (which installs the standard files too) for the same
+    chdir-safety reason `run_provider_via_bridge()` already does;
+  - `slugify_for_folder_name()` is local-only (no provider call just to
+    name a folder) and Unicode-aware (`\w`), so Korean text survives
+    intact instead of being stripped the way an ASCII-only slugify
+    library would; name collisions get a numeric suffix, never reuse an
+    existing folder;
+  - the "새 폴더 자동 생성" button doesn't actually create anything --
+    creation is deferred all the way to whichever message is sent first,
+    so the button-first and message-first UI paths converge to one
+    trigger instead of needing separate code;
+  - verified with 28 new tests (pure-function coverage for the resolution/
+    slugify/naming logic, a `AUTO_WORKSPACE_BASE_DIR`-patched-to-a-tempdir
+    suite for real directory creation, and a live-server suite booted with
+    `AppState(None)`) plus a real end-to-end run: `$HOME` swapped to a
+    temp directory so the manual smoke test couldn't touch the real
+    `~/Documents/`, confirming a Korean first message produces a correctly
+    named, fully scaffolded workspace.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

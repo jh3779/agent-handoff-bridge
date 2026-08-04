@@ -6,10 +6,13 @@ Gemini를 실제로 호출하고, 워크스페이스를 자유롭게 오가며, 
 대화 기록을 한 곳에서 훑어보고, 최신 버전을 스스로 확인하는 채팅형
 에이전트 클라이언트.
 
-**지금 상태 (Phase 0 · Phase 1 완료)**: `handoff_webui.py` + `webui/` —
-파일 브라우징, 드래그/클릭 첨부, VS Code식 Open Folder, 워크스페이스별
-로컬 채팅 기록(월별 gzip 압축), 네이티브 창(pywebview, 선택적 의존성),
-그리고 **실제 Codex/Claude 호출**(`POST /api/run`, auto-fallback 포함).
+**지금 상태 (Phase 0 · Phase 1 · Phase 2 완료)**: `handoff_webui.py` +
+`webui/` — 파일 브라우징, 드래그/클릭 첨부, VS Code식 Open Folder,
+워크스페이스별 로컬 채팅 기록(월별 gzip 압축), 네이티브 창(pywebview,
+선택적 의존성), **실제 Codex/Claude 호출**(`POST /api/run`,
+auto-fallback 포함), 그리고 **워크스페이스 미선택 시 자동 폴더 생성**
+(첫 메시지 전송 시 `~/Documents/Agent Handoff Bridge/<날짜-요약>`을
+생성해 install+init까지 실행).
 `python3 -m unittest discover -s tests -v`로 커버됨 — 정확한 테스트 개수는
 드리프트하기 쉬우므로(리뷰에서 지적된 문서 간 불일치 참고) 여기 고정 숫자로
 적지 않는다; 실행 결과를 신뢰하라.
@@ -68,7 +71,7 @@ Gemini를 실제로 호출하고, 워크스페이스를 자유롭게 오가며, 
 
 **해소한 항목**: CFL-01, CFL-03, DEC-02/DEC-03 실제 적용.
 
-## Phase 2 — 워크스페이스 미선택 시 자동 폴더 생성
+## Phase 2 — 워크스페이스 미선택 시 자동 폴더 생성 ✅ 완료
 
 **목표**: [SCR-05](wireframes.html#s7)를 실제 코드로 — 폴더를 고르지 않고
 바로 메시지를 보내면 `~/Documents/Agent Handoff Bridge/<날짜-요약>`을
@@ -77,10 +80,13 @@ Gemini를 실제로 호출하고, 워크스페이스를 자유롭게 오가며, 
 작고 독립적이라 다른 단계와 순서를 바꿔도 안전하다. 온보딩 마찰을 줄이는
 효과가 커서 Phase 1 직후에 배치했다.
 
-**설계 확정** (2026-08-04, 구현 전 사전 인터뷰 7건 →
+**설계 확정** (2026-08-04, 구현 전 사전 인터뷰 8건 →
 [flutter-mapping.html DEC-04~07](flutter-mapping.html#s1c)):
-- 진입 조건: `--workspace` 미지정 + 기본값(cwd)도 무효할 때만. 명시적으로
-  준 `--workspace` 경로가 없으면 기존처럼 즉시 에러(DEC-04).
+- 진입 조건: `--workspace` 미지정 + cwd에 기존 handoff 흔적(`.handoff/`)이
+  없을 때(이미 install/init된 폴더는 지금처럼 바로 열림). 명시적으로 준
+  `--workspace` 경로가 없으면 기존처럼 즉시 에러(DEC-04, 2차 수정 — 최초
+  안 "cwd 무효할 때만"은 cwd가 사실상 항상 존재해 거의 발동 안 하는 문제
+  발견 후 교정).
 - 폴더명: 토큰 미사용 로컬 slugify, 생성은 **첫 메시지 전송 시점**으로
   미룸(버튼-먼저/메시지-먼저 두 경로가 하나로 수렴), 충돌 시 숫자 접미사
   (DEC-05).
@@ -88,6 +94,43 @@ Gemini를 실제로 호출하고, 워크스페이스를 자유롭게 오가며, 
   (DEC-06).
 - 확인 UX: 다이얼로그 없이 조용히 생성 + 시스템 메시지 안내 — 토큰
   소비가 없는 순수 로컬 작업이라 DEC-02의 대상이 아님(DEC-07).
+
+**실제로 한 것**:
+- `AppState.workspace`가 `Path | None`이 됨 — `--workspace` 미지정 시
+  기본값을 무조건 cwd로 해석하던 것을 그만두고, `resolve_startup_workspace()`
+  (순수 함수, `main()`에서 호출)가 DEC-04를 그대로 코드로 옮겼다: 명시적
+  `--workspace`는 기존과 동일하게 엄격히 검증, 무지정 시엔
+  `has_handoff_marker()`로 cwd의 `.handoff/` 존재 여부만 확인.
+- `workspace is None`일 때 모든 GET 엔드포인트가 죽지 않고 우아하게
+  응답하도록 손봤다 — `/api/info`는 `{workspace: null}`,
+  `/api/tree`/`/api/chat`은 빈 목록, `/api/file`/`/api/run`은 명확한 400.
+- 실제 생성은 `create_workspace_for_first_message()` — `POST /api/chat`의
+  `role: "user"` 경로에서만(즉 실제 사용자 메시지에서만) 호출된다.
+  `slugify_for_folder_name()`은 토큰 없이 로컬에서 만들며 `\w`가
+  유니코드를 인식해 한글도 그대로 보존(전형적인 ASCII 전용 slugify와
+  다른 점, DEC-05가 요구한 그대로). 이름 충돌은 숫자 접미사로 처리.
+  스캐폴딩은 `handoff_bridge.py --workspace <새 폴더> init "<첫 메시지>"`를
+  서브프로세스로 호출해서 처리 — `run_provider_via_bridge()`와 같은
+  chdir-안전성 이유로 인프로세스 호출 대신 서브프로세스를 그대로 따랐다.
+  `init`이 기본으로 `install`까지 하므로 DEC-06이 요구한 "전부 실행"이
+  한 번의 호출로 해결됨.
+- "새 폴더 자동 생성" 버튼(`webui/app.js`)은 실제로 아무것도 만들지
+  않는다 — DEC-05대로 composer에 포커스만 주고, 생성 자체는 첫 메시지
+  전송(`POST /api/chat`) 시점까지 미룬다. "폴더 직접 선택…" 버튼은
+  기존 Open Folder 로직(`pickFolder()`로 추출해 공유)을 그대로 재사용.
+- 자동 생성 직후 프론트엔드가 `/api/info`+`/api/tree`를 다시 불러와
+  타이틀바·파일 트리를 새 워크스페이스로 갱신(DEC-07: 확인 다이얼로그
+  없이 조용히).
+
+**검증**: `python3 -m unittest discover -s tests -v`에 28개 테스트 추가
+(순수 함수 단위 테스트 + `AUTO_WORKSPACE_BASE_DIR`을 임시 디렉터리로
+패치한 생성 테스트 + `AppState(None)`으로 띄운 실제 라이브 서버 테스트).
+실제 프로세스로도 확인 — `$HOME`을 임시 디렉터리로 바꿔치기해 실제
+`~/Documents/`를 건드리지 않고 서버를 띄운 뒤 curl로 전체 흐름(빈
+워크스페이스 → 한글 메시지 전송 → 자동 생성된 폴더에 `.handoff/state.json`
+존재 확인)을 검증.
+
+**해소한 항목**: SCR-05 실제 구현, DEC-04(2차 수정)/05/06/07 실제 적용.
 
 ## Phase 3 — 멀티 프로젝트 히스토리 드로어
 
