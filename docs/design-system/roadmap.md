@@ -10,7 +10,9 @@ Gemini를 실제로 호출하고, 워크스페이스를 자유롭게 오가며, 
 파일 브라우징, 드래그/클릭 첨부, VS Code식 Open Folder, 워크스페이스별
 로컬 채팅 기록(월별 gzip 압축), 네이티브 창(pywebview, 선택적 의존성),
 그리고 **실제 Codex/Claude 호출**(`POST /api/run`, auto-fallback 포함).
-121개 테스트로 커버됨(webui 단독 72개).
+`python3 -m unittest discover -s tests -v`로 커버됨 — 정확한 테스트 개수는
+드리프트하기 쉬우므로(리뷰에서 지적된 문서 간 불일치 참고) 여기 고정 숫자로
+적지 않는다; 실행 결과를 신뢰하라.
 
 이 문서는 Phase 0과 최종 목표 사이를 순서가 있는 단계로 쪼갠다. 각 단계는
 [Conflict List](flutter-mapping.html#s2)의 특정 항목을 해소하는 것을

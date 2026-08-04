@@ -30,7 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from handoff_bridge import WriteLock
+from handoff_bridge import WriteLock, choose_auto_provider
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
@@ -346,15 +346,18 @@ def classify_run_status(handoff_needed: bool, reason: str) -> str:
     return "handoff"
 
 
-def read_state_history(workspace: Path) -> list[dict]:
+def read_state_dict(workspace: Path) -> dict:
     state_path = workspace / ".handoff" / "state.json"
     if not state_path.exists():
-        return []
+        return {}
     try:
-        data = json.loads(state_path.read_text(encoding="utf-8"))
+        return json.loads(state_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return []
-    return data.get("history", [])
+        return {}
+
+
+def read_state_history(workspace: Path) -> list[dict]:
+    return read_state_dict(workspace).get("history", [])
 
 
 def run_provider_via_bridge(
@@ -456,9 +459,16 @@ def run_provider_via_bridge(
                 }
             )
         return new_records
+    # No history record exists to read the real provider back from, so
+    # "auto" (schema: docs/webui-chat-storage.md) must still be resolved
+    # here -- otherwise a synthetic record could persist "auto" as a
+    # chat-log `provider` value, which callers never expect to see.
+    resolved_provider = (
+        choose_auto_provider(read_state_dict(workspace)) if provider == "auto" else provider
+    )
     return [
         {
-            "provider": provider,
+            "provider": resolved_provider,
             "model": model or "app-selected default",
             "instruction_type": instruction_type,
             "exit_code": exit_code,

@@ -74,8 +74,11 @@
     provider's record is saved but before the recursive fallback call
     finishes -- a synthetic "timed out" agent message is appended instead
     of the caller silently seeing only the first reply;
-  - 16 new tests -- 123 total for the whole suite, 74 in
-    `tests/test_handoff_webui.py`.
+  - added tests for the timeout-partial-output decode fix and the
+    synthetic-record `provider: "auto"` fix from review follow-up -- run
+    `python3 -m unittest discover -s tests -v` for the current pass/fail
+    count rather than trusting a number pinned here; it drifts every time a
+    test is added (see prior review finding on this exact line).
 
 ## v0.1.0 — 2026-08-03
 

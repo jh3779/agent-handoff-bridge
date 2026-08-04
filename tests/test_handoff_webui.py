@@ -572,6 +572,23 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         self.assertTrue(records[0]["handoff_needed"])
         self.assertIn("tool_failure", records[0]["reason"])
 
+    def test_synthetic_record_resolves_auto_never_persists_auto_literal(self):
+        # docs/webui-chat-storage.md: the `provider` field on an agent
+        # message is "never `auto`; that's resolved to a real provider
+        # before the record exists." The no-history synthetic-record branch
+        # of run_provider_via_bridge() used to write the raw `provider`
+        # argument straight into the record, so a caller that requested
+        # "auto" and hit a subprocess failure before any history was ever
+        # written would leak "auto" into a chat-log record. Regression test
+        # for resolving it via choose_auto_provider() instead.
+        _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+        records = webui.run_provider_via_bridge(
+            Path("/definitely/does/not/exist"), "auto", "hello", None, "continue"
+        )
+        self.assertEqual(len(records), 1)
+        self.assertIn(records[0]["provider"], ("codex", "claude"))
+        self.assertNotEqual(records[0]["provider"], "auto")
+
     def test_timeout_after_partial_history_appends_synthetic_notice(self):
         # Simulates the outer 600s timeout firing mid-auto-fallback: codex's
         # own record already made it to state.json, but the recursive claude
