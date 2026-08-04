@@ -55,9 +55,9 @@ Windows launcher:
 launchers\windows\handoff-bridge.cmd
 ```
 
-Preview the v0.2 chat-style redesign (MVP — file browsing, drag/click
-attaching, VS Code-style Open Folder, and local per-folder chat history;
-still no provider is called):
+Try the v0.2 chat-style redesign (file browsing, drag/click attaching,
+VS Code-style Open Folder, local per-folder chat history, and — as of
+Phase 1 — real Codex/Claude calls with auto-fallback):
 
 ```bash
 pip install pywebview   # optional, for a real app window instead of a browser tab

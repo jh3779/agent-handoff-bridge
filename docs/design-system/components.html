@@ -23,7 +23,7 @@
 
   <header class="pagehead">
     <div class="t">컴포넌트 라이브러리</div>
-    <div class="s">§1–5는 v0.1 폼 기반 GUI(<code>handoff_desktop.py</code> 실제 구현) 레거시 참고용. §6 터미널은 <code>handoff_control.py</code>로 이번 재설계와 무관. §8–15는 <a href="wireframes.html#s2">v0.2 채팅형 재설계</a>의 신규 컴포넌트 — <b>§8(사이드바 트리)·§10(입력창/Open Folder)은 <code>handoff_webui.py</code>에 실제 구현됨</b>(provider 연결 제외). §9(메시지 버블)는 기본 말풍선만 구현, 코드블록 렌더링(DEC-03)은 아직. §11·§13–15(히스토리 드로어·Provider 연결·업데이트 확인)는 여전히 코드 없음, 요구사항/로드맵이 정본.</div>
+    <div class="s">§1–5는 v0.1 폼 기반 GUI(<code>handoff_desktop.py</code> 실제 구현) 레거시 참고용. §6 터미널은 <code>handoff_control.py</code>로 이번 재설계와 무관. §8–15는 <a href="wireframes.html#s2">v0.2 채팅형 재설계</a>의 신규 컴포넌트 — Phase 0·1 완료로 <b>§3(상태 배지)·§8(사이드바 트리)·§9(메시지 버블, 코드블록 렌더링 포함)·§10(입력창/Open Folder/Provider 선택)은 <code>handoff_webui.py</code>에 실제 구현됨</b>. §11·§13–15(멀티 프로젝트 히스토리 드로어·API 키 모드·업데이트 확인)는 여전히 코드 없음, 요구사항/<a href="roadmap.md">roadmap.md</a>가 정본.</div>
     <div class="toc">
       <a href="#s1">버튼(legacy)</a><a href="#s2">입력 필드(legacy)</a><a href="#s3">상태 배지</a>
       <a href="#s4">로그 콘솔(legacy)</a><a href="#s5">다이얼로그(legacy)</a><a href="#s6">터미널 메뉴</a>
@@ -71,7 +71,7 @@
   </section>
 
   <section id="s3" class="sec">
-    <div class="sec-h"><span class="sec-num">3</span><span class="sec-t">상태 배지</span><span class="tag">현재 미구현 — v0.1 로그 텍스트 / v0.2 메시지 meta 칩(§9)에서 재사용</span></div>
+    <div class="sec-h"><span class="sec-num">3</span><span class="sec-t">상태 배지</span><span class="tag">v0.1은 미구현(로그 텍스트만) · v0.2는 3종(success/handoff/fail)만 Phase 1에서 실제 구현 — §9 참고</span></div>
     <div class="card pad">
       <div class="row" style="gap:8px">
         <span class="badge" style="background:var(--ds-st-idle-bg);color:var(--ds-st-idle-fg)"><span class="msym" style="font-size:14px">radio_button_unchecked</span>대기</span>
@@ -80,7 +80,7 @@
         <span class="badge" style="background:var(--ds-st-handoff-bg);color:var(--ds-st-handoff-fg)"><span class="msym" style="font-size:14px">sync_alt</span>핸드오프 필요</span>
         <span class="badge" style="background:var(--ds-st-fail-bg);color:var(--ds-st-fail-fg)"><span class="msym" style="font-size:14px">error</span>실패 · tool_failure</span>
       </div>
-      <div class="note" style="margin-top:10px">색만으로 구분하지 않는다 — 아이콘 + 텍스트 라벨을 항상 함께 쓴다(접근성). 현재 GUI는 이 5개 상태를 전부 <b>Output 로그의 텍스트 한 줄</b>(<code class="mono">handoff needed: True (…)</code>)로만 표현한다 — 상태 배지 컴포넌트 자체는 아직 구현되어 있지 않음.</div>
+      <div class="note" style="margin-top:10px">색만으로 구분하지 않는다 — 아이콘 + 텍스트 라벨을 항상 함께 쓴다(접근성). v0.1 GUI는 이 5개 상태를 전부 <b>Output 로그의 텍스트 한 줄</b>(<code class="mono">handoff needed: True (…)</code>)로만 표현한다. v0.2는 <code>classify_run_status()</code>가 <code>완료/핸드오프 필요/실패</code> 3종만 실제로 만들어 <code class="mono">.status-success/.status-handoff/.status-fail</code>로 렌더링한다 — "실행 중"은 배지가 아니라 §9의 스피너 placeholder, "대기"는 v0.2 채팅 UI에 해당 개념 자체가 없음(메시지가 없으면 그냥 빈 스레드).</div>
       <div class="tag" style="margin-top:8px">근거: handoff_bridge.py:770 print(f"handoff needed: …") · handoff_desktop.py:208-214 finish_command()</div>
     </div>
   </section>
@@ -177,6 +177,7 @@ handoff needed: True (tool_failure: provider command not found)</div>
       </div>
     </div>
     <div class="note" style="margin-top:10px">user 버블은 우측 정렬 + primary-container 배경. agent 버블은 좌측 정렬 + outline. agent 메시지의 <code>.meta</code>에 provider명과 §3 상태 배지(소형)를 함께 표기 — 색만이 아니라 아이콘+텍스트 유지(접근성 원칙 상속).</div>
+    <div class="note" style="margin-top:6px"><b>Phase 1 실제 구현</b>: <code>webui/app.css</code>의 <code>.msg.agent</code>/<code>.status-badge</code>, <code>webui/app.js</code>의 <code>renderMessage()</code>. <code>log-excerpt</code>는 별도 블록 대신 <code>renderTextWithCodeBlocks()</code>가 처리하는 코드블록(DEC-03)으로 흡수됨 — provider 응답 텍스트 안에 섞여 있는 <code>```코드```</code>만 모노스페이스로 렌더링.</div>
   </section>
 
   <section id="s10" class="sec">
@@ -193,6 +194,7 @@ handoff needed: True (tool_failure: provider command not found)</div>
       </div>
     </div>
     <div class="note" style="margin-top:10px">v0.1의 Target 패널(Provider/Primary/Model/Instruction 4개 Combobox+Entry)이 입력창 아래 인라인 메타 행으로 축소됨 — 매 메시지마다 바꿀 일이 드문 값들이라 항상 펼쳐둘 필요가 없다는 판단. 첨부 칩은 사이드바 선택(§8)과 드래그&amp;드롭(<a href="wireframes.html#s4">SCR-02</a>) 양쪽에서 채워진다.</div>
+    <div class="note" style="margin-top:6px"><b>Phase 1 실제 구현 — 목업과 다른 점</b>: Provider 선택을 입력창 아래가 아니라 <b>타이틀바</b>에 뒀다(<code>#provider-select</code>). 세션 내내 잘 안 바뀌는 값이라 매 메시지마다 눈에 띄는 composer 안보다 상시 노출되는 타이틀바가 더 적합하다고 판단 — Instruction 선택은 Phase 1에서 만들지 않음(모든 turn을 <code>continue</code>로 고정, 값을 고를 이유가 아직 없어서).</div>
   </section>
 
   <section id="s11" class="sec">

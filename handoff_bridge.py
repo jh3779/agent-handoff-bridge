@@ -223,6 +223,22 @@ def save_state(state: dict[str, Any]) -> None:
     write_json(STATE_FILE, state)
 
 
+def decode_timeout_output(value: str | bytes | None) -> str:
+    """Normalize `subprocess.TimeoutExpired.stdout`/`.stderr`.
+
+    CPython's `_communicate()` builds the exception's partial output via
+    `b''.join(...)` on the timeout path regardless of `text=True`/`encoding`
+    on the `Popen`/`run()` call -- only the successful-return path decodes to
+    `str`. So even with `text=True`, `exc.stdout`/`exc.stderr` can still be
+    `bytes` here.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
+
+
 def short_run(args: list[str], timeout: int = 10) -> tuple[int, str, str]:
     try:
         result = subprocess.run(
@@ -235,7 +251,7 @@ def short_run(args: list[str], timeout: int = 10) -> tuple[int, str, str]:
     except FileNotFoundError:
         return 127, "", f"{args[0]} not found"
     except subprocess.TimeoutExpired as exc:
-        return 124, exc.stdout or "", exc.stderr or "timed out"
+        return 124, decode_timeout_output(exc.stdout), decode_timeout_output(exc.stderr) or "timed out"
     return result.returncode, result.stdout.strip(), result.stderr.strip()
 
 
@@ -745,8 +761,8 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         stderr = f"{provider} command not found"
     except subprocess.TimeoutExpired as exc:
         exit_code = 124
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or "provider timed out"
+        stdout = decode_timeout_output(exc.stdout)
+        stderr = decode_timeout_output(exc.stderr) or "provider timed out"
 
     (run_dir / "stdout.jsonl").write_text(stdout, encoding="utf-8")
     (run_dir / "stderr.log").write_text(stderr, encoding="utf-8")
@@ -784,13 +800,18 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
 
     if handoff_needed:
         fallback = other_provider(provider)
-        next_prompt = build_prompt(fallback, state, "Continue after provider handoff.", handoff_reason)
+        # Carry the ORIGINAL user_prompt into the fallback, not a generic
+        # placeholder -- the handoff_reason is already conveyed separately
+        # via build_prompt()'s reason_block, so replacing the actual
+        # request/attachments here just means the fallback provider has no
+        # idea what the user actually asked for.
+        next_prompt = build_prompt(fallback, state, user_prompt, handoff_reason)
         NEXT_PROMPT_FILE.write_text(next_prompt, encoding="utf-8")
         print(f"Next prompt written to: {NEXT_PROMPT_FILE}")
         if args.auto_fallback:
             print(f"Auto-fallback enabled; switching to {fallback}.")
             next_args = argparse.Namespace(
-                prompt="Continue after provider handoff.",
+                prompt=user_prompt,
                 prompt_file=None,
                 execute=True,
                 auto_fallback=False,

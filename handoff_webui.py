@@ -18,7 +18,10 @@ import argparse
 import gzip
 import json
 import mimetypes
+import os
+import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 import webbrowser
@@ -27,7 +30,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from handoff_bridge import WriteLock
+from handoff_bridge import WriteLock, choose_auto_provider
+
+BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
 try:
     import webview  # type: ignore[import-not-found]
@@ -192,8 +197,24 @@ def ensure_chat_gitignore(workspace: Path) -> None:
     gitignore_path.write_text("*\n", encoding="utf-8")
 
 
-def append_chat_message(workspace: Path, role: str, text: str, attachments: list[dict], now: datetime) -> dict:
-    if role not in ("user", "system"):
+CHAT_ROLES = ("user", "system", "agent")
+# POST /api/chat is a direct client write; "agent" is reserved for messages
+# POST /api/run appends itself right after a real provider call, so it's
+# excluded here even though append_chat_message() (the shared writer) allows it.
+CLIENT_WRITABLE_CHAT_ROLES = ("user", "system")
+
+
+def append_chat_message(
+    workspace: Path,
+    role: str,
+    text: str,
+    attachments: list[dict],
+    now: datetime,
+    provider: str | None = None,
+    status: str | None = None,
+    reason: str | None = None,
+) -> dict:
+    if role not in CHAT_ROLES:
         raise WorkspaceError(f"invalid role: {role}")
     message = {
         "id": uuid.uuid4().hex,
@@ -202,6 +223,12 @@ def append_chat_message(workspace: Path, role: str, text: str, attachments: list
         "text": text,
         "attachments": attachments or [],
     }
+    # Only "agent" messages carry provider/status/reason -- keep the other
+    # two roles' JSON shape exactly as it was (no null-field noise).
+    if role == "agent":
+        message["provider"] = provider
+        message["status"] = status
+        message["reason"] = reason
     target_dir = chat_dir(workspace)
     with WriteLock(chat_lock_path(workspace)):
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -274,6 +301,250 @@ def archive_old_months(workspace: Path, now: datetime) -> list[str]:
             path.unlink()
             archived.append(month)
     return archived
+
+
+# ---------------------------------------------------------------------------
+# Provider runs (Phase 1, docs/design-system/roadmap.md). Shells out to
+# handoff_bridge.py -- the same CLI a human would type -- rather than
+# importing and calling its functions in-process. Those functions resolve
+# paths like .handoff/state.json relative to the *process* cwd (via
+# chdir_workspace()), which is fine for a one-shot CLI invocation but not
+# safe to call in-process from a ThreadingHTTPServer handler: os.chdir() is
+# process-wide, so one request's chdir would race every other in-flight
+# request's thread. A subprocess per run keeps each invocation's cwd
+# private, exactly like handoff_desktop.py already does for the same
+# reason (see run_bridge() there).
+# ---------------------------------------------------------------------------
+
+PROVIDER_RUN_TIMEOUT_SECONDS = 600
+
+# run_provider_via_bridge() reads .handoff/state.json's history length
+# before the subprocess call and diffs against it after, with no lock in
+# between -- two concurrent POST /api/run calls (e.g. the Enter-key path in
+# webui/app.js doesn't check whether a run is already in flight) would both
+# read the same "before" length, and whichever finishes second would slice
+# in the first call's already-persisted record too, duplicating it as a
+# second agent chat message. There's only one AppState.workspace server-wide,
+# so a single process-wide lock (not a per-workspace one) is correct here --
+# every concurrent run is necessarily against the same active workspace.
+# A plain threading.Lock, not handoff_bridge.WriteLock: the contention here
+# is between HTTP request threads in this one process, not separate CLI
+# processes, and WriteLock's 10s default timeout is far too short for a
+# provider call that can legitimately take minutes.
+_RUN_LOCK = threading.Lock()
+
+
+class RunAlreadyInProgressError(Exception):
+    """Raised instead of silently blocking/racing when a second
+    POST /api/run arrives while one is still in flight."""
+
+# Killing the outer handoff_bridge.py wrapper on timeout does NOT kill the
+# real codex/claude child it spawned -- subprocess.run() only signals the
+# immediate child, not its descendants, since neither process runs in its
+# own process group. So the per-provider budget is delegated to the bridge
+# itself via --timeout-seconds, which applies the timeout to the actual
+# provider subprocess.run() call and can therefore really terminate it.
+# This outer wrapper timeout becomes a hard-kill backstop for cases outside
+# provider execution (e.g. the bridge process itself hanging on I/O) --
+# generous enough to cover two sequential --timeout-seconds budgets (a
+# rate-limited first provider auto-falling-back into a second one that also
+# times out), plus real slack: each provider call's save_state()/
+# append_current() also goes through handoff_bridge.WriteLock, which alone
+# can block up to its own 10s timeout under contention (e.g. a second
+# browser tab's /api/run racing this one) -- up to 2x that across both
+# calls in a fallback chain, on top of ordinary process-startup overhead.
+OUTER_SUBPROCESS_TIMEOUT_SECONDS = PROVIDER_RUN_TIMEOUT_SECONDS * 2 + 60
+
+
+def classify_run_status(handoff_needed: bool, reason: str) -> str:
+    """Map a handoff_bridge.py history record's (handoff_needed, reason) to
+    one of the three terminal run states from
+    docs/design-system/components.html §3/§9. `reason` always starts with
+    one of handoff_bridge.HANDOFF_LABELS or "none" -- classify_handoff()'s
+    own contract, enforced by scripts/validate_handoff.py.
+    """
+    if not handoff_needed:
+        return "success"
+    if reason.startswith("tool_failure") or reason.startswith("unknown"):
+        return "fail"
+    return "handoff"
+
+
+def read_state_dict(workspace: Path) -> dict:
+    state_path = workspace / ".handoff" / "state.json"
+    if not state_path.exists():
+        return {}
+    try:
+        return json.loads(state_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def read_state_history(workspace: Path) -> list[dict]:
+    return read_state_dict(workspace).get("history", [])
+
+
+def build_run_prompt(text: str, attachments: list[dict]) -> str:
+    """Combine the composer text with any attached files into the single
+    string that becomes the provider's actual prompt.
+
+    Without this, an attachment only ever reached the chat log (POST
+    /api/chat persists it on the "user" message) -- POST /api/run sent just
+    `text`, so a file the user thought they'd attached was never part of
+    what the provider actually saw. docs/design-system/wireframes.html
+    describes attachments as context for "the next message", so that's the
+    contract this restores.
+    """
+    parts = [text] if text else []
+    for attachment in attachments:
+        name = attachment.get("name") or attachment.get("path") or "attachment"
+        content = attachment.get("content")
+        header = f"### Attached file: {name}"
+        if content is None:
+            parts.append(f"{header}\n(binary or unreadable -- no preview available)")
+        else:
+            note = " (truncated)" if attachment.get("truncated") else ""
+            parts.append(f"{header}{note}\n```\n{content}\n```")
+    return "\n\n".join(parts)
+
+
+def run_provider_via_bridge(
+    workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str
+) -> list[dict]:
+    """Thin locking wrapper around `_run_provider_via_bridge_locked()`.
+
+    Fails fast with `RunAlreadyInProgressError` instead of silently
+    blocking (a provider call can legitimately take up to
+    `OUTER_SUBPROCESS_TIMEOUT_SECONDS`) or racing (see `_RUN_LOCK`'s
+    comment) when a second call arrives while one is already in flight.
+    """
+    if not _RUN_LOCK.acquire(blocking=False):
+        raise RunAlreadyInProgressError("a provider run is already in progress; wait for it to finish")
+    try:
+        return _run_provider_via_bridge_locked(workspace, provider, prompt, model, instruction_type)
+    finally:
+        _RUN_LOCK.release()
+
+
+def _run_provider_via_bridge_locked(
+    workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str
+) -> list[dict]:
+    """Invoke `handoff_bridge.py run <provider> --execute --auto-fallback`
+    against `workspace` and return the new handoff_bridge.py history
+    record(s) it appended to .handoff/state.json -- more than one if
+    auto-fallback chained into a second provider.
+
+    If the subprocess itself fails before handoff_bridge.py ever gets to
+    classify_handoff()/save_state() (e.g. the interpreter can't even start),
+    no history record exists to read back -- synthesize one so callers
+    always get at least one result to show and persist, instead of silently
+    returning nothing.
+    """
+    before = len(read_state_history(workspace))
+
+    # The prompt travels via --prompt-file, not as a trailing argv
+    # positional: a long/multi-line prompt as a bare CLI arg risks hitting
+    # OS argv-length limits and shows up in the local process list, and
+    # (found via a CI-only failure) a bare positional interleaved after
+    # `--instruction-type <value>` parses inconsistently across argparse
+    # versions -- Python 3.11 rejected it as an unrecognized argument
+    # while 3.14 accepted it. A file avoids both problems.
+    prompt_fd, prompt_path_str = tempfile.mkstemp(prefix="webui-run-prompt-", suffix=".txt")
+    prompt_path = Path(prompt_path_str)
+    try:
+        with os.fdopen(prompt_fd, "w", encoding="utf-8") as handle:
+            handle.write(prompt)
+
+        command = [
+            sys.executable,
+            str(BRIDGE_SCRIPT),
+            "--workspace",
+            str(workspace),
+            "run",
+            provider,
+            "--execute",
+            "--auto-fallback",
+            "--instruction-type",
+            instruction_type,
+            "--prompt-file",
+            str(prompt_path),
+            "--timeout-seconds",
+            str(PROVIDER_RUN_TIMEOUT_SECONDS),
+        ]
+        if model:
+            command.extend(["--model", model])
+
+        hit_outer_timeout = False
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=OUTER_SUBPROCESS_TIMEOUT_SECONDS,
+                check=False,
+            )
+            stderr_tail = (result.stderr or "").strip()[-2000:]
+            exit_code = result.returncode
+        except subprocess.TimeoutExpired:
+            # The hard-kill backstop actually fired -- the bridge process
+            # (and whatever provider subprocess it was waiting on) got
+            # killed before it could finish writing/saving anything for
+            # that in-flight call. A per-provider --timeout-seconds
+            # timeout, by contrast, is caught inside the bridge itself and
+            # returns normally with exit_code 124 plus a real saved record,
+            # so it never reaches this branch.
+            hit_outer_timeout = True
+            stderr_tail = f"timed out after {OUTER_SUBPROCESS_TIMEOUT_SECONDS}s"
+            exit_code = 124
+        except OSError as exc:
+            stderr_tail = str(exc)
+            exit_code = 127
+    finally:
+        prompt_path.unlink(missing_ok=True)
+
+    new_records = read_state_history(workspace)[before:]
+    if new_records:
+        if hit_outer_timeout:
+            # This can fire mid-auto-fallback: e.g. codex's own record is
+            # already saved but the recursive claude call never got to
+            # finish and save its own. Without this, the caller would
+            # silently see only the first record and have no idea a second
+            # attempt was even in flight.
+            timed_out_provider = "claude" if new_records[-1]["provider"] == "codex" else "codex"
+            new_records.append(
+                {
+                    "provider": timed_out_provider,
+                    "model": model or "app-selected default",
+                    "instruction_type": instruction_type,
+                    "exit_code": exit_code,
+                    "session_id": None,
+                    "final_text": f"Timed out after {OUTER_SUBPROCESS_TIMEOUT_SECONDS}s waiting for a reply.",
+                    "handoff_needed": True,
+                    "reason": "tool_failure: subprocess did not produce a history record (exit 124)",
+                    "run_dir": None,
+                }
+            )
+        return new_records
+    # No history record exists to read the real provider back from, so
+    # "auto" (schema: docs/webui-chat-storage.md) must still be resolved
+    # here -- otherwise a synthetic record could persist "auto" as a
+    # chat-log `provider` value, which callers never expect to see.
+    resolved_provider = (
+        choose_auto_provider(read_state_dict(workspace)) if provider == "auto" else provider
+    )
+    return [
+        {
+            "provider": resolved_provider,
+            "model": model or "app-selected default",
+            "instruction_type": instruction_type,
+            "exit_code": exit_code,
+            "session_id": None,
+            "final_text": stderr_tail or f"handoff_bridge.py run exited {exit_code} with no output",
+            "handoff_needed": True,
+            "reason": f"tool_failure: subprocess did not produce a history record (exit {exit_code})",
+            "run_dir": None,
+        }
+    ]
 
 
 def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
@@ -354,6 +625,12 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 try:
                     body = self._read_json_body()
                     role = str(body.get("role") or "user")
+                    if role not in CLIENT_WRITABLE_CHAT_ROLES:
+                        # "agent" is only ever written by POST /api/run, right
+                        # after a real provider call -- accepting it here
+                        # would let a client forge a fake agent reply with no
+                        # provider having actually run.
+                        raise WorkspaceError(f"role must be one of {CLIENT_WRITABLE_CHAT_ROLES}")
                     text = str(body.get("text") or "")
                     attachments = body.get("attachments") or []
                     if not isinstance(attachments, list):
@@ -370,6 +647,43 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     ensure_chat_gitignore(candidate)
                     archive_old_months(candidate, utc_now())
                     self._send_json(200, {"workspace": str(candidate), "name": candidate.name or str(candidate)})
+                except WorkspaceError as exc:
+                    self._send_json(400, {"error": str(exc)})
+            elif parsed.path == "/api/run":
+                try:
+                    body = self._read_json_body()
+                    provider = str(body.get("provider") or "auto")
+                    if provider not in ("auto", "codex", "claude"):
+                        raise WorkspaceError(f"invalid provider: {provider}")
+                    text = str(body.get("text") or "").strip()
+                    attachments = body.get("attachments") or []
+                    if not isinstance(attachments, list):
+                        raise WorkspaceError("attachments must be a list")
+                    if not text and not attachments:
+                        raise WorkspaceError("text or attachments required")
+                    model = body.get("model") or None
+                    workspace = state.workspace
+                    prompt = build_run_prompt(text, attachments)
+                    records = run_provider_via_bridge(workspace, provider, prompt, model, "continue")
+                    messages = []
+                    for record in records:
+                        status = classify_run_status(record["handoff_needed"], record["reason"])
+                        agent_text = record.get("final_text") or f"(exit {record['exit_code']}, no output)"
+                        messages.append(
+                            append_chat_message(
+                                workspace,
+                                "agent",
+                                agent_text,
+                                [],
+                                utc_now(),
+                                provider=record["provider"],
+                                status=status,
+                                reason=record["reason"],
+                            )
+                        )
+                    self._send_json(200, {"messages": messages})
+                except RunAlreadyInProgressError as exc:
+                    self._send_json(409, {"error": str(exc)})
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             else:
@@ -405,7 +719,7 @@ class Api:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="MVP web UI: browse/switch workspace and draft attachments (no provider calls)."
+        description="MVP web UI: browse/switch workspace, chat, and run Codex/Claude (Phase 1: POST /api/run)."
     )
     parser.add_argument("--workspace", default=".", help="Initial workspace folder. Switchable at runtime.")
     parser.add_argument(
@@ -466,7 +780,7 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://{args.host}:{args.port}/"
     print(f"Agent Handoff Bridge web UI (MVP) serving {workspace}")
     print(f"  {url}")
-    print("  File browsing + local chat drafts only. No provider is called.")
+    print("  File browsing + local chat, and POST /api/run actually calls Codex/Claude.")
     print(f"  Chat history: <workspace>/{CHAT_DIR_RELATIVE.as_posix()}/ (monthly, compressed after month-end)")
 
     mode = choose_ui_mode(args.browser, webview is not None)

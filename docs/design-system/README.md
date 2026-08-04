@@ -9,14 +9,21 @@ v0.1 폼 기반 창에서 Codex/Claude 스타일 **채팅형 작업지시 화면
 재설계 — 사용자 요구사항이 이 재설계의 정본. v0.1 폼 UI는 실제 구현
 참고용으로 각 페이지에 "레거시"로 남겨뒀다.
 
-**MVP 구현 시작** (2026-08-04): `../../handoff_webui.py` +
+**MVP 구현 시작** (2026-08-04, Phase 0): `../../handoff_webui.py` +
 `../../webui/`가 이 재설계의 첫 실제 동작 슬라이스다 — 사이드바 파일 트리,
-드래그&amp;드롭/클릭 첨부, 대화 스레드 UI. **provider 호출은 아직 없다**
-(MVP 범위: "일단 CLI를 붙이지 않고 파일 열람·삽입만"). 백엔드는
-DEC-01(프레임워크 전환)을 아직 채택하지 않고 **Python 표준 라이브러리
-`http.server` + 순수 JS**로 구현 — 새 의존성 없이 가장 빠르게 "실제로
-테스트 가능한 것"을 만들기 위한 실용적 선택이며, DEC-01이 가리키는 최종
-프로덕션 스택을 대체하는 결정은 아니다.
+드래그&amp;드롭/클릭 첨부, 대화 스레드 UI (MVP 범위: "일단 CLI를 붙이지
+않고 파일 열람·삽입만"). 백엔드는 DEC-01(프레임워크 전환)을 아직
+채택하지 않고 **Python 표준 라이브러리 `http.server` + 순수 JS**로 구현 —
+새 의존성 없이 가장 빠르게 "실제로 테스트 가능한 것"을 만들기 위한
+실용적 선택이며, DEC-01이 가리키는 최종 프로덕션 스택을 대체하는
+결정은 아니다.
+
+**Provider 연결** (2026-08-04, Phase 1): `POST /api/run`이 실제로
+`handoff_bridge.py run <provider> --execute --auto-fallback`을 서브프로세스로
+호출한다 — **provider 호출이 이제 있다.** DEC-02(세션당 첫 전송만 확인)와
+DEC-03(코드블록 렌더링)도 이 단계에서 실제 구현됨. 가짜 `codex`/`claude`
+스크립트로 auto-fallback 체인까지 토큰 소비 없이 재현해 검증. 자세한
+내용은 [roadmap.md](roadmap.md) Phase 1.
 
 **"웹이 아니라 프로그램처럼" 요구사항 반영** (2026-08-04): 위 서버를
 브라우저 탭이 아니라 **네이티브 앱 창**으로 띄우도록
@@ -61,7 +68,7 @@ open docs/design-system/design-system.html   # macOS
 | [design-system.html](design-system.html) | 1 · 원칙, 색("Bridge Indigo"/"Signal Amber"), 타이포그래피, 간격/모양/고도, 모션 |
 | [components.html](components.html) | 2 · §1–6 v0.1 레거시 + §8–15 v0.2 신규(사이드바 트리·메시지 버블·입력창·히스토리 항목·히스토리 그룹·Provider 연결/API 키·업데이트 배지) + 제외 목록(§16) |
 | [patterns.html](patterns.html) | 3 · run 상태 전이도, 실행 상태 5종, 빈 상태, 비용 행동 확인 패턴(DEC-02 반영), 접근성 |
-| [flutter-mapping.html](flutter-mapping.html) | 4 · §1 v0.1 ttk 역매핑 + §1b 기술 스택 결정(프레임워크 전환) + §1c 결정 기록(DEC-01~03) + Conflict List(미해결 8건) |
+| [flutter-mapping.html](flutter-mapping.html) | 4 · §1 v0.1 ttk 역매핑 + §1b 기술 스택 결정(프레임워크 전환) + §1c 결정 기록(DEC-01~03) + Conflict List(미해결 10건, CFL-01 Phase 1로 해소) |
 | [wireframes.html](wireframes.html) | 5 · 전체 워크플로우, **v0.2 화면 8종**(기본/드래그오버/히스토리(프로젝트별)/폴더선택/자동폴더생성/Provider 온보딩/업데이트확인), 터미널 메뉴 |
 
 ## 이 문서가 다루는 것 / 다루지 않는 것
@@ -101,12 +108,16 @@ open docs/design-system/design-system.html   # macOS
 [flutter-mapping.html §1c 결정 기록](flutter-mapping.html#s1c):
 
 - **DEC-01**: 구현 기술 스택 = 프레임워크 전환(Tauri/Electron류). 순정
-  tkinter·pywebview는 기각.
+  tkinter·pywebview는 기각. *(아직 미실행 — 지금은 stdlib + pywebview로
+  구현 중, CFL-14)*
 - **DEC-02**: 입력창 send 버튼 = 세션당 첫 전송만 확인, 이후 즉시 실행.
+  **Phase 1에서 실제 구현됨.**
 - **DEC-03**: 메시지 렌더링 = 코드블록만 지원(전체 마크다운·무지원 기각).
+  **Phase 1에서 실제 구현됨.**
 
 남은 미해결 사항은 [flutter-mapping.html §Conflict List](flutter-mapping.html#s2)
-(CFL-01, 03, 05, 09~13)에 있다. 그중 무게가 큰 것:
+(CFL-03, 05, 09~16)에 있다 — CFL-01은 Phase 1로 완전히 해소되어 목록에서
+빠졌다. 그중 무게가 큰 것:
 
 - **CFL-09**: 프레임워크 전환(DEC-01) 시 현재 "zip 하나로 git 없이 실행"
   배포 모델이 깨진다 — 릴리즈 프로세스 자체를 다시 설계해야 함.
@@ -114,5 +125,9 @@ open docs/design-system/design-system.html   # macOS
   재개, 이벤트 파싱)는 현재 CLI 서브프로세스 구조와 근본적으로 다르다.
 - **CFL-11**: 자동 업데이트 확인이 조회해야 할 GitHub Releases가 private
   저장소라 익명 조회가 안 된다.
+- **CFL-16**: 히스토리 드로어(Phase 3)가 채팅 로그(`webui/chat/`)와
+  provider 실행 이력(`.handoff/runs/`) 중 무엇을 보여줄지 — Phase 1로
+  둘 다 실제 존재하게 됐지만 아직 결정하지 않음.
 
-결정 전에는 실제 `handoff_desktop.py`를 바꾸지 않았다.
+결정 전에는 실제 코드를 바꾸지 않았다 — Phase 1도 위 3개 결정을 실제
+코드로 옮긴 것이지 새 결정을 내린 게 아니다.

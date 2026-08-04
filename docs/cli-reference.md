@@ -181,28 +181,87 @@ Do this only for trusted automation.
 python3 handoff_webui.py --workspace /path/to/project
 ```
 
-First runnable slice of the [v0.2 chat redesign](design-system/README.md)
-(`docs/design-system/`). A local stdlib HTTP server — **no provider is
-called from it**. What it does:
+Chat redesign from [`docs/design-system/`](design-system/README.md) — as of
+Phase 1, this actually calls Codex/Claude. A local stdlib HTTP server. What
+it does:
 
 - Serves a page with a workspace file-tree sidebar and a chat-style composer.
 - Lets you click a file in the tree, or drag a file onto the chat area, to
-  attach it to the draft message.
+  attach it to the draft message. Attachments are folded into the actual
+  provider prompt (`build_run_prompt()`), not just the chat log — a
+  message with only attachments and no typed text is a valid send.
 - Lets you switch workspace at runtime with **Open Folder** (VS Code-style —
   a real OS folder picker in the native window; a manual absolute-path
   prompt in browser mode), instead of only being able to browse the single
   folder passed at startup via `--workspace`.
-- "Send" persists the message locally to
-  `<workspace>/.handoff/webui/chat/YYYY-MM.jsonl` and renders it — nothing is
-  sent to Codex, Claude, or any other provider yet. History is scoped to
-  the folder you have open, the same way `.handoff/current.md` already is,
-  so it travels with the project if you copy/sync/zip the folder elsewhere.
-  Past months are gzip-compressed automatically (`archive_old_months()`,
-  run on startup and on every folder switch) so this doesn't grow
-  unbounded. Defaults to **not tracked by git**
+- Lets you pick a provider (`auto`/`codex`/`claude`) from the titlebar, then
+  **"Send" actually runs it** — `POST /api/run` shells out to
+  `handoff_bridge.py run <provider> --execute --auto-fallback` (the same CLI
+  a human would type; see "Why a subprocess" below) and reads back the
+  structured result from `.handoff/state.json`. Only the **first send in a
+  browser session** asks "this may spend tokens, continue?" — after that,
+  sends in the same session run immediately (`sessionRunConfirmed` in
+  `webui/app.js`). Auto-fallback is visible in the thread as a second agent
+  message from the other provider, not hidden — and the fallback provider
+  actually receives the original prompt/attachments, not a generic
+  placeholder (`handoff_bridge.run_provider()` threads `user_prompt`
+  through the recursive call). Only one provider run at a time, process-wide
+  (`handoff_webui._RUN_LOCK`); a `POST /api/run` that arrives while one is
+  already in flight gets `409`, not a multi-minute hang or a duplicated
+  chat message — the composer also disables itself client-side while a run
+  is pending, so this is normally a defense-in-depth backstop, not
+  something a user hits directly.
+- Every message — yours and the agent's — persists to
+  `<workspace>/.handoff/webui/chat/YYYY-MM.jsonl`. History is scoped to the
+  folder you have open, the same way `.handoff/current.md` already is, so it
+  travels with the project if you copy/sync/zip the folder elsewhere. Past
+  months are gzip-compressed automatically (`archive_old_months()`, run on
+  startup and on every folder switch). Defaults to **not tracked by git**
   (`.handoff/webui/.gitignore`, written proactively regardless of whether
   this workspace ever ran `install`). Full schema, atomicity, and retention
   details: [Web UI Chat Storage](webui-chat-storage.md).
+- Agent replies render fenced ` ```code``` ` blocks as monospace blocks;
+  everything else is plain text, inserted via `textContent`/
+  `createTextNode` only (never `innerHTML`) since a provider's response
+  isn't fully trusted input.
+
+**Why a subprocess, not an in-process function call**: `handoff_bridge.py`'s
+state functions resolve paths like `.handoff/state.json` relative to the
+*process* cwd (via `chdir_workspace()`). That's fine for a one-shot CLI
+invocation but not safe to call in-process from a `ThreadingHTTPServer`
+handler, where `os.chdir()` is process-wide and would race every other
+in-flight request's thread. `run_provider_via_bridge()` shells out instead
+— exactly what `handoff_desktop.py` already does for the same reason — and
+diffs `.handoff/state.json`'s `history[]` before/after to get back the new
+record(s) as structured data, including every record an auto-fallback chain
+produced in that one call.
+
+**Timeout**: the Web UI passes `--timeout-seconds 600`
+(`PROVIDER_RUN_TIMEOUT_SECONDS`, `handoff_webui.py`) to `handoff_bridge.py
+run`, so the 600s budget is enforced on the *actual* codex/claude
+subprocess, per provider call — killing only the outer bridge wrapper
+would leave a still-running, still-token-spending provider process behind,
+since neither process runs in its own process group. Auto-fallback means
+up to two sequential provider calls, each with its own 600s budget; the
+outer `run_provider_via_bridge()` wrapper adds a second, more generous
+timeout (`OUTER_SUBPROCESS_TIMEOUT_SECONDS`, `600 * 2 + 60` — the extra 60s
+covers up to two rounds of `handoff_bridge.WriteLock` contention, 10s each,
+on top of ordinary process-startup overhead) as a hard-kill
+backstop for cases outside normal provider execution (e.g. the bridge
+process itself hanging on I/O) — this one *can* leave a child process
+running if it ever fires, but it's sized to rarely need to. This is a Web
+UI-only limit; plain CLI `run` has no timeout by default
+(`--timeout-seconds 0`). If the hard-kill backstop fires after the first
+provider already produced a record but before a triggered fallback
+finished, the Web UI appends a synthetic "timed out" agent message for the
+fallback rather than silently showing only the first reply.
+
+The prompt itself travels to `handoff_bridge.py` via a temporary
+`--prompt-file`, not as a trailing CLI argument — a long prompt as a bare
+argv value risks OS argument-length limits and is visible in the local
+process list, and (found the hard way, via a CI-only failure) argparse's
+handling of a positional interleaved after `--instruction-type <value>`
+isn't consistent across Python versions.
 
 By default it opens as a **native app window** (via the optional
 [pywebview](https://pywebview.flowrl.com/) package) so this tests like a
@@ -242,18 +301,24 @@ Endpoints:
 | GET | `/api/chat?month=YYYY-MM` | This month's (or a given month's) chat history, plus the list of months that exist |
 | POST | `/api/chat` | Append one message to the current month's log |
 | POST | `/api/open-folder` | Switch the active workspace (validates the path is a real, absolute directory) |
+| POST | `/api/run` | Run `provider` (`auto`\|`codex`\|`claude`) with `text` as the turn prompt; persists and returns the resulting agent message(s) |
 
-The only thing this server can write is its own chat log under
-`.handoff/webui/chat/` inside whichever workspace is active — there is no
-general write or execute endpoint, and the workspace-scoping/symlink checks
-that guard `/api/tree` and `/api/file` are covered by
-`tests/test_handoff_webui.py`'s traversal tests (including the two new
-mutable-state endpoints, tested against an isolated per-test server so
-workspace-switching in one test can't leak into another). See
-[Provider Extensibility](provider-extensibility.md) and the Conflict List in
+`/api/run` is the one endpoint that reaches outside the sandbox this
+server otherwise keeps itself in — it invokes a real provider CLI via
+`handoff_bridge.py`, which can spend tokens and can act on the workspace
+however that CLI session decides to. Everything else (`/api/tree`,
+`/api/file`, `/api/chat`, `/api/open-folder`) stays inside the read/local-
+write boundary described in [Web UI Chat Storage](webui-chat-storage.md),
+and the workspace-scoping/symlink checks that guard `/api/tree` and
+`/api/file` are covered by `tests/test_handoff_webui.py`'s traversal tests.
+`/api/run` itself is covered by `RunProviderViaBridgeTests` and
+`ApiRunLiveServerTests` — including a real auto-fallback chain test using
+fake `codex`/`claude` scripts on `PATH` (deterministic, no tokens spent, no
+network). See [Provider Extensibility](provider-extensibility.md) and the
+Conflict List in
 [design-system/flutter-mapping.html](design-system/flutter-mapping.html#s2)
-for what's intentionally still missing (provider calls, cross-project
-history browsing, API-key auth, update checks).
+for what's intentionally still missing (cross-project history browsing,
+API-key auth, Gemini, update checks).
 
 ## Platform Packages
 

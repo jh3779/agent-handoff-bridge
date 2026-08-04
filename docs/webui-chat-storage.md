@@ -33,9 +33,16 @@ separate file.
 |---|---|---|
 | `id` | string | `uuid.uuid4().hex`, assigned server-side in `append_chat_message()` |
 | `ts` | string | `datetime.isoformat()`, always UTC (`utc_now()`) |
-| `role` | `"user"` \| `"system"` | validated server-side; anything else is rejected with 400 |
+| `role` | `"user"` \| `"system"` \| `"agent"` | validated server-side (`CHAT_ROLES`); anything else is rejected with 400 |
 | `text` | string | may be empty if the message is attachments-only |
 | `attachments` | array | client-supplied as-is (see "What Gets Persisted" below) |
+| `provider` | string \| null | **`agent` role only** — `"codex"` or `"claude"` (never `"auto"`; that's resolved to a real provider before the record exists) |
+| `status` | string \| null | **`agent` role only** — `"success"` \| `"handoff"` \| `"fail"`, from `classify_run_status()` |
+| `reason` | string \| null | **`agent` role only** — the underlying `handoff_bridge.py` `classify_handoff()` reason string (e.g. `"rate_limit: matched rate_limit signal"`) |
+
+`provider`/`status`/`reason` are only present when `role` is `"agent"` — `user`
+and `system` messages keep the original 5-field shape rather than carrying
+three always-null fields.
 
 **No version field.** This is an implicit "v1" schema. If the shape changes
 in a way that isn't purely additive, add an explicit `schema` field before
@@ -54,6 +61,30 @@ This means a large pasted/dropped file's content can end up duplicated
 between the source file and the JSONL log — monthly gzip compression
 (below) is the accepted mitigation for that, not content-stripping, per the
 original request that introduced this feature.
+
+`attachments` on a `POST /api/run` call also become part of the actual
+provider prompt, not just this chat log — `build_run_prompt()`
+(`handoff_webui.py`) folds each attachment's name/content into the text
+written to `--prompt-file` before the provider ever runs. This was a real
+gap for one round of review: the client sent `attachments` to `/api/chat`
+but not to `/api/run`, so a file the user "attached" was persisted locally
+but never actually reached Codex/Claude.
+
+**`agent` role messages** (Phase 1) are never written by the client directly
+— `POST /api/run` is the only writer; `POST /api/chat` rejects `role: "agent"`
+with 400 (`CLIENT_WRITABLE_CHAT_ROLES = ("user", "system")` in
+`handoff_webui.py`), even though the shared `append_chat_message()` writer it
+calls into would otherwise accept any role in `CHAT_ROLES`. Without that
+check a client could POST a fake agent reply straight to `/api/chat` with no
+provider having actually run. `run_provider_via_bridge()` shells out
+to `handoff_bridge.py run <provider> --execute --auto-fallback`, diffs
+`.handoff/state.json`'s `history[]` before/after to find the new record(s)
+that run produced (more than one if auto-fallback chained into a second
+provider), and calls `append_chat_message(..., role="agent", ...)` once per
+record — so a single user turn that triggers a fallback shows up as two
+separate agent messages in the thread, one per provider, in the order they
+actually ran. `text` comes from that record's `final_text`, falling back to
+`f"(exit {exit_code}, no output)"` if empty.
 
 ## Atomicity
 
