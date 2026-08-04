@@ -52,7 +52,18 @@ DEC-03(코드블록 렌더링)도 이 단계에서 실제 구현됨. 가짜 `cod
 착수 — 자세한 내용은 [roadmap.md](roadmap.md) Phase 2와
 [flutter-mapping.html §1c](flutter-mapping.html#s1c).
 
-**로드맵**: 지금(Phase 0~2, 완료)부터 DEC-01이 가리키는 최종 목표까지를
+**멀티 프로젝트 히스토리 드로어** (2026-08-04, Phase 3): 타이틀바
+**History** 버튼으로 최근에 연 모든 워크스페이스의 활동을 한 곳에서
+본다 — 현재 프로젝트가 맨 앞, 나머지는 최근 연 순, 프로젝트당 최근 대화
+5개까지. 데이터 출처는 채팅 로그(`.handoff/webui/chat/`, 원래 가정이던
+provider 실행 이력이 아님) — 항목 클릭 시 기존 Open Folder와 같은 경로로
+그 워크스페이스로 전환한다. "최근 워크스페이스" 목록은
+`~/Documents/Agent Handoff Bridge/registry.json`(Phase 2가 확립한 위치
+재사용)에 최대 50개 저장한다. 이번에도 구현 전 사전 인터뷰로 DEC-08~12
+확정 후 착수 — 자세한 내용은 [roadmap.md](roadmap.md) Phase 3과
+[flutter-mapping.html §1c](flutter-mapping.html#s1c).
+
+**로드맵**: 지금(Phase 0~3, 완료)부터 DEC-01이 가리키는 최종 목표까지를
 순서 있는 단계로 쪼갠 [roadmap.md](roadmap.md) 참고 — Provider 연결(CLI) →
 자동 폴더 생성 → 멀티 프로젝트 히스토리 → API 키 모드 → Gemini →
 자동 업데이트 확인 → 프레임워크 전환.
@@ -133,15 +144,17 @@ open docs/design-system/design-system.html   # macOS
 - **DEC-07**: 생성 확인 UX = 다이얼로그 없이 조용히 생성. **Phase 2에서
   실제 구현됨.**
 - **DEC-08**: 히스토리 드로어 데이터 출처 = `.handoff/webui/chat/` 로그
-  (CFL-16 해소).
+  (CFL-16 해소). **Phase 3에서 실제 구현됨.**
 - **DEC-09**: "최근 워크스페이스" 레지스트리 = `~/Documents/Agent Handoff
-  Bridge/` 안에 저장, 최대 50개 LRU(CFL-10 잔여분 해소).
+  Bridge/` 안에 저장, 최대 50개 LRU(CFL-10 잔여분 해소). **Phase 3에서
+  실제 구현됨.**
 - **DEC-10**: 레지스트리 갱신 시점 = `AppState.workspace`가 설정되는
-  모든 지점(Open Folder·자동생성·CLI 시작 포함).
+  모든 지점(Open Folder·자동생성·CLI 시작 포함). **Phase 3에서 실제
+  구현됨.**
 - **DEC-11**: 그룹당 항목 5개까지, 클릭 시 워크스페이스 전환 + 해당 월
-  채팅 로드(이후 정상 편집).
+  채팅 로드(이후 정상 편집). **Phase 3에서 실제 구현됨.**
 - **DEC-12**: auto-fallback으로 agent 메시지가 여러 개면 마지막 메시지
-  기준으로 표시.
+  기준으로 표시. **Phase 3에서 실제 구현됨.**
 
 남은 미해결 사항은 [flutter-mapping.html §Conflict List](flutter-mapping.html#s2)
 (CFL-03, 05, 09, 11~15)에 있다 — CFL-01은 Phase 1로, CFL-10/16은 Phase 3

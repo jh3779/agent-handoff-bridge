@@ -139,10 +139,13 @@ confirmation ("this may spend tokens"), later sends in the same session run
 immediately. Every message, yours and the agent's, persists to that
 workspace's own `.handoff/webui/chat/` (monthly files, older months
 auto-compressed). History is per-folder: switching to a different project
-shows that project's own history, not a mixed feed. See
-[CLI Reference § Web UI (MVP)](cli-reference.md#web-ui-mvp) for the endpoint
-details and [Design System Docs](design-system/README.md) for where this is
-headed.
+shows that project's own history, not a mixed feed. Click **History**
+(titlebar, top-right) to see recent activity across *every* project you've
+opened, not just the current one — grouped by project, current one pinned
+first, click any entry to switch straight to it (Phase 3).
+See [CLI Reference § Web UI (MVP)](cli-reference.md#web-ui-mvp) for the
+endpoint details and [Design System Docs](design-system/README.md) for
+where this is headed.
 
 ## Contributing To This Repo
 

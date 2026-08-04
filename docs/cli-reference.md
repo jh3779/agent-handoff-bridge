@@ -183,7 +183,9 @@ python3 handoff_webui.py --workspace /path/to/project
 
 Chat redesign from [`docs/design-system/`](design-system/README.md) — as of
 Phase 1, this actually calls Codex/Claude; as of Phase 2, `--workspace` is
-optional. A local stdlib HTTP server. What it does:
+optional; as of Phase 3, a history drawer shows recent activity across
+every project you've opened, not just the current one. A local stdlib HTTP
+server. What it does:
 
 - **`--workspace` is optional.** Omit it and the current directory is used
   automatically *if* it's already an initialized handoff workspace (has a
@@ -239,6 +241,24 @@ optional. A local stdlib HTTP server. What it does:
   everything else is plain text, inserted via `textContent`/
   `createTextNode` only (never `innerHTML`) since a provider's response
   isn't fully trusted input.
+- **History** (titlebar button) opens a drawer listing recently-opened
+  workspaces, grouped by project — the currently-open one pinned first,
+  then the rest most-recently-opened first, up to 5 chat turns each. A
+  "turn" is one of your messages paired with whatever the agent replied
+  (DEC-08, [`design-system/flutter-mapping.html#s1c`](design-system/flutter-mapping.html#s1c))
+  — if auto-fallback produced more than one agent reply, the badge shows
+  the *last* one's provider/status, since how the turn actually ended up
+  matters more than the first attempt (DEC-12). Clicking an item switches
+  to that workspace (`switchWorkspaceTo()`, the same code path as Open
+  Folder) and loads its current month's chat log for normal editing — not
+  a separate read-only viewer (DEC-11). The "recently opened" list itself
+  is a small registry at
+  `~/Documents/Agent Handoff Bridge/registry.json` (same location Phase 2
+  introduced), capped at 50 entries, updated whenever a workspace becomes
+  active — Open Folder, auto-create, *and* plain `--workspace` CLI startup
+  (DEC-10) — so a project opened from another terminal shows up here too.
+  An entry whose folder no longer exists is silently skipped, not an error
+  (DEC-09).
 
 **Why a subprocess, not an in-process function call**: `handoff_bridge.py`'s
 state functions resolve paths like `.handoff/state.json` relative to the
@@ -317,6 +337,7 @@ Endpoints:
 | POST | `/api/chat` | Append one message to the current month's log |
 | POST | `/api/open-folder` | Switch the active workspace (validates the path is a real, absolute directory) |
 | POST | `/api/run` | Run `provider` (`auto`\|`codex`\|`claude`) with `text` as the turn prompt; persists and returns the resulting agent message(s) |
+| GET | `/api/history` | History drawer data: recently-opened workspaces grouped with their last 5 chat turns each (current workspace pinned first) |
 
 `/api/run` is the one endpoint that reaches outside the sandbox this
 server otherwise keeps itself in — it invokes a real provider CLI via

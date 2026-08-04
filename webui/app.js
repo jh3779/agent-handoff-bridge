@@ -26,6 +26,11 @@
   const folderPromptInput = document.getElementById("folder-prompt-input");
   const folderPromptCancel = document.getElementById("folder-prompt-cancel");
   const folderPromptConfirm = document.getElementById("folder-prompt-confirm");
+  const historyBtn = document.getElementById("history-btn");
+  const historyDrawer = document.getElementById("history-drawer");
+  const historyScrim = document.getElementById("history-scrim");
+  const historyCloseBtn = document.getElementById("history-close-btn");
+  const historyList = document.getElementById("history-list");
 
   /** @type {{name: string, path: string|null, content: string|null, truncated: boolean}[]} */
   let attachments = [];
@@ -170,6 +175,83 @@
     if (e.key === "Enter") folderPromptConfirm.click();
     if (e.key === "Escape") closeFolderPrompt();
   });
+
+  // ---------- history drawer (Phase 3, SCR-03, DEC-08~12) ----------
+
+  function formatRelativeTime(iso) {
+    if (!iso) return "";
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return "";
+    const diffMs = Date.now() - then;
+    const minutes = Math.floor(diffMs / 60000);
+    if (minutes < 1) return "방금";
+    if (minutes < 60) return `${minutes}분 전`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}시간 전`;
+    const days = Math.floor(hours / 24);
+    if (days === 1) return "어제";
+    if (days < 7) return `${days}일 전`;
+    return new Date(iso).toISOString().slice(0, 10);
+  }
+
+  function renderHistoryItem(group, turn) {
+    const row = el("div", { class: "history-item" }, []);
+    const top = el("div", { class: "hi-top" }, [el("span", { text: turn.provider || "-" }, [])]);
+    if (turn.status) {
+      top.appendChild(
+        el("span", { class: `status-badge status-${turn.status}`, text: STATUS_LABEL[turn.status] || turn.status }, [])
+      );
+    }
+    top.appendChild(el("span", { class: "hi-time", text: formatRelativeTime(turn.ts) }, []));
+    row.appendChild(top);
+    row.appendChild(el("div", { class: "hi-task", text: turn.text || "(빈 메시지)" }, []));
+    row.addEventListener("click", () => {
+      closeHistoryDrawer();
+      if (!group.current) switchWorkspaceTo(group.path);
+    });
+    return row;
+  }
+
+  function renderHistoryGroups(groups) {
+    historyList.innerHTML = "";
+    if (!groups || groups.length === 0) {
+      historyList.appendChild(el("div", { class: "hd-empty", text: "아직 대화 기록이 없습니다." }, []));
+      return;
+    }
+    for (const group of groups) {
+      const header = el("div", { class: "hd-group" }, [
+        el("span", { text: "📁" }, []),
+        el("span", { text: group.name }, []),
+      ]);
+      if (group.current) header.appendChild(el("span", { class: "current-tag", text: "현재" }, []));
+      header.appendChild(el("span", { class: "cnt", text: String(group.turns.length) }, []));
+      historyList.appendChild(header);
+      for (const turn of group.turns) {
+        historyList.appendChild(renderHistoryItem(group, turn));
+      }
+    }
+  }
+
+  async function openHistoryDrawer() {
+    historyScrim.classList.add("show");
+    historyDrawer.classList.add("show");
+    try {
+      const data = await fetchJSON("/api/history");
+      renderHistoryGroups(data.groups);
+    } catch (err) {
+      historyList.innerHTML = "";
+      historyList.appendChild(el("div", { class: "hd-empty", text: `불러올 수 없음: ${err.message}` }, []));
+    }
+  }
+
+  function closeHistoryDrawer() {
+    historyScrim.classList.remove("show");
+    historyDrawer.classList.remove("show");
+  }
+
+  historyBtn.addEventListener("click", openHistoryDrawer);
+  historyCloseBtn.addEventListener("click", closeHistoryDrawer);
+  historyScrim.addEventListener("click", closeHistoryDrawer);
 
   // ---------- file tree ----------
 

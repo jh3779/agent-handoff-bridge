@@ -57,9 +57,11 @@ launchers\windows\handoff-bridge.cmd
 
 Try the v0.2 chat-style redesign (file browsing, drag/click attaching,
 VS Code-style Open Folder, local per-folder chat history, real Codex/Claude
-calls with auto-fallback since Phase 1, and — as of Phase 2 — `--workspace`
-is optional, auto-creating a folder under `~/Documents/Agent Handoff
-Bridge/` from your first message if you don't pick one):
+calls with auto-fallback since Phase 1, `--workspace` made optional since
+Phase 2 (auto-creates a folder under `~/Documents/Agent Handoff Bridge/`
+from your first message if you don't pick one), and — as of Phase 3 — a
+History drawer showing recent activity across every project you've opened,
+not just the current one):
 
 ```bash
 pip install pywebview   # optional, for a real app window instead of a browser tab
