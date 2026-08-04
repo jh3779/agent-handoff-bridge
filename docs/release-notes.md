@@ -193,7 +193,27 @@
     as a clear `WorkspaceError`, with the half-created directory cleaned
     up rather than left behind as an orphan;
   - 7 more tests for the above (a real concurrent-request test against a
-    live server, confirmed to fail without the fix) -- 175 total.
+    live server, confirmed to fail without the fix) -- 175 total;
+  - hardened `create_workspace_for_first_message()` further, from review:
+    a "successful" (exit 0) `init` is now also verified to have actually
+    produced `.handoff/state.json` *and* `.handoff/current.md` before the
+    workspace is confirmed -- not just trusted on the exit code alone
+    (`init_handoff()` writes both unconditionally on success, so their
+    absence despite exit 0 means something drifted and shouldn't be
+    silently treated as a real workspace);
+  - fixed a real gap: an attachments-only first message (the composer
+    allows sending with no typed text) got a meaningful folder name
+    (falls back to the attachment's name) but the *task* recorded in
+    `.handoff/state.json` -- which feeds every future prompt's "## Task"
+    section -- still fell back to the generic "Continue the current
+    handoff task." placeholder, because the two fallbacks weren't sharing
+    logic. `resolve_task_for_first_message()` now reuses the same summary
+    source as the folder name;
+  - fixed a documentation inconsistency: `docs/design-system/roadmap.md`
+    said "사전 인터뷰 8건 → DEC-04~07", reading as a 8-vs-4 mismatch --
+    reworded to make clear 8 is the number of interview *questions* across
+    3 rounds, consolidated into 4 *decisions* (DEC-04~07);
+  - 6 more tests -- 181 total.
 
 ## v0.1.0 — 2026-08-03
 

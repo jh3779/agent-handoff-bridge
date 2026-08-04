@@ -226,9 +226,33 @@ def slugify_for_folder_name(text: str) -> str:
     return collapsed[:MAX_SLUG_LENGTH].strip("-") or "untitled"
 
 
+def resolve_first_message_summary_source(text: str, attachments: list[dict]) -> str:
+    """Shared by the folder-name slug and the recorded task (below) so an
+    attachments-only first message (composer allows sending with no typed
+    text) gets a meaningful task instead of the two drifting independently."""
+    return text.strip() or next((a.get("name") for a in attachments if a.get("name")), "")
+
+
 def build_auto_workspace_name(text: str, attachments: list[dict], now: datetime) -> str:
-    summary_source = text.strip() or next((a.get("name") for a in attachments if a.get("name")), "")
+    summary_source = resolve_first_message_summary_source(text, attachments)
     return f"{now.strftime('%Y-%m-%d')}-{slugify_for_folder_name(summary_source)}"
+
+
+def resolve_task_for_first_message(text: str, attachments: list[dict]) -> str:
+    """The folder name can fall back to an attachment's name (above), but
+    that alone used to never reach `.handoff/state.json`'s `task` -- an
+    attachments-only first message got the generic "Continue the current
+    handoff task." placeholder there instead, weakening every future
+    prompt's "## Task" section (docs/architecture.md: state.json's task is
+    durable context) even though the folder name itself was meaningful.
+    """
+    stripped = text.strip()
+    if stripped:
+        return stripped
+    summary_source = resolve_first_message_summary_source(text, attachments)
+    if summary_source:
+        return f"Review attached file: {summary_source}"
+    return "Continue the current handoff task."
 
 
 # Guards the check-then-create in do_POST's /api/chat handler: without
@@ -250,8 +274,9 @@ def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Pa
     would be -- `handoff_bridge.py init` (which installs the standard
     files first unless told not to) run as a subprocess for the same
     chdir-safety reason `run_provider_via_bridge()` shells out instead of
-    calling in-process. `text` becomes the recorded task, so it also feeds
-    the "## Task" section of every future prompt in this workspace.
+    calling in-process. `resolve_task_for_first_message()`'s result becomes
+    the recorded task, so it also feeds the "## Task" section of every
+    future prompt in this workspace.
     """
     AUTO_WORKSPACE_BASE_DIR.mkdir(parents=True, exist_ok=True)
     base_name = build_auto_workspace_name(text, attachments, utc_now())
@@ -263,7 +288,7 @@ def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Pa
     new_workspace = AUTO_WORKSPACE_BASE_DIR / candidate_name
     new_workspace.mkdir()
 
-    task = text.strip() or "Continue the current handoff task."
+    task = resolve_task_for_first_message(text, attachments)
     try:
         result = subprocess.run(
             [sys.executable, str(BRIDGE_SCRIPT), "--workspace", str(new_workspace), "init", task],
@@ -279,6 +304,16 @@ def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Pa
         shutil.rmtree(new_workspace, ignore_errors=True)
         stderr_tail = (result.stderr or "").strip()[-500:]
         raise WorkspaceError(f"failed to scaffold new workspace (exit {result.returncode}): {stderr_tail}")
+
+    # Defense in depth beyond the exit code: `init` succeeding is *supposed*
+    # to mean these two files exist (handoff_bridge.init_handoff() writes
+    # both unconditionally on success) -- don't let a workspace get
+    # confirmed as real (state.workspace assigned, 200 returned) on the
+    # strength of an exit code alone if the durable handoff surface
+    # (docs/architecture.md) it's supposed to guarantee isn't actually there.
+    if not (new_workspace / HANDOFF_DIR / "state.json").exists() or not (new_workspace / HANDOFF_DIR / "current.md").exists():
+        shutil.rmtree(new_workspace, ignore_errors=True)
+        raise WorkspaceError("workspace scaffolding did not produce the expected .handoff/ files")
 
     ensure_chat_gitignore(new_workspace)
     return new_workspace

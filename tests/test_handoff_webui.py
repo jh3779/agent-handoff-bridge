@@ -414,6 +414,24 @@ class BuildAutoWorkspaceNameTests(unittest.TestCase):
         self.assertEqual(name, "2026-08-04-untitled")
 
 
+class ResolveTaskForFirstMessageTests(unittest.TestCase):
+    def test_uses_text_when_present(self):
+        self.assertEqual(webui.resolve_task_for_first_message("Fix bug", []), "Fix bug")
+
+    def test_attachments_only_produces_a_meaningful_task_not_a_generic_placeholder(self):
+        # Regression: the folder name already fell back to the attachment's
+        # name (build_auto_workspace_name), but state.json's task -- which
+        # feeds every future prompt's "## Task" section -- used to ignore
+        # that and always record the generic placeholder for an
+        # attachments-only first message.
+        task = webui.resolve_task_for_first_message("", [{"name": "report.pdf"}])
+        self.assertIn("report.pdf", task)
+        self.assertNotEqual(task, "Continue the current handoff task.")
+
+    def test_falls_back_to_placeholder_when_neither_text_nor_attachments(self):
+        self.assertEqual(webui.resolve_task_for_first_message("", []), "Continue the current handoff task.")
+
+
 class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
     """AUTO_WORKSPACE_BASE_DIR is patched to a tempdir for every test here
     -- these must never touch the real ~/Documents/Agent Handoff Bridge/ on
@@ -439,6 +457,18 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         self.assertTrue(state_path.exists())
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["task"], "investigate the flaky test")
+
+    def test_attachments_only_message_records_a_meaningful_task(self):
+        workspace = webui.create_workspace_for_first_message("", [{"name": "report.pdf"}])
+        state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+        self.assertIn("report.pdf", state["task"])
+
+    def test_produces_current_md_too_not_just_state_json(self):
+        # init_handoff() writes both unconditionally on success -- the
+        # explicit post-condition check in create_workspace_for_first_message()
+        # relies on that being true.
+        workspace = webui.create_workspace_for_first_message("hello", [])
+        self.assertTrue((workspace / ".handoff" / "current.md").exists())
 
     def test_collision_appends_numeric_suffix_and_never_reuses_the_folder(self):
         first = webui.create_workspace_for_first_message("same summary", [])
@@ -473,6 +503,19 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         ):
             with self.assertRaises(webui.WorkspaceError):
                 webui.create_workspace_for_first_message("hello", [])
+        self.assertEqual(list(self.base_dir.iterdir()), [])
+
+    def test_exit_zero_without_the_expected_handoff_files_is_still_a_failure(self):
+        # Defense in depth: don't trust the exit code alone. A "successful"
+        # init that -- for whatever reason -- didn't actually produce
+        # .handoff/state.json or .handoff/current.md must not be confirmed
+        # as a real workspace (docs/architecture.md: those are the durable
+        # handoff surface).
+        fake_success_but_did_nothing = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("handoff_webui.subprocess.run", return_value=fake_success_but_did_nothing):
+            with self.assertRaises(webui.WorkspaceError) as ctx:
+                webui.create_workspace_for_first_message("hello", [])
+        self.assertIn(".handoff/", str(ctx.exception))
         self.assertEqual(list(self.base_dir.iterdir()), [])
 
 
