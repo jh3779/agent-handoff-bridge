@@ -256,7 +256,7 @@ handoff needed: True (tool_failure: provider command not found)</div>
         <tr><th>제외한 컴포넌트/화면</th><th>사유</th></tr>
         <tr><td>ChatGPT 모바일 Remote 화면</td><td>OpenAI가 소유·구현하는 외부 앱. 이 저장소는 프롬프트 텍스트만 생성한다(handoff_desktop.py:301 copy_mobile_prompt) — 화면 자체를 설계할 근거(스펙)가 없음. <a href="wireframes.html#s1">전체 흐름도에서는 외부 박스로만 표시</a>.</td></tr>
         <tr><td>Claude 모바일 Code 화면</td><td>Anthropic이 소유·구현하는 외부 앱. 동일 사유.</td></tr>
-        <tr><td>웹 대시보드 / 브라우저 UI</td><td>이 프로젝트에 존재하지 않음 — CLI·데스크톱 GUI·터미널 메뉴 3가지 표면만 실재.</td></tr>
+        <tr><td>외부에 공개된 웹 대시보드</td><td>이 프로젝트에 존재하지 않음(로그인, 다중 사용자, 외부 접근 가능한 웹 서비스 등). 혼동 방지: <code>handoff_webui.py</code>가 띄우는 <b>로컬 전용</b> Web UI MVP(127.0.0.1 바인딩, 인증 없음, 단일 사용자)는 존재하며 이 재설계의 실제 구현체다 — <a href="../cli-reference.md#web-ui-mvp">CLI Reference § Web UI (MVP)</a> 참고. 이 줄은 "브라우저 UI 자체가 없다"고 잘못 읽힐 수 있어 2026-08-04 갱신.</td></tr>
         <tr><td>다크모드 강제 시스템 연동</td><td>tkinter 기본 테마는 OS 네이티브를 따르고 앱이 별도 라이트/다크 토큰을 구현하지 않음 — 이 문서(디자인 캔버스) 자체의 테마 토글과는 별개.</td></tr>
         <tr><td>메시지 본문 전체 마크다운 렌더링</td><td>2026-08-04 인터뷰로 <a href="flutter-mapping.html#s1c">코드블록만 지원(DEC-03)</a>하기로 결정 — 제목·목록·굵게 등 전체 마크다운은 범위 밖.</td></tr>
         <tr><td>API 키 직접 호출 아키텍처(세션 재개, 이벤트 파싱 재설계)</td><td>§14는 API 키를 <i>입력받는 화면</i>만 설계 — 그 뒤에서 실제로 어떻게 provider를 호출할지는 다루지 않음(<a href="flutter-mapping.html#s2">CFL-12</a>, 별도 아키텍처 논의 필요).</td></tr>

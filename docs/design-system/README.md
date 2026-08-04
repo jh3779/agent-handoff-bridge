@@ -89,6 +89,8 @@ open docs/design-system/design-system.html   # macOS
 - [`../security-model.md`](../security-model.md) — 확인 절차가 필요한 행동 기준
 - [`../provider-extensibility.md`](../provider-extensibility.md) — 새 AI
   provider(CLI 또는 API 키 기반)를 추가할 때 실제로 무엇이 걸리는지
+- [`../webui-chat-storage.md`](../webui-chat-storage.md) — 로컬 채팅
+  기록의 실제 데이터 모델(스키마·원자성·압축·git 노출 여부)
 - `handoff_desktop.py`, `handoff_control.py` — v0.1 실제 구현
 - **v0.2 채팅형 재설계는 코드가 아니라 사용자 요구사항이 정본**(요구사항
   원문은 [wireframes.html §REDESIGN](wireframes.html#s2)에 표로 정리)

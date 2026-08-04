@@ -27,6 +27,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from handoff_bridge import WriteLock
+
 try:
     import webview  # type: ignore[import-not-found]
 except ImportError as exc:  # pragma: no cover - depends on optional local install
@@ -164,6 +166,32 @@ def chat_dir(workspace: Path) -> Path:
     return workspace / CHAT_DIR_RELATIVE
 
 
+def chat_lock_path(workspace: Path) -> Path:
+    return chat_dir(workspace) / ".write.lock"
+
+
+def ensure_chat_gitignore(workspace: Path) -> None:
+    """Make sure chat history is invisible to git no matter what.
+
+    `handoff_bridge.py install` only writes the top-level
+    `.handoff/.gitignore` template on a *fresh* install -- an
+    already-installed workspace never gets it refreshed
+    (`install_standard_files()` skips existing files unless `--force`), and
+    a workspace that never ran `install` at all has no `.handoff/.gitignore`
+    whatsoever. So this doesn't rely on that file being present or current:
+    a single `*` here hides `.handoff/webui/` (including this file itself --
+    `*` matches dotfiles in gitignore syntax) independent of it. Called
+    proactively on startup and on every folder switch, not just lazily on
+    first message, so the workspace is protected before any chat data
+    exists in it.
+    """
+    gitignore_path = chat_dir(workspace).parent / ".gitignore"
+    if gitignore_path.exists():
+        return
+    gitignore_path.parent.mkdir(parents=True, exist_ok=True)
+    gitignore_path.write_text("*\n", encoding="utf-8")
+
+
 def append_chat_message(workspace: Path, role: str, text: str, attachments: list[dict], now: datetime) -> dict:
     if role not in ("user", "system"):
         raise WorkspaceError(f"invalid role: {role}")
@@ -175,10 +203,12 @@ def append_chat_message(workspace: Path, role: str, text: str, attachments: list
         "attachments": attachments or [],
     }
     target_dir = chat_dir(workspace)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / f"{month_key(now)}.jsonl"
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(message, ensure_ascii=False) + "\n")
+    with WriteLock(chat_lock_path(workspace)):
+        target_dir.mkdir(parents=True, exist_ok=True)
+        ensure_chat_gitignore(workspace)
+        path = target_dir / f"{month_key(now)}.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(message, ensure_ascii=False) + "\n")
     return message
 
 
@@ -223,22 +253,26 @@ def archive_old_months(workspace: Path, now: datetime) -> list[str]:
 
     The current month is left uncompressed and appendable. Safe to call
     often (e.g. on startup and on every workspace switch) -- a month with
-    no plain file left is simply a no-op.
+    no plain file left is simply a no-op. Uses the same per-workspace
+    WriteLock as append_chat_message() so a startup/folder-switch archive
+    pass can never read-compress-delete a month file while a message is
+    mid-append to it.
     """
     target_dir = chat_dir(workspace)
     if not target_dir.exists():
         return []
     current = month_key(now)
     archived: list[str] = []
-    for path in sorted(target_dir.glob("*.jsonl")):
-        month = path.name[: -len(".jsonl")]
-        if month == current:
-            continue
-        gz_path = path.parent / f"{path.name}.gz"
-        with path.open("rb") as source, gzip.open(gz_path, "wb") as dest:
-            dest.writelines(source)
-        path.unlink()
-        archived.append(month)
+    with WriteLock(chat_lock_path(workspace)):
+        for path in sorted(target_dir.glob("*.jsonl")):
+            month = path.name[: -len(".jsonl")]
+            if month == current:
+                continue
+            gz_path = path.parent / f"{path.name}.gz"
+            with path.open("rb") as source, gzip.open(gz_path, "wb") as dest:
+                dest.writelines(source)
+            path.unlink()
+            archived.append(month)
     return archived
 
 
@@ -333,6 +367,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     body = self._read_json_body()
                     candidate = validate_workspace_candidate(str(body.get("path") or ""))
                     state.workspace = candidate
+                    ensure_chat_gitignore(candidate)
                     archive_old_months(candidate, utc_now())
                     self._send_json(200, {"workspace": str(candidate), "name": candidate.name or str(candidate)})
                 except WorkspaceError as exc:
@@ -404,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     state = AppState(workspace)
+    ensure_chat_gitignore(state.workspace)
     archive_old_months(state.workspace, utc_now())
 
     handler = build_handler(state)

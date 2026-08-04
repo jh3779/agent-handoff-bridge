@@ -12,6 +12,8 @@ python3 -m unittest discover -s tests -v
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -347,6 +349,88 @@ class ChatStorageTests(unittest.TestCase):
             self.assertEqual(first, ["2026-07"])
             self.assertEqual(second, [])  # nothing left to compress
 
+    def test_archive_compresses_every_past_month_not_just_the_last_one(self):
+        # Regression test: a prior version of archive_old_months() had
+        # path.unlink()/archived.append(month) indented one level too
+        # shallow, outside the for-loop -- so only the last-iterated month
+        # actually got archived. A single-old-month test can't catch that
+        # (the "last iteration" and "only iteration" are the same thing),
+        # so this one uses three.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            may_ = datetime(2026, 5, 10, tzinfo=timezone.utc)
+            june = datetime(2026, 6, 10, tzinfo=timezone.utc)
+            july = datetime(2026, 7, 10, tzinfo=timezone.utc)
+            august = datetime(2026, 8, 4, tzinfo=timezone.utc)
+            webui.append_chat_message(root, "user", "may", [], may_)
+            webui.append_chat_message(root, "user", "june", [], june)
+            webui.append_chat_message(root, "user", "july", [], july)
+            webui.append_chat_message(root, "user", "august", [], august)
+
+            archived = webui.archive_old_months(root, august)
+
+            self.assertEqual(sorted(archived), ["2026-05", "2026-06", "2026-07"])
+            chat_dir = webui.chat_dir(root)
+            for month in ("2026-05", "2026-06", "2026-07"):
+                self.assertTrue((chat_dir / f"{month}.jsonl.gz").exists(), f"{month} not compressed")
+                self.assertFalse((chat_dir / f"{month}.jsonl").exists(), f"{month} plain file still present")
+            self.assertTrue((chat_dir / "2026-08.jsonl").exists())
+            for month in ("2026-05", "2026-06", "2026-07"):
+                messages = webui.read_month_messages(root, month)
+                self.assertEqual(len(messages), 1, f"{month} lost its message")
+
+
+class EnsureChatGitignoreTests(unittest.TestCase):
+    def test_creates_gitignore_ignoring_everything_under_handoff_webui(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            webui.ensure_chat_gitignore(root)
+            gitignore_path = root / ".handoff" / "webui" / ".gitignore"
+            self.assertTrue(gitignore_path.exists())
+            self.assertEqual(gitignore_path.read_text(encoding="utf-8"), "*\n")
+
+    def test_idempotent_does_not_clobber_a_customized_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gitignore_path = root / ".handoff" / "webui" / ".gitignore"
+            gitignore_path.parent.mkdir(parents=True)
+            gitignore_path.write_text("# custom\n*\n", encoding="utf-8")
+            webui.ensure_chat_gitignore(root)
+            self.assertEqual(gitignore_path.read_text(encoding="utf-8"), "# custom\n*\n")
+
+    def test_append_chat_message_creates_it_even_in_a_workspace_with_no_dot_handoff_at_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertFalse((root / ".handoff").exists())
+            webui.append_chat_message(root, "user", "hi", [], utc_now_for_test())
+            self.assertTrue((root / ".handoff" / "webui" / ".gitignore").exists())
+
+    def test_protects_chat_history_from_git_even_with_a_stale_top_level_gitignore(self):
+        # Simulates a workspace installed before this repo's own
+        # .handoff/.gitignore learned about webui/chat/: the top-level file
+        # exists but is "old" (doesn't mention it). The per-directory
+        # .handoff/webui/.gitignore must protect the data regardless.
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("git not available")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run([git, "init", "-q"], cwd=root, check=True)
+            subprocess.run([git, "config", "user.email", "test@example.com"], cwd=root, check=True)
+            subprocess.run([git, "config", "user.name", "Test"], cwd=root, check=True)
+            (root / ".handoff").mkdir()
+            (root / ".handoff" / ".gitignore").write_text("runs/\nstate.json\n", encoding="utf-8")
+            (root / "README.md").write_text("# hi\n", encoding="utf-8")
+            subprocess.run([git, "add", "-A"], cwd=root, check=True)
+            subprocess.run([git, "commit", "-q", "-m", "init"], cwd=root, check=True)
+
+            webui.append_chat_message(root, "user", "should stay untracked", [], utc_now_for_test())
+
+            status = subprocess.run(
+                [git, "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True
+            ).stdout
+            self.assertEqual(status.strip(), "", f"chat files showed up in git status: {status!r}")
+
 
 def utc_now_for_test() -> datetime:
     return datetime(2026, 8, 4, tzinfo=timezone.utc)
@@ -431,7 +515,15 @@ class MutableStateLiveServerTests(unittest.TestCase):
         status, tree = self._get("/api/tree?path=")
         self.assertEqual(status, 200)
         names = {e["name"] for e in tree["entries"]}
-        self.assertEqual(names, {"NOTES.md"})
+        # ".handoff" now exists because open-folder proactively creates
+        # .handoff/webui/.gitignore -- see test_open_folder_proactively_creates_gitignore_before_any_message.
+        self.assertEqual(names, {"NOTES.md", ".handoff"})
+
+    def test_open_folder_proactively_creates_gitignore_before_any_message(self):
+        self.assertFalse((self.other / ".handoff").exists())
+        status, _ = self._post("/api/open-folder", {"path": str(self.other)})
+        self.assertEqual(status, 200)
+        self.assertTrue((self.other / ".handoff" / "webui" / ".gitignore").exists())
 
     def test_open_folder_rejects_nonexistent_path(self):
         status, data = self._post("/api/open-folder", {"path": str(self.other / "nope")})

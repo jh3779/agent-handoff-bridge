@@ -72,6 +72,7 @@ INSTALL_FILES = [
     ("docs/quality-gates.md", "docs/quality-gates.md"),
     ("docs/release-process.md", "docs/release-process.md"),
     ("docs/provider-extensibility.md", "docs/provider-extensibility.md"),
+    ("docs/webui-chat-storage.md", "docs/webui-chat-storage.md"),
     ("schemas/handoff-summary.schema.json", "schemas/handoff-summary.schema.json"),
     ("scripts/handoff_hook.py", "scripts/handoff_hook.py"),
     ("scripts/validate_handoff.py", "scripts/validate_handoff.py"),

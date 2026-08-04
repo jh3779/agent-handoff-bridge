@@ -44,6 +44,7 @@ REQUIRED_FILES = [
     "docs/quality-gates.md",
     "docs/release-process.md",
     "docs/provider-extensibility.md",
+    "docs/webui-chat-storage.md",
     "schemas/handoff-summary.schema.json",
     "launchers/macos/handoff-bridge.command",
     "launchers/macos/install.sh",

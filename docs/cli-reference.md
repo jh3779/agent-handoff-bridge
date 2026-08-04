@@ -199,7 +199,10 @@ called from it**. What it does:
   so it travels with the project if you copy/sync/zip the folder elsewhere.
   Past months are gzip-compressed automatically (`archive_old_months()`,
   run on startup and on every folder switch) so this doesn't grow
-  unbounded.
+  unbounded. Defaults to **not tracked by git**
+  (`.handoff/webui/.gitignore`, written proactively regardless of whether
+  this workspace ever ran `install`). Full schema, atomicity, and retention
+  details: [Web UI Chat Storage](webui-chat-storage.md).
 
 By default it opens as a **native app window** (via the optional
 [pywebview](https://pywebview.flowrl.com/) package) so this tests like a

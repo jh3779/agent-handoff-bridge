@@ -36,6 +36,8 @@ context.
   GUI and terminal menu, plus the end-to-end handoff workflow diagram.
 - [v0.2 Roadmap](design-system/roadmap.md): phased plan from the current
   local-only MVP to the full provider-connected, multi-project production app.
+- [Web UI Chat Storage](webui-chat-storage.md): the on-disk data model for
+  local chat history — schema, atomicity, archiving, git visibility.
 - [Provider Extensibility](provider-extensibility.md): what it actually
   takes to add a new AI provider (CLI-based or API-key-based) beyond Codex
   and Claude Code.
