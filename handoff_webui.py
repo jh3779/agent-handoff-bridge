@@ -18,6 +18,7 @@ import argparse
 import gzip
 import json
 import mimetypes
+import subprocess
 import sys
 import threading
 import uuid
@@ -28,6 +29,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from handoff_bridge import WriteLock
+
+BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
 try:
     import webview  # type: ignore[import-not-found]
@@ -192,8 +195,20 @@ def ensure_chat_gitignore(workspace: Path) -> None:
     gitignore_path.write_text("*\n", encoding="utf-8")
 
 
-def append_chat_message(workspace: Path, role: str, text: str, attachments: list[dict], now: datetime) -> dict:
-    if role not in ("user", "system"):
+CHAT_ROLES = ("user", "system", "agent")
+
+
+def append_chat_message(
+    workspace: Path,
+    role: str,
+    text: str,
+    attachments: list[dict],
+    now: datetime,
+    provider: str | None = None,
+    status: str | None = None,
+    reason: str | None = None,
+) -> dict:
+    if role not in CHAT_ROLES:
         raise WorkspaceError(f"invalid role: {role}")
     message = {
         "id": uuid.uuid4().hex,
@@ -202,6 +217,12 @@ def append_chat_message(workspace: Path, role: str, text: str, attachments: list
         "text": text,
         "attachments": attachments or [],
     }
+    # Only "agent" messages carry provider/status/reason -- keep the other
+    # two roles' JSON shape exactly as it was (no null-field noise).
+    if role == "agent":
+        message["provider"] = provider
+        message["status"] = status
+        message["reason"] = reason
     target_dir = chat_dir(workspace)
     with WriteLock(chat_lock_path(workspace)):
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -274,6 +295,113 @@ def archive_old_months(workspace: Path, now: datetime) -> list[str]:
             path.unlink()
             archived.append(month)
     return archived
+
+
+# ---------------------------------------------------------------------------
+# Provider runs (Phase 1, docs/design-system/roadmap.md). Shells out to
+# handoff_bridge.py -- the same CLI a human would type -- rather than
+# importing and calling its functions in-process. Those functions resolve
+# paths like .handoff/state.json relative to the *process* cwd (via
+# chdir_workspace()), which is fine for a one-shot CLI invocation but not
+# safe to call in-process from a ThreadingHTTPServer handler: os.chdir() is
+# process-wide, so one request's chdir would race every other in-flight
+# request's thread. A subprocess per run keeps each invocation's cwd
+# private, exactly like handoff_desktop.py already does for the same
+# reason (see run_bridge() there).
+# ---------------------------------------------------------------------------
+
+PROVIDER_RUN_TIMEOUT_SECONDS = 600
+
+
+def classify_run_status(handoff_needed: bool, reason: str) -> str:
+    """Map a handoff_bridge.py history record's (handoff_needed, reason) to
+    one of the three terminal run states from
+    docs/design-system/components.html §3/§9. `reason` always starts with
+    one of handoff_bridge.HANDOFF_LABELS or "none" -- classify_handoff()'s
+    own contract, enforced by scripts/validate_handoff.py.
+    """
+    if not handoff_needed:
+        return "success"
+    if reason.startswith("tool_failure") or reason.startswith("unknown"):
+        return "fail"
+    return "handoff"
+
+
+def read_state_history(workspace: Path) -> list[dict]:
+    state_path = workspace / ".handoff" / "state.json"
+    if not state_path.exists():
+        return []
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    return data.get("history", [])
+
+
+def run_provider_via_bridge(
+    workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str
+) -> list[dict]:
+    """Invoke `handoff_bridge.py run <provider> --execute --auto-fallback`
+    against `workspace` and return the new handoff_bridge.py history
+    record(s) it appended to .handoff/state.json -- more than one if
+    auto-fallback chained into a second provider.
+
+    If the subprocess itself fails before handoff_bridge.py ever gets to
+    classify_handoff()/save_state() (e.g. the interpreter can't even start),
+    no history record exists to read back -- synthesize one so callers
+    always get at least one result to show and persist, instead of silently
+    returning nothing.
+    """
+    before = len(read_state_history(workspace))
+    command = [
+        sys.executable,
+        str(BRIDGE_SCRIPT),
+        "--workspace",
+        str(workspace),
+        "run",
+        provider,
+        "--execute",
+        "--auto-fallback",
+        "--instruction-type",
+        instruction_type,
+    ]
+    if model:
+        command.extend(["--model", model])
+    command.append(prompt)
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=PROVIDER_RUN_TIMEOUT_SECONDS,
+            check=False,
+        )
+        stderr_tail = (result.stderr or "").strip()[-2000:]
+        exit_code = result.returncode
+    except subprocess.TimeoutExpired:
+        stderr_tail = f"timed out after {PROVIDER_RUN_TIMEOUT_SECONDS}s"
+        exit_code = 124
+    except OSError as exc:
+        stderr_tail = str(exc)
+        exit_code = 127
+
+    new_records = read_state_history(workspace)[before:]
+    if new_records:
+        return new_records
+    return [
+        {
+            "provider": provider,
+            "model": model or "app-selected default",
+            "instruction_type": instruction_type,
+            "exit_code": exit_code,
+            "session_id": None,
+            "final_text": stderr_tail or f"handoff_bridge.py run exited {exit_code} with no output",
+            "handoff_needed": True,
+            "reason": f"tool_failure: subprocess did not produce a history record (exit {exit_code})",
+            "run_dir": None,
+        }
+    ]
 
 
 def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
@@ -370,6 +498,37 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     ensure_chat_gitignore(candidate)
                     archive_old_months(candidate, utc_now())
                     self._send_json(200, {"workspace": str(candidate), "name": candidate.name or str(candidate)})
+                except WorkspaceError as exc:
+                    self._send_json(400, {"error": str(exc)})
+            elif parsed.path == "/api/run":
+                try:
+                    body = self._read_json_body()
+                    provider = str(body.get("provider") or "auto")
+                    if provider not in ("auto", "codex", "claude"):
+                        raise WorkspaceError(f"invalid provider: {provider}")
+                    text = str(body.get("text") or "").strip()
+                    if not text:
+                        raise WorkspaceError("text is required")
+                    model = body.get("model") or None
+                    workspace = state.workspace
+                    records = run_provider_via_bridge(workspace, provider, text, model, "continue")
+                    messages = []
+                    for record in records:
+                        status = classify_run_status(record["handoff_needed"], record["reason"])
+                        agent_text = record.get("final_text") or f"(exit {record['exit_code']}, no output)"
+                        messages.append(
+                            append_chat_message(
+                                workspace,
+                                "agent",
+                                agent_text,
+                                [],
+                                utc_now(),
+                                provider=record["provider"],
+                                status=status,
+                                reason=record["reason"],
+                            )
+                        )
+                    self._send_json(200, {"messages": messages})
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             else:

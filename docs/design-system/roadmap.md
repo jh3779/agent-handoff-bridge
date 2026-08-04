@@ -6,10 +6,11 @@ Gemini를 실제로 호출하고, 워크스페이스를 자유롭게 오가며, 
 대화 기록을 한 곳에서 훑어보고, 최신 버전을 스스로 확인하는 채팅형
 에이전트 클라이언트.
 
-**지금 상태 (Phase 0, 완료)**: `handoff_webui.py` + `webui/` — 파일 브라우징,
-드래그/클릭 첨부, VS Code식 Open Folder, 워크스페이스별 로컬 채팅 기록
-(월별 gzip 압축), 네이티브 창(pywebview, 선택적 의존성). **provider 호출은
-아직 없다.** 92개 테스트로 커버됨.
+**지금 상태 (Phase 0 · Phase 1 완료)**: `handoff_webui.py` + `webui/` —
+파일 브라우징, 드래그/클릭 첨부, VS Code식 Open Folder, 워크스페이스별
+로컬 채팅 기록(월별 gzip 압축), 네이티브 창(pywebview, 선택적 의존성),
+그리고 **실제 Codex/Claude 호출**(`POST /api/run`, auto-fallback 포함).
+121개 테스트로 커버됨(webui 단독 72개).
 
 이 문서는 Phase 0과 최종 목표 사이를 순서가 있는 단계로 쪼갠다. 각 단계는
 [Conflict List](flutter-mapping.html#s2)의 특정 항목을 해소하는 것을
@@ -31,27 +32,39 @@ Gemini를 실제로 호출하고, 워크스페이스를 자유롭게 오가며, 
    Phase 6(업데이트 확인)은 다른 단계에 의존하지 않는다 — 우선순위가
    바뀌어도 안전하게 끼워 넣을 수 있다.
 
-## Phase 1 — Provider 연결 (CLI 모드)
+## Phase 1 — Provider 연결 (CLI 모드) ✅ 완료
 
 **목표**: 채팅에서 실제로 Codex/Claude CLI를 호출하고 응답을 받는다.
 
-- `POST /api/run` 신설: `handoff_bridge.py`의 `run_provider()` /
-  `classify_handoff()` / `provider_command()`를 그대로 재사용(새로 만들지
-  않음 — 이미 검증된 로직).
-- DEC-02(세션당 첫 전송만 확인, 이후 즉시 실행) 적용 — 지금은 send가
-  로컬에만 저장하므로 실제 "확인 후 실행" 흐름이 아직 없다.
-- 상태 배지(대기/실행/완료/핸드오프/실패, 이미 [컴포넌트 §3](components.html#s3)/[§9](components.html#s9)에 디자인됨)를
-  메시지에 실제로 붙인다.
-- auto-fallback 발생 시 전환 사실을 시스템 메시지로 스레드에 표시 —
-  [CFL-03](flutter-mapping.html#s2) 해소.
-- **함께 하면 싼 것**: 코드블록 렌더링(DEC-03, 아직 프론트엔드에
-  미구현) — Phase 1부터 provider가 코드/diff 섞인 응답을 자주 반환하므로
-  이 시점에 필요해진다.
+**실제로 한 것**:
+- `POST /api/run` 신설. 단, `handoff_bridge.py`의 `run_provider()`를
+  프로세스 내에서 직접 호출하지 않고 **서브프로세스로 실행**하도록
+  설계를 한 단계 구체화했다 — 그 함수가 `.handoff/state.json` 같은 경로를
+  프로세스 cwd 기준 상대경로로 푸는데(`chdir_workspace()`),
+  `ThreadingHTTPServer`의 요청 스레드에서 직접 부르면 `os.chdir()`이
+  프로세스 전역이라 동시 요청끼리 서로의 cwd를 덮어쓸 수 있기 때문.
+  `handoff_desktop.py`가 이미 쓰는 것과 같은 패턴(서브프로세스 + `--workspace`)을
+  그대로 따랐다. 실행 후 `.handoff/state.json`의 `history[]`를
+  실행 전/후로 diff해서 새로 추가된 레코드(fallback 발생 시 2개 이상)를
+  구조화된 데이터로 돌려받는다. 자세한 이유는
+  [CLI Reference § Web UI (MVP)](../cli-reference.md#web-ui-mvp)의
+  "Why a subprocess" 참고.
+- DEC-02(세션당 첫 전송만 확인, 이후 즉시 실행) 적용 —
+  `webui/app.js`의 `sessionRunConfirmed` 플래그.
+- 상태 배지(완료/핸드오프 필요/실패)를 실제 메시지에 붙였다 —
+  `classify_run_status()`가 `handoff_bridge.py`의 `classify_handoff()`
+  결과를 세 상태로 매핑.
+- auto-fallback 발생 시 전환된 provider의 응답이 **별도 agent 메시지로**
+  스레드에 그대로 나타난다(시스템 메시지로 요약하는 대신, 실제 두 번째
+  provider의 실행 결과 자체를 보여줌 — 원래 계획보다 더 직접적인 해결).
+- 코드블록 렌더링(DEC-03)도 함께 구현 — 계획대로 Phase 1에 묶었다.
 
-**해소하는 항목**: CFL-01, CFL-03, DEC-02/DEC-03 실제 적용.
-**끝났다고 볼 수 있는 기준**: 채팅에서 실제 작업을 지시하면 Codex 또는
-Claude가 응답하고, 핸드오프가 발생하면 자동으로 다른 provider로 넘어가는
-것까지 실제로 동작.
+**검증**: 가짜 `codex`/`claude` 스크립트를 `PATH`에 얹어 실제
+서브프로세스 호출·`--auto-fallback` 체인(2개 provider)·HTTP 왕복까지
+전부 실제로 돌려서 확인(`RunProviderViaBridgeTests`,
+`ApiRunLiveServerTests`) — 토큰 소비나 네트워크 없이 결정적으로 재현.
+
+**해소한 항목**: CFL-01, CFL-03, DEC-02/DEC-03 실제 적용.
 
 ## Phase 2 — 워크스페이스 미선택 시 자동 폴더 생성
 
@@ -140,7 +153,7 @@ DEC-01이 가리키는 실제 프로덕션 스택(Tauri/Electron류)으로 이�
 | Phase | 상태 | 해소하는 항목 |
 |---|---|---|
 | 0 — 로컬 MVP | ✅ 완료 | — |
-| 1 — Provider 연결(CLI) | 미착수 | CFL-01, CFL-03, DEC-02/03 적용 |
+| 1 — Provider 연결(CLI) | ✅ 완료 | CFL-01, CFL-03, DEC-02/03 적용 |
 | 2 — 자동 폴더 생성 | 미착수 | (SCR-05 구현) |
 | 3 — 멀티 프로젝트 히스토리 | 미착수 | CFL-10 |
 | 4 — API 키 모드 | 미착수 | CFL-12 |

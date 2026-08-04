@@ -13,7 +13,12 @@
         <span>📁</span>
         <span id="workspace-label">workspace</span>
       </button>
-      <span class="badge">MVP · provider 연결 없음</span>
+      <select class="provider-select" id="provider-select" title="Provider">
+        <option value="auto">auto</option>
+        <option value="codex">codex</option>
+        <option value="claude">claude</option>
+      </select>
+      <span class="badge">Phase 1 · provider 연결됨</span>
     </div>
     <div class="body">
       <div class="sidebar">
@@ -40,7 +45,7 @@
             <textarea id="composer-input" placeholder="메시지를 입력하세요…" rows="1"></textarea>
             <button class="send" id="send-btn" type="button" disabled>➤</button>
           </div>
-          <div class="composer-note">이 MVP는 파일 열람·첨부만 합니다. 전송한 메시지는 로컬에만 표시되고, 실제 Codex/Claude 호출은 아직 연결되어 있지 않습니다.</div>
+          <div class="composer-note">전송은 선택한 provider(Codex/Claude)를 실제로 호출합니다 — 토큰이 소비될 수 있습니다. 이 세션의 첫 전송만 확인을 거치고, 이후는 바로 실행됩니다.</div>
         </div>
       </div>
     </div>

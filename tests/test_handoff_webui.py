@@ -12,6 +12,7 @@ python3 -m unittest discover -s tests -v
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -420,6 +421,198 @@ class ChatStorageTests(unittest.TestCase):
             for month in ("2026-05", "2026-06", "2026-07"):
                 messages = webui.read_month_messages(root, month)
                 self.assertEqual(len(messages), 1, f"{month} lost its message")
+
+
+def _write_fake_provider(bin_dir: Path, name: str, script_body: str) -> None:
+    script = bin_dir / name
+    script.write_text(script_body, encoding="utf-8")
+    script.chmod(0o755)
+
+
+class FakeProviderPathMixin:
+    """Prepends a temp dir with fake `codex`/`claude` shell scripts onto
+    PATH so run_provider_via_bridge()'s real subprocess call resolves to
+    them instead of any real provider CLI -- deterministic, no tokens
+    spent, no network. Skips on platforms without a POSIX shell (this
+    project's CI only runs ubuntu-latest today, but keep this honest)."""
+
+    def setUpFakeProviders(self):
+        if os.name != "posix" or not shutil.which("sh"):
+            self.skipTest("POSIX shell not available for fake provider scripts")
+        self.fake_bin = Path(tempfile.mkdtemp())
+        self._old_path = os.environ.get("PATH", "")
+        os.environ["PATH"] = f"{self.fake_bin}{os.pathsep}{self._old_path}"
+        self.addCleanup(self._restore_path)
+
+    def _restore_path(self):
+        os.environ["PATH"] = self._old_path
+        shutil.rmtree(self.fake_bin, ignore_errors=True)
+
+
+FAKE_CODEX_SUCCESS = """#!/bin/sh
+cat >/dev/null
+cat <<'EOF'
+{"type": "thread.started", "thread_id": "fake-codex-session"}
+{"type": "item.completed", "item": {"type": "agent_message", "text": "fake codex reply"}}
+{"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}
+EOF
+"""
+
+FAKE_CODEX_RATE_LIMITED = """#!/bin/sh
+cat >/dev/null
+echo "Error: rate limit exceeded (429)"
+exit 1
+"""
+
+FAKE_CLAUDE_SUCCESS = """#!/bin/sh
+cat >/dev/null
+cat <<'EOF'
+{"type": "system", "subtype": "init", "session_id": "fake-claude-session"}
+{"type": "result", "session_id": "fake-claude-session", "result": "fake claude reply", "total_cost_usd": 0.0, "is_error": false}
+EOF
+"""
+
+
+class ClassifyRunStatusTests(unittest.TestCase):
+    def test_no_handoff_needed_is_success(self):
+        self.assertEqual(webui.classify_run_status(False, "none: no handoff signal detected"), "success")
+
+    def test_tool_failure_is_fail(self):
+        self.assertEqual(webui.classify_run_status(True, "tool_failure: provider command not found"), "fail")
+
+    def test_unknown_is_fail(self):
+        self.assertEqual(webui.classify_run_status(True, "unknown: provider emitted an unrecognized error"), "fail")
+
+    def test_rate_limit_is_handoff(self):
+        self.assertEqual(webui.classify_run_status(True, "rate_limit: matched rate_limit signal"), "handoff")
+
+    def test_quota_is_handoff(self):
+        self.assertEqual(webui.classify_run_status(True, "quota: matched quota signal"), "handoff")
+
+
+class ReadStateHistoryTests(unittest.TestCase):
+    def test_missing_state_file_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(webui.read_state_history(Path(tmp)), [])
+
+    def test_malformed_state_file_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".handoff").mkdir()
+            (root / ".handoff" / "state.json").write_text("not json", encoding="utf-8")
+            self.assertEqual(webui.read_state_history(root), [])
+
+    def test_reads_history_array(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".handoff").mkdir()
+            (root / ".handoff" / "state.json").write_text(
+                json.dumps({"history": [{"provider": "codex"}]}), encoding="utf-8"
+            )
+            self.assertEqual(webui.read_state_history(root), [{"provider": "codex"}])
+
+
+class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
+    def setUp(self):
+        self.setUpFakeProviders()
+
+    def test_successful_run_produces_one_history_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+            records = webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["provider"], "codex")
+            self.assertFalse(records[0]["handoff_needed"])
+            self.assertEqual(records[0]["final_text"], "fake codex reply")
+
+    def test_auto_fallback_chains_into_a_second_provider(self):
+        # This is the real integration test for Phase 1's headline feature:
+        # a rate-limited codex run should auto-fallback into claude within
+        # a single run_provider_via_bridge() call, producing two records.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_RATE_LIMITED)
+            _write_fake_provider(self.fake_bin, "claude", FAKE_CLAUDE_SUCCESS)
+            records = webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+            self.assertEqual(len(records), 2)
+            self.assertEqual(records[0]["provider"], "codex")
+            self.assertTrue(records[0]["handoff_needed"])
+            self.assertTrue(records[0]["reason"].startswith("rate_limit"))
+            self.assertEqual(records[1]["provider"], "claude")
+            self.assertFalse(records[1]["handoff_needed"])
+            self.assertEqual(records[1]["final_text"], "fake claude reply")
+
+    def test_nonexistent_workspace_falls_back_to_synthetic_record(self):
+        # handoff_bridge.py itself exits before ever writing to state.json
+        # when --workspace doesn't exist -- run_provider_via_bridge() must
+        # still return something rather than an empty list.
+        records = webui.run_provider_via_bridge(
+            Path("/definitely/does/not/exist"), "codex", "hello", None, "continue"
+        )
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["handoff_needed"])
+        self.assertIn("tool_failure", records[0]["reason"])
+
+
+class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
+    def setUp(self):
+        self.setUpFakeProviders()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.state = webui.AppState(self.root)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+        self.tmp.cleanup()
+
+    def _post(self, path: str, payload: dict) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def test_run_persists_and_returns_agent_message(self):
+        _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+        status, data = self._post("/api/run", {"provider": "codex", "text": "do the thing"})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["messages"]), 1)
+        message = data["messages"][0]
+        self.assertEqual(message["role"], "agent")
+        self.assertEqual(message["provider"], "codex")
+        self.assertEqual(message["status"], "success")
+        self.assertEqual(message["text"], "fake codex reply")
+
+        # and it's actually on disk, readable via GET /api/chat like any
+        # other persisted message
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/chat")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            chat = json.loads(resp.read().decode("utf-8"))
+        self.assertEqual(len(chat["messages"]), 1)
+        self.assertEqual(chat["messages"][0]["role"], "agent")
+
+    def test_run_with_empty_text_is_rejected(self):
+        status, data = self._post("/api/run", {"provider": "codex", "text": "   "})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_run_with_invalid_provider_is_rejected(self):
+        status, data = self._post("/api/run", {"provider": "gemini", "text": "hi"})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
 
 
 class EnsureChatGitignoreTests(unittest.TestCase):

@@ -33,6 +33,33 @@
   - 19 new tests (chat storage, workspace-candidate validation, isolated
     per-test live-server coverage for the two new endpoints) — 92 total.
 
+- Web UI Phase 1 (provider connection, supersedes "no provider is called
+  yet" above):
+  - added `POST /api/run`: shells out to `handoff_bridge.py run <provider>
+    --execute --auto-fallback` (subprocess, not an in-process call --
+    `chdir_workspace()`'s cwd-relative paths aren't safe to call from a
+    `ThreadingHTTPServer` request thread) and diffs `.handoff/state.json`'s
+    `history[]` before/after to read back the new record(s), including
+    every record an auto-fallback chain produced in one call;
+  - `classify_run_status()` maps `classify_handoff()`'s
+    `(handoff_needed, reason)` to `success`/`handoff`/`fail`, rendered as a
+    real status badge on each agent message;
+  - DEC-02 (confirm only the first send per browser session, then run
+    immediately) and DEC-03 (fenced ```code``` blocks render as monospace,
+    via `textContent` only -- never `innerHTML`, since a provider's
+    response isn't fully trusted input) both actually implemented, not
+    just designed;
+  - a provider picker (`auto`/`codex`/`claude`) in the titlebar;
+  - `append_chat_message()` gained an `"agent"` role (`provider`/`status`/
+    `reason` fields, `agent`-only) alongside the existing `user`/`system`;
+  - verified with fake `codex`/`claude` shell scripts injected onto `PATH`
+    -- deterministic, no tokens spent, no network -- including a real
+    auto-fallback chain (rate-limited codex -> successful claude) producing
+    two history records and two agent messages in one call
+    (`RunProviderViaBridgeTests`, `ApiRunLiveServerTests`);
+  - 14 new tests -- 121 total for the whole suite, 72 in
+    `tests/test_handoff_webui.py`.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

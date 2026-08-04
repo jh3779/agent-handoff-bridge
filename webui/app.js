@@ -12,6 +12,7 @@
   const treeEl = document.getElementById("tree");
   const workspaceLabel = document.getElementById("workspace-label");
   const openFolderBtn = document.getElementById("open-folder-btn");
+  const providerSelect = document.getElementById("provider-select");
   const chatThread = document.getElementById("chat-thread");
   const dropzone = document.getElementById("dropzone");
   const composerInput = document.getElementById("composer-input");
@@ -28,6 +29,13 @@
   /** @type {{name: string, path: string|null, content: string|null, truncated: boolean}[]} */
   let attachments = [];
   let dragDepth = 0;
+  // DEC-02: only the first send *in this browser session* confirms that
+  // tokens may be spent; every send after that in the same session runs
+  // immediately. Resets on page reload -- intentionally not persisted.
+  let sessionRunConfirmed = false;
+
+  const STATUS_LABEL = { success: "완료", handoff: "핸드오프 필요", fail: "실패" };
+  const STATUS_ICON = { success: "✅", handoff: "🔀", fail: "⚠️" };
 
   function showToast(message) {
     toast.textContent = message;
@@ -308,11 +316,29 @@
     );
   }
 
+  // DEC-03: fenced ```code``` blocks render as monospace blocks; everything
+  // else is plain text. Both paths use textContent/createTextNode only --
+  // never innerHTML -- because message text can come from a provider's
+  // response, which this app doesn't fully control or trust.
+  function renderTextWithCodeBlocks(container, text) {
+    const parts = String(text).split(/```[^\n]*\n?([\s\S]*?)```/g);
+    parts.forEach((part, i) => {
+      if (!part) return;
+      if (i % 2 === 0) {
+        container.appendChild(document.createTextNode(part));
+      } else {
+        const pre = el("pre", { class: "code-block" }, []);
+        const code = el("code", { text: part.replace(/\n$/, "") }, []);
+        pre.appendChild(code);
+        container.appendChild(pre);
+      }
+    });
+  }
+
   function renderMessage(message) {
     clearChatEmptyState();
-    const bubbleChildren = [];
-    if (message.text) bubbleChildren.push(document.createTextNode(message.text));
-    const bubble = el("div", { class: "bubble" }, bubbleChildren);
+    const bubble = el("div", { class: "bubble" }, []);
+    if (message.text) renderTextWithCodeBlocks(bubble, message.text);
 
     if (message.attachments && message.attachments.length > 0) {
       const attachRow = el("div", { class: "attachments" }, []);
@@ -322,13 +348,49 @@
       bubble.appendChild(attachRow);
     }
 
-    const isUser = message.role === "user";
-    const msg = el("div", { class: `msg ${isUser ? "user" : "system"}` }, [
-      el("div", { class: "avatar", text: isUser ? "🧑" : "🗂️" }, []),
-      el("div", {}, [el("div", { class: "meta", text: isUser ? "나" : "시스템" }, []), bubble]),
+    let roleClass = "system";
+    let avatar = "🗂️";
+    const metaParts = [];
+    if (message.role === "user") {
+      roleClass = "user";
+      avatar = "🧑";
+      metaParts.push(document.createTextNode("나"));
+    } else if (message.role === "agent") {
+      roleClass = "agent";
+      avatar = "🤖";
+      metaParts.push(document.createTextNode(message.provider || "agent"));
+      if (message.status) {
+        metaParts.push(
+          el("span", { class: `status-badge status-${message.status}` }, [
+            document.createTextNode(`${STATUS_ICON[message.status] || ""} ${STATUS_LABEL[message.status] || message.status}`),
+          ])
+        );
+      }
+    } else {
+      metaParts.push(document.createTextNode("시스템"));
+    }
+
+    const msg = el("div", { class: `msg ${roleClass}` }, [
+      el("div", { class: "avatar", text: avatar }, []),
+      el("div", {}, [el("div", { class: "meta" }, metaParts), bubble]),
     ]);
     chatThread.appendChild(msg);
     chatThread.scrollTop = chatThread.scrollHeight;
+    return msg;
+  }
+
+  function renderBusyMessage(providerLabel) {
+    clearChatEmptyState();
+    const msg = el("div", { class: "msg agent busy" }, [
+      el("div", { class: "avatar", text: "🤖" }, []),
+      el("div", {}, [
+        el("div", { class: "meta" }, [document.createTextNode(providerLabel)]),
+        el("div", { class: "bubble" }, [el("span", { class: "spinner" }, []), document.createTextNode(" 실행 중…")]),
+      ]),
+    ]);
+    chatThread.appendChild(msg);
+    chatThread.scrollTop = chatThread.scrollHeight;
+    return msg;
   }
 
   async function loadChatHistory() {
@@ -365,8 +427,19 @@
     const text = composerInput.value.trim();
     if (!text && attachments.length === 0) return;
 
-    const message = { role: "user", text, attachments };
-    renderMessage(message);
+    // DEC-02: confirm once per session before the first provider call,
+    // then trust the user for the rest of the session. window.confirm()
+    // is blocking/synchronous by design here -- we want the user's answer
+    // before any token-spending call goes out, not a fire-and-forget toast.
+    if (!sessionRunConfirmed) {
+      const ok = window.confirm("Codex/Claude를 실행합니다. 토큰이 소비될 수 있습니다. 계속할까요?");
+      if (!ok) return;
+      sessionRunConfirmed = true;
+    }
+
+    const provider = providerSelect.value;
+    const userMessage = { role: "user", text, attachments };
+    renderMessage(userMessage);
 
     composerInput.value = "";
     composerInput.style.height = "auto";
@@ -375,9 +448,23 @@
     updateSendState();
 
     try {
-      await postJSON("/api/chat", message);
+      await postJSON("/api/chat", userMessage);
     } catch (err) {
       showToast(`대화 기록 저장 실패(화면에는 남아있음): ${err.message}`);
+    }
+
+    const busyMsg = renderBusyMessage(provider);
+    sendBtn.disabled = true;
+    try {
+      const result = await postJSON("/api/run", { provider, text });
+      busyMsg.remove();
+      for (const agentMessage of result.messages) renderMessage(agentMessage);
+    } catch (err) {
+      busyMsg.remove();
+      renderMessage({ role: "system", text: `실행 실패: ${err.message}`, attachments: [] });
+      showToast(`provider 실행 실패: ${err.message}`);
+    } finally {
+      updateSendState();
     }
   }
 
