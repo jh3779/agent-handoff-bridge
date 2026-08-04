@@ -280,5 +280,87 @@ class RunProviderTimeoutIntegrationTests(unittest.TestCase):
             self.assertEqual(state["history"][0]["exit_code"], 124)
 
 
+class AutoFallbackPromptPropagationTests(unittest.TestCase):
+    """Regression test: the recursive --auto-fallback call used to replace
+    the user's actual prompt with the literal string "Continue after
+    provider handoff." -- so a rate-limited codex auto-falling-back into
+    claude meant claude never saw what the user actually asked, silently
+    undermining the whole point of auto-fallback (and, for the Web UI, the
+    attachment content handoff_webui.build_run_prompt() folds into that
+    same prompt). Verified end-to-end via a real CLI invocation with fake
+    provider scripts, not just a unit test of build_prompt()."""
+
+    def setUp(self):
+        if os.name != "posix" or not hb.shutil.which("sh"):
+            self.skipTest("POSIX shell not available for fake provider scripts")
+
+    def test_fallback_provider_receives_the_original_user_prompt_on_stdin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/bin/sh\n"
+                "cat >/dev/null\n"
+                "echo 'Error: rate limit exceeded (429)'\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(0o755)
+
+            claude_stdin_capture = workspace / "claude-stdin.txt"
+            fake_claude = fake_bin / "claude"
+            fake_claude.write_text(
+                "#!/bin/sh\n"
+                f"cat > {claude_stdin_capture}\n"
+                'echo \'{"type": "system", "subtype": "init", "session_id": "s"}\'\n'
+                'echo \'{"type": "result", "session_id": "s", "result": "ok", "total_cost_usd": 0.0, "is_error": false}\'\n',
+                encoding="utf-8",
+            )
+            fake_claude.chmod(0o755)
+
+            distinctive_prompt = "please review the attached distinctive-marker-xyz123.py file"
+            prompt_path = workspace / "prompt.txt"
+            prompt_path.write_text(distinctive_prompt, encoding="utf-8")
+
+            env = dict(os.environ)
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(bridge_script),
+                    "--workspace",
+                    str(workspace),
+                    "run",
+                    "codex",
+                    "--execute",
+                    "--auto-fallback",
+                    "--prompt-file",
+                    str(prompt_path),
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+                timeout=30,
+            )
+
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(state["history"]), 2)
+            self.assertEqual(state["history"][1]["provider"], "claude")
+
+            self.assertTrue(claude_stdin_capture.exists())
+            claude_stdin = claude_stdin_capture.read_text(encoding="utf-8")
+            self.assertIn(
+                distinctive_prompt,
+                claude_stdin,
+                msg="fallback provider must receive the user's actual prompt, not a placeholder",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

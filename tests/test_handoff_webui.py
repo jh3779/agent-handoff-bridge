@@ -546,6 +546,33 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
     def setUp(self):
         self.setUpFakeProviders()
 
+    def test_concurrent_call_fails_fast_instead_of_blocking_or_racing(self):
+        # Regression test: run_provider_via_bridge() used to diff
+        # .handoff/state.json's history length before/after the subprocess
+        # call with no lock -- two concurrent calls could both read the
+        # same "before" length and duplicate an already-persisted record.
+        # A held _RUN_LOCK must make a second call fail immediately
+        # (RunAlreadyInProgressError), not block for the full timeout or
+        # silently race.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+            webui._RUN_LOCK.acquire()
+            try:
+                with self.assertRaises(webui.RunAlreadyInProgressError):
+                    webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+            finally:
+                webui._RUN_LOCK.release()
+
+    def test_lock_is_released_after_a_normal_call_so_the_next_one_can_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+            webui.run_provider_via_bridge(root, "codex", "first", None, "continue")
+            # Would raise RunAlreadyInProgressError if the lock leaked.
+            records = webui.run_provider_via_bridge(root, "codex", "second", None, "continue")
+            self.assertEqual(len(records), 1)
+
     def test_delegates_provider_timeout_to_the_bridge(self):
         # Killing only the outer handoff_bridge.py wrapper on timeout does
         # NOT kill the real codex/claude child it spawned (neither process
@@ -760,6 +787,15 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
     def test_run_with_no_text_and_no_attachments_is_rejected(self):
         status, data = self._post("/api/run", {"provider": "codex", "text": "", "attachments": []})
         self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_concurrent_run_gets_409_not_a_hang_or_duplicate_message(self):
+        webui._RUN_LOCK.acquire()
+        try:
+            status, data = self._post("/api/run", {"provider": "codex", "text": "hi"})
+        finally:
+            webui._RUN_LOCK.release()
+        self.assertEqual(status, 409)
         self.assertIn("error", data)
 
     def test_run_with_invalid_provider_is_rejected(self):

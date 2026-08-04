@@ -34,6 +34,13 @@
   // tokens may be spent; every send after that in the same session runs
   // immediately. Resets on page reload -- intentionally not persisted.
   let sessionRunConfirmed = false;
+  // Guards against a second concurrent /api/run: sendBtn.disabled alone
+  // doesn't stop the Enter-key send path below, and updateSendState() (run
+  // on every keystroke) would otherwise re-enable sendBtn if the user
+  // types while a run is still in flight -- a real race that could
+  // duplicate an already-persisted agent message (server-side backstop:
+  // handoff_webui.RunAlreadyInProgressError).
+  let runInFlight = false;
 
   const STATUS_LABEL = { success: "완료", handoff: "핸드오프 필요", fail: "실패" };
   const STATUS_ICON = { success: "✅", handoff: "🔀", fail: "⚠️" };
@@ -249,7 +256,7 @@
 
   function updateSendState() {
     const hasContent = composerInput.value.trim().length > 0 || attachments.length > 0;
-    sendBtn.disabled = !hasContent;
+    sendBtn.disabled = runInFlight || !hasContent;
   }
 
   // ---------- drag & drop (files dragged in from the OS) ----------
@@ -425,6 +432,12 @@
   sendBtn.addEventListener("click", sendMessage);
 
   async function sendMessage() {
+    // Re-entry guard: sendBtn.disabled alone doesn't stop the Enter-key
+    // path, which never checks it. Without this, typing a follow-up and
+    // hitting Enter while the first reply is still pending (runs can take
+    // minutes) fires a second concurrent /api/run.
+    if (runInFlight) return;
+
     const text = composerInput.value.trim();
     if (!text && attachments.length === 0) return;
 
@@ -455,7 +468,9 @@
     }
 
     const busyMsg = renderBusyMessage(provider);
-    sendBtn.disabled = true;
+    runInFlight = true;
+    composerInput.disabled = true;
+    updateSendState();
     try {
       const result = await postJSON("/api/run", { provider, text, attachments: userMessage.attachments });
       busyMsg.remove();
@@ -465,6 +480,8 @@
       renderMessage({ role: "system", text: `실행 실패: ${err.message}`, attachments: [] });
       showToast(`provider 실행 실패: ${err.message}`);
     } finally {
+      runInFlight = false;
+      composerInput.disabled = false;
       updateSendState();
     }
   }

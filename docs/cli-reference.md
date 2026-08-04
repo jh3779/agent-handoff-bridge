@@ -202,7 +202,15 @@ it does:
   browser session** asks "this may spend tokens, continue?" — after that,
   sends in the same session run immediately (`sessionRunConfirmed` in
   `webui/app.js`). Auto-fallback is visible in the thread as a second agent
-  message from the other provider, not hidden.
+  message from the other provider, not hidden — and the fallback provider
+  actually receives the original prompt/attachments, not a generic
+  placeholder (`handoff_bridge.run_provider()` threads `user_prompt`
+  through the recursive call). Only one provider run at a time, process-wide
+  (`handoff_webui._RUN_LOCK`); a `POST /api/run` that arrives while one is
+  already in flight gets `409`, not a multi-minute hang or a duplicated
+  chat message — the composer also disables itself client-side while a run
+  is pending, so this is normally a defense-in-depth backstop, not
+  something a user hits directly.
 - Every message — yours and the agent's — persists to
   `<workspace>/.handoff/webui/chat/YYYY-MM.jsonl`. History is scoped to the
   folder you have open, the same way `.handoff/current.md` already is, so it

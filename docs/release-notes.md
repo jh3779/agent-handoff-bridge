@@ -105,6 +105,28 @@
   - refreshed startup/help text and the `webui/app.js` header comment,
     which still said "no provider is called" after Phase 1 wired
     `POST /api/run` up for real;
+  - fixed a real race found in an independent adversarial pass: two
+    concurrent `POST /api/run` calls (the Enter-key send path never
+    checked whether a run was already in flight, and typing while one was
+    pending could re-enable the disabled send button) diffed
+    `.handoff/state.json`'s history length with no lock in between, so the
+    second call to finish could duplicate the first call's already-saved
+    record as a second agent chat message. A process-wide `_RUN_LOCK`
+    (not `handoff_bridge.WriteLock` -- the contention is between HTTP
+    threads in one process, not separate CLI processes, and WriteLock's
+    10s default timeout is far too short for a provider call) now makes a
+    second concurrent call fail fast with `409`
+    (`RunAlreadyInProgressError`) instead of hanging or racing; the
+    composer also disables itself while a run is pending so this is
+    normally a backstop, not something hit directly;
+  - fixed a real pre-existing bug this PR's auto-fallback UX now made
+    load-bearing: `handoff_bridge.py`'s `--auto-fallback` recursion
+    replaced the user's actual prompt with the literal string "Continue
+    after provider handoff." before calling the fallback provider, so a
+    rate-limited codex auto-falling-back into claude meant claude never
+    saw what the user actually asked (or, via `build_run_prompt()`, any
+    attached file content) -- `run_provider()` now threads the original
+    `user_prompt` through the recursive call instead;
   - added tests for all of the above -- run
     `python3 -m unittest discover -s tests -v` for the current pass/fail
     count rather than trusting a number pinned here; it drifts every time a

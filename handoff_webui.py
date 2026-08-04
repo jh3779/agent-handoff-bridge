@@ -318,6 +318,26 @@ def archive_old_months(workspace: Path, now: datetime) -> list[str]:
 
 PROVIDER_RUN_TIMEOUT_SECONDS = 600
 
+# run_provider_via_bridge() reads .handoff/state.json's history length
+# before the subprocess call and diffs against it after, with no lock in
+# between -- two concurrent POST /api/run calls (e.g. the Enter-key path in
+# webui/app.js doesn't check whether a run is already in flight) would both
+# read the same "before" length, and whichever finishes second would slice
+# in the first call's already-persisted record too, duplicating it as a
+# second agent chat message. There's only one AppState.workspace server-wide,
+# so a single process-wide lock (not a per-workspace one) is correct here --
+# every concurrent run is necessarily against the same active workspace.
+# A plain threading.Lock, not handoff_bridge.WriteLock: the contention here
+# is between HTTP request threads in this one process, not separate CLI
+# processes, and WriteLock's 10s default timeout is far too short for a
+# provider call that can legitimately take minutes.
+_RUN_LOCK = threading.Lock()
+
+
+class RunAlreadyInProgressError(Exception):
+    """Raised instead of silently blocking/racing when a second
+    POST /api/run arrives while one is still in flight."""
+
 # Killing the outer handoff_bridge.py wrapper on timeout does NOT kill the
 # real codex/claude child it spawned -- subprocess.run() only signals the
 # immediate child, not its descendants, since neither process runs in its
@@ -389,6 +409,24 @@ def build_run_prompt(text: str, attachments: list[dict]) -> str:
 
 
 def run_provider_via_bridge(
+    workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str
+) -> list[dict]:
+    """Thin locking wrapper around `_run_provider_via_bridge_locked()`.
+
+    Fails fast with `RunAlreadyInProgressError` instead of silently
+    blocking (a provider call can legitimately take up to
+    `OUTER_SUBPROCESS_TIMEOUT_SECONDS`) or racing (see `_RUN_LOCK`'s
+    comment) when a second call arrives while one is already in flight.
+    """
+    if not _RUN_LOCK.acquire(blocking=False):
+        raise RunAlreadyInProgressError("a provider run is already in progress; wait for it to finish")
+    try:
+        return _run_provider_via_bridge_locked(workspace, provider, prompt, model, instruction_type)
+    finally:
+        _RUN_LOCK.release()
+
+
+def _run_provider_via_bridge_locked(
     workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str
 ) -> list[dict]:
     """Invoke `handoff_bridge.py run <provider> --execute --auto-fallback`
@@ -644,6 +682,8 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                             )
                         )
                     self._send_json(200, {"messages": messages})
+                except RunAlreadyInProgressError as exc:
+                    self._send_json(409, {"error": str(exc)})
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             else:

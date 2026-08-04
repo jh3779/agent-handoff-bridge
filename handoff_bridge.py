@@ -800,13 +800,18 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
 
     if handoff_needed:
         fallback = other_provider(provider)
-        next_prompt = build_prompt(fallback, state, "Continue after provider handoff.", handoff_reason)
+        # Carry the ORIGINAL user_prompt into the fallback, not a generic
+        # placeholder -- the handoff_reason is already conveyed separately
+        # via build_prompt()'s reason_block, so replacing the actual
+        # request/attachments here just means the fallback provider has no
+        # idea what the user actually asked for.
+        next_prompt = build_prompt(fallback, state, user_prompt, handoff_reason)
         NEXT_PROMPT_FILE.write_text(next_prompt, encoding="utf-8")
         print(f"Next prompt written to: {NEXT_PROMPT_FILE}")
         if args.auto_fallback:
             print(f"Auto-fallback enabled; switching to {fallback}.")
             next_args = argparse.Namespace(
-                prompt="Continue after provider handoff.",
+                prompt=user_prompt,
                 prompt_file=None,
                 execute=True,
                 auto_fallback=False,
