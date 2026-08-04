@@ -280,15 +280,42 @@
     later could stringify differently and duplicate in the registry
     instead of deduping to one entry. Reproduced with a real symlink in a
     test, confirmed it failed before the fix and passed after;
-  - verified with 25 new tests (registry CRUD including the eviction/
-    dedup/LRU-ordering behavior, turn-pairing including the multi-agent-
-    reply case, month-by-month backward scanning in
-    `collect_recent_turns()`, drawer assembly, path-normalization via a
-    real symlink, and live-server HTTP integration tests) -- 207 total.
-    Also a real end-to-end run: `$HOME` swapped to a temp directory,
-    auto-created one workspace via a Korean first message, opened a
-    second via Open Folder, and confirmed `GET /api/history` showed both
-    in the right order with the right turns via curl.
+  - fixed two more real gaps from a follow-up review round:
+    `touch_registry()`/`read_registry()` let `OSError` (base dir exists as
+    a file, permissions, full disk) propagate uncaught -- since
+    `touch_registry()` is called from `POST /api/open-folder` and `main()`
+    *after* the real state change it's attached to already happened
+    (`AppState.workspace` assigned, or the server about to finish
+    starting), a registry write failure could turn a successful workspace
+    switch into a client-visible 500, or stop the whole server from
+    starting, over what's just an LRU convenience index. Now best-effort:
+    read failures return an empty list, write failures log a warning and
+    return, verified by an HTTP-level test that `/api/open-folder` still
+    returns 200 with the base dir forced to fail. Separately,
+    `collect_recent_turns()` paired each scanned month's messages in
+    isolation, so a turn whose user message landed in one month's file and
+    whose agent reply landed in the next (e.g. sent right at a UTC month
+    boundary) would show up with no provider/status and silently drop the
+    reply -- now pairs across the merged, chronologically-ordered messages
+    from every month scanned, verified with a reproduced-and-fixed
+    regression test;
+  - documented `registry.json`'s schema, path-normalization contract,
+    50-entry LRU cap, locking, and failure-isolation policy in
+    [`docs/webui-chat-storage.md`](webui-chat-storage.md#recently-opened-registry-phase-3)
+    -- the repo's existing real data-model reference doc (not a new
+    fictional one), extended rather than left undocumented;
+  - verified with more tests (registry CRUD including failure isolation,
+    turn-pairing including the multi-agent-reply and month-boundary
+    cases, month-by-month backward scanning in `collect_recent_turns()`,
+    drawer assembly, path-normalization via a real symlink, and
+    live-server HTTP integration tests including the registry-failure
+    case) -- exact count drifts with each fix, so trust
+    `python3 -m unittest discover -s tests -v` over a number pinned here
+    (see the Phase 1 entry above for why). Also a real end-to-end run:
+    `$HOME` swapped to a temp directory, auto-created one workspace via a
+    Korean first message, opened a second via Open Folder, and confirmed
+    `GET /api/history` showed both in the right order with the right
+    turns via curl.
 
 ## v0.1.0 — 2026-08-03
 

@@ -258,7 +258,10 @@ server. What it does:
   active — Open Folder, auto-create, *and* plain `--workspace` CLI startup
   (DEC-10) — so a project opened from another terminal shows up here too.
   An entry whose folder no longer exists is silently skipped, not an error
-  (DEC-09).
+  (DEC-09). A registry write failure never fails the workspace switch/
+  startup it's attached to (best-effort, logged not raised). Full schema,
+  locking, and failure-isolation details:
+  [Web UI Chat Storage § Recently-Opened Registry](webui-chat-storage.md#recently-opened-registry-phase-3).
 
 **Why a subprocess, not an in-process function call**: `handoff_bridge.py`'s
 state functions resolve paths like `.handoff/state.json` relative to the

@@ -662,6 +662,39 @@ class RegistryTests(unittest.TestCase):
     def test_read_registry_missing_file_returns_empty_list(self):
         self.assertEqual(webui.read_registry(), [])
 
+    def test_read_registry_unreadable_path_returns_empty_list_not_raise(self):
+        # registry.json existing as a *directory* (permissions issues are
+        # the more realistic real-world case, but a directory-where-a-file-
+        # is-expected is the portable way to force the same OSError family
+        # without relying on chmod, which root/CI can bypass).
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "registry.json").mkdir()
+        self.assertEqual(webui.read_registry(), [])
+
+    def test_read_registry_skips_malformed_entries_instead_of_crashing(self):
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "registry.json").write_text(
+            json.dumps([{"path": "/w/good", "name": "good"}, "not a dict", {"name": "no path field"}, 42]),
+            encoding="utf-8",
+        )
+        entries = webui.read_registry()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["path"], "/w/good")
+
+    def test_touch_registry_does_not_raise_when_the_write_fails(self):
+        # Regression: touch_registry() is called from POST /api/open-folder
+        # and main() *after* real state already changed (AppState.workspace
+        # assigned, or the server about to start) -- a write failure here
+        # (permissions, full disk, base dir exists as a file) must be
+        # best-effort, not propagate and desync the HTTP response / crash
+        # startup from what the server actually just did.
+        self.base_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.base_dir.write_text("a file, not a directory", encoding="utf-8")
+        try:
+            webui.touch_registry(Path("/some/workspace"), webui.utc_now())
+        except OSError:
+            self.fail("touch_registry() must not raise on a write failure")
+
     def test_read_registry_malformed_json_returns_empty_list(self):
         self.base_dir.mkdir(parents=True)
         (self.base_dir / "registry.json").write_text("not json", encoding="utf-8")
@@ -781,6 +814,26 @@ class CollectRecentTurnsTests(unittest.TestCase):
     def test_empty_workspace_returns_no_turns(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(webui.collect_recent_turns(Path(tmp)), [])
+
+    def test_turn_split_across_a_month_boundary_still_pairs_correctly(self):
+        # Regression: pairing each month's file in isolation would drop
+        # the agent reply entirely (no preceding user message in its own
+        # month's list) and leave the user's turn with no provider/status
+        # -- a message sent right before a UTC month boundary, with the
+        # reply landing just after it, must still pair as one turn.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            end_of_july = datetime(2026, 7, 31, 23, 59, tzinfo=timezone.utc)
+            start_of_august = datetime(2026, 8, 1, 0, 1, tzinfo=timezone.utc)
+            webui.append_chat_message(root, "user", "cross-boundary turn", [], end_of_july)
+            webui.append_chat_message(
+                root, "agent", "done", [], start_of_august, provider="codex", status="success"
+            )
+            turns = webui.collect_recent_turns(root, limit=5)
+            self.assertEqual(len(turns), 1)
+            self.assertEqual(turns[0]["text"], "cross-boundary turn")
+            self.assertEqual(turns[0]["provider"], "codex")
+            self.assertEqual(turns[0]["status"], "success")
 
 
 class BuildHistoryDrawerTests(unittest.TestCase):
@@ -1708,6 +1761,23 @@ class HistoryDrawerLiveServerTests(unittest.TestCase):
         self.assertEqual(paths, {str(self.root), str(self.other)})
         current = next(g for g in data["groups"] if g["current"])
         self.assertEqual(current["path"], str(self.other))
+
+    def test_open_folder_still_succeeds_even_if_the_registry_write_fails(self):
+        # The registry is a Phase 3 convenience index, not durable state --
+        # a write failure (base dir exists as a file, permissions, full
+        # disk) must never turn a real, successful workspace switch into a
+        # client-visible failure. Simulated here the same way
+        # RegistryTests.test_touch_registry_does_not_raise_when_the_write_fails
+        # does: the base dir itself exists as a file, not a directory.
+        # setUp()'s own touch_registry() call already created it as a real
+        # directory, so clear that first.
+        shutil.rmtree(self.base_dir, ignore_errors=True)
+        self.base_dir.write_text("a file, not a directory", encoding="utf-8")
+
+        status, data = self._post("/api/open-folder", {"path": str(self.other)})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(Path(data["workspace"]), self.other)
 
     def test_startup_workspace_is_registered_without_any_api_call(self):
         # DEC-10: main() touches the registry for the workspace it starts

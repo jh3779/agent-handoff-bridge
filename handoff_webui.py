@@ -512,16 +512,19 @@ def registry_path() -> Path:
 
 def read_registry() -> list[dict]:
     """Entries ordered most-recently-opened first. Never raises -- a
-    missing or corrupt registry file just means an empty "recently
-    opened" list, same posture as read_state_history()."""
+    missing, corrupt, or unreadable (permissions) registry file just
+    means an empty "recently opened" list, same posture as
+    read_state_history()."""
     path = registry_path()
     if not path.exists():
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return []
-    return data if isinstance(data, list) else []
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if isinstance(e, dict) and isinstance(e.get("path"), str)]
 
 
 def touch_registry(workspace: Path, now: datetime) -> None:
@@ -534,12 +537,28 @@ def touch_registry(workspace: Path, now: datetime) -> None:
     path, and evicts the oldest entries past REGISTRY_MAX_ENTRIES
     (DEC-09). Entries for folders that no longer exist are pruned lazily
     at read time (build_history_drawer()), not here.
+
+    Best-effort: this is a Phase 3 convenience index, not durable state
+    (docs/architecture.md's "State Boundaries" -- .handoff/state.json and
+    .handoff/current.md are the durable handoff surface, not this). A
+    write failure here (~/Documents/Agent Handoff Bridge unreadable,
+    exists as a file, a full disk, a permissions error) must never break
+    the workspace switch/auto-create/startup it's attached to -- all
+    three call sites already changed real state (AppState.workspace,
+    or in main()'s case the whole server is about to come up) by the time
+    this runs, so raising here would desync what the server just did from
+    what the client/operator sees happen.
     """
-    with _REGISTRY_LOCK:
-        path_str = str(workspace)
-        entries = [e for e in read_registry() if e.get("path") != path_str]
-        entries.insert(0, {"path": path_str, "name": workspace.name or path_str, "last_opened": now.isoformat()})
-        atomic_write_text(registry_path(), json.dumps(entries[:REGISTRY_MAX_ENTRIES], ensure_ascii=False, indent=2))
+    try:
+        with _REGISTRY_LOCK:
+            path_str = str(workspace)
+            entries = [e for e in read_registry() if e.get("path") != path_str]
+            entries.insert(0, {"path": path_str, "name": workspace.name or path_str, "last_opened": now.isoformat()})
+            atomic_write_text(
+                registry_path(), json.dumps(entries[:REGISTRY_MAX_ENTRIES], ensure_ascii=False, indent=2)
+            )
+    except OSError as exc:
+        print(f"[webui] warning: failed to update recent-workspaces registry: {exc}", file=sys.stderr)
 
 
 def pair_messages_into_turns(messages: list[dict]) -> list[dict]:
@@ -571,14 +590,24 @@ def pair_messages_into_turns(messages: list[dict]) -> list[dict]:
 def collect_recent_turns(workspace: Path, limit: int = HISTORY_TURNS_PER_WORKSPACE) -> list[dict]:
     """Newest-first, scanning months backward only as far as needed to
     fill `limit` -- DEC-11's "그룹당 최근 5개" doesn't require reading
-    every month a long-lived project has ever had."""
+    every month a long-lived project has ever had.
+
+    Pairs across the merged, chronologically-ordered messages from every
+    month scanned so far in each pass -- pairing each month's file in
+    isolation would silently drop or misattribute a turn whose agent
+    reply landed in the *next* month's file (e.g. a message sent right
+    before a UTC month boundary): the user message would show up with no
+    provider/status, and the agent reply would be dropped outright, since
+    pair_messages_into_turns() resets its "current turn" per call.
+    """
+    messages: list[dict] = []
     turns: list[dict] = []
     for month in reversed(list_available_months(workspace)):
-        month_turns = pair_messages_into_turns(read_month_messages(workspace, month))
-        turns.extend(reversed(month_turns))
+        messages = read_month_messages(workspace, month) + messages
+        turns = pair_messages_into_turns(messages)
         if len(turns) >= limit:
             break
-    return turns[:limit]
+    return list(reversed(turns))[:limit]
 
 
 def build_history_drawer(current_workspace: Path | None) -> list[dict]:
