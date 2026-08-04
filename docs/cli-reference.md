@@ -226,11 +226,21 @@ diffs `.handoff/state.json`'s `history[]` before/after to get back the new
 record(s) as structured data, including every record an auto-fallback chain
 produced in that one call.
 
-**Timeout**: the Web UI caps the whole subprocess call — codex/claude *and*
-any auto-fallback recursion — at `PROVIDER_RUN_TIMEOUT_SECONDS` (600s,
-`handoff_webui.py`). This is a Web UI-only limit; plain CLI `run` has no
-timeout by default (`--timeout-seconds 0`). If the timeout fires after the
-first provider already produced a record but before a triggered fallback
+**Timeout**: the Web UI passes `--timeout-seconds 600`
+(`PROVIDER_RUN_TIMEOUT_SECONDS`, `handoff_webui.py`) to `handoff_bridge.py
+run`, so the 600s budget is enforced on the *actual* codex/claude
+subprocess, per provider call — killing only the outer bridge wrapper
+would leave a still-running, still-token-spending provider process behind,
+since neither process runs in its own process group. Auto-fallback means
+up to two sequential provider calls, each with its own 600s budget; the
+outer `run_provider_via_bridge()` wrapper adds a second, more generous
+timeout (`OUTER_SUBPROCESS_TIMEOUT_SECONDS`, `600 * 2 + 30`) as a hard-kill
+backstop for cases outside normal provider execution (e.g. the bridge
+process itself hanging on I/O) — this one *can* leave a child process
+running if it ever fires, but it's sized to rarely need to. This is a Web
+UI-only limit; plain CLI `run` has no timeout by default
+(`--timeout-seconds 0`). If the hard-kill backstop fires after the first
+provider already produced a record but before a triggered fallback
 finished, the Web UI appends a synthetic "timed out" agent message for the
 fallback rather than silently showing only the first reply.
 

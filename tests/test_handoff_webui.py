@@ -517,6 +517,23 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
     def setUp(self):
         self.setUpFakeProviders()
 
+    def test_delegates_provider_timeout_to_the_bridge(self):
+        # Killing only the outer handoff_bridge.py wrapper on timeout does
+        # NOT kill the real codex/claude child it spawned (neither process
+        # runs in its own process group) -- --timeout-seconds must be
+        # forwarded so the bridge applies the timeout to the actual
+        # provider subprocess.run() call, which can really terminate it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+            with mock.patch("handoff_webui.subprocess.run", wraps=subprocess.run) as spy:
+                webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+            command = spy.call_args.args[0]
+            self.assertIn("--timeout-seconds", command)
+            idx = command.index("--timeout-seconds")
+            self.assertEqual(command[idx + 1], str(webui.PROVIDER_RUN_TIMEOUT_SECONDS))
+            self.assertEqual(spy.call_args.kwargs["timeout"], webui.OUTER_SUBPROCESS_TIMEOUT_SECONDS)
+
     def test_successful_run_produces_one_history_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

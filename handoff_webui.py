@@ -318,6 +318,19 @@ def archive_old_months(workspace: Path, now: datetime) -> list[str]:
 
 PROVIDER_RUN_TIMEOUT_SECONDS = 600
 
+# Killing the outer handoff_bridge.py wrapper on timeout does NOT kill the
+# real codex/claude child it spawned -- subprocess.run() only signals the
+# immediate child, not its descendants, since neither process runs in its
+# own process group. So the per-provider budget is delegated to the bridge
+# itself via --timeout-seconds, which applies the timeout to the actual
+# provider subprocess.run() call and can therefore really terminate it.
+# This outer wrapper timeout becomes a hard-kill backstop for cases outside
+# provider execution (e.g. the bridge process itself hanging on I/O) --
+# generous enough to cover two sequential --timeout-seconds budgets (a
+# rate-limited first provider auto-falling-back into a second one that also
+# times out) plus some slack for the bridge to write its history record.
+OUTER_SUBPROCESS_TIMEOUT_SECONDS = PROVIDER_RUN_TIMEOUT_SECONDS * 2 + 30
+
 
 def classify_run_status(handoff_needed: bool, reason: str) -> str:
     """Map a handoff_bridge.py history record's (handoff_needed, reason) to
@@ -386,22 +399,33 @@ def run_provider_via_bridge(
             instruction_type,
             "--prompt-file",
             str(prompt_path),
+            "--timeout-seconds",
+            str(PROVIDER_RUN_TIMEOUT_SECONDS),
         ]
         if model:
             command.extend(["--model", model])
 
+        hit_outer_timeout = False
         try:
             result = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
-                timeout=PROVIDER_RUN_TIMEOUT_SECONDS,
+                timeout=OUTER_SUBPROCESS_TIMEOUT_SECONDS,
                 check=False,
             )
             stderr_tail = (result.stderr or "").strip()[-2000:]
             exit_code = result.returncode
         except subprocess.TimeoutExpired:
-            stderr_tail = f"timed out after {PROVIDER_RUN_TIMEOUT_SECONDS}s"
+            # The hard-kill backstop actually fired -- the bridge process
+            # (and whatever provider subprocess it was waiting on) got
+            # killed before it could finish writing/saving anything for
+            # that in-flight call. A per-provider --timeout-seconds
+            # timeout, by contrast, is caught inside the bridge itself and
+            # returns normally with exit_code 124 plus a real saved record,
+            # so it never reaches this branch.
+            hit_outer_timeout = True
+            stderr_tail = f"timed out after {OUTER_SUBPROCESS_TIMEOUT_SECONDS}s"
             exit_code = 124
         except OSError as exc:
             stderr_tail = str(exc)
@@ -411,12 +435,12 @@ def run_provider_via_bridge(
 
     new_records = read_state_history(workspace)[before:]
     if new_records:
-        if exit_code == 124:
-            # The outer timeout can fire mid-auto-fallback: e.g. codex's
-            # record is already saved but the recursive claude call never
-            # got to finish and save its own. Without this, the caller
-            # would silently see only the first record and have no idea a
-            # second attempt was even in flight.
+        if hit_outer_timeout:
+            # This can fire mid-auto-fallback: e.g. codex's own record is
+            # already saved but the recursive claude call never got to
+            # finish and save its own. Without this, the caller would
+            # silently see only the first record and have no idea a second
+            # attempt was even in flight.
             timed_out_provider = "claude" if new_records[-1]["provider"] == "codex" else "codex"
             new_records.append(
                 {
@@ -425,7 +449,7 @@ def run_provider_via_bridge(
                     "instruction_type": instruction_type,
                     "exit_code": exit_code,
                     "session_id": None,
-                    "final_text": f"Timed out after {PROVIDER_RUN_TIMEOUT_SECONDS}s waiting for a reply.",
+                    "final_text": f"Timed out after {OUTER_SUBPROCESS_TIMEOUT_SECONDS}s waiting for a reply.",
                     "handoff_needed": True,
                     "reason": "tool_failure: subprocess did not produce a history record (exit 124)",
                     "run_dir": None,
