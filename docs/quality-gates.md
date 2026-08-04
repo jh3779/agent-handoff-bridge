@@ -134,14 +134,19 @@ subprocess per task via `threading.Thread`, per `remote_handoff_server.py`).
 A plain `path.write_text(...)` can leave a torn/partial file if two writers
 overlap, and unsynchronized reads-then-writes can silently drop an update.
 
-- **Doc**: this section and `docs/architecture.md`'s "State Boundaries".
+- **Doc**: this section, `docs/architecture.md`'s "State Boundaries", and
+  (for the Web UI's own store) [Web UI Chat Storage](webui-chat-storage.md).
 - **Code**: `handoff_bridge.py`'s `WriteLock` (cross-process exclusive-create
   lock at `.handoff/.write.lock`) and `atomic_write_text` (write-to-temp,
   `os.replace`). `write_json` and `append_current` both go through these —
   never call `STATE_FILE.write_text(...)` or `CURRENT_FILE.open("a")`
-  directly.
+  directly. `handoff_webui.py` imports the same `WriteLock` (not a
+  reimplementation) to guard `.handoff/webui/chat/` — see
+  `append_chat_message()` and `archive_old_months()`.
 - **Test**: `tests/test_handoff_bridge.py::AtomicWriteTests` and
-  `::WriteLockTests`.
+  `::WriteLockTests`; `tests/test_handoff_webui.py::ChatStorageTests`'s
+  multi-month archive coverage and `EnsureChatGitignoreTests` for the
+  `handoff_webui.py` side.
 
 Known residual limitation: the lock covers each individual write, not a full
 read-modify-write cycle across two separate `handoff_bridge.py` invocations.

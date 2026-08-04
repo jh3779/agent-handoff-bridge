@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Handoff Bridge — Web UI (MVP)</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="app">
+    <div class="titlebar">
+      <button class="ws" id="open-folder-btn" type="button" title="다른 폴더 열기">
+        <span>📁</span>
+        <span id="workspace-label">workspace</span>
+      </button>
+      <span class="badge">MVP · provider 연결 없음</span>
+    </div>
+    <div class="body">
+      <div class="sidebar">
+        <div class="sidebar-h">Workspace</div>
+        <div class="tree" id="tree"></div>
+        <div class="sidebar-footer" id="sidebar-footer">파일을 클릭하면 첨부됩니다</div>
+      </div>
+      <div class="chat-col">
+        <div class="chat-thread" id="chat-thread">
+          <div class="chat-empty">
+            아직 메시지가 없습니다.<br>
+            왼쪽에서 파일을 클릭하거나, 이 영역에 파일을 드래그해서 놓아보세요.
+          </div>
+        </div>
+        <div class="dropzone" id="dropzone">
+          <span class="glyph">📥</span>
+          <div>여기에 파일을 놓아 첨부</div>
+        </div>
+        <div class="composer">
+          <div class="composer-attachments" id="composer-attachments"></div>
+          <div class="composer-row">
+            <button class="iconbtn" id="attach-btn" title="파일 첨부" type="button">📎</button>
+            <input type="file" id="file-input" multiple style="display:none">
+            <textarea id="composer-input" placeholder="메시지를 입력하세요…" rows="1"></textarea>
+            <button class="send" id="send-btn" type="button" disabled>➤</button>
+          </div>
+          <div class="composer-note">이 MVP는 파일 열람·첨부만 합니다. 전송한 메시지는 로컬에만 표시되고, 실제 Codex/Claude 호출은 아직 연결되어 있지 않습니다.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <div class="folder-prompt-overlay" id="folder-prompt-overlay">
+    <div class="folder-prompt">
+      <h3>폴더 열기</h3>
+      <p>네이티브 폴더 선택 창을 쓰려면 <code>pip install pywebview</code> 후 다시 실행하세요.
+         지금은 절대 경로를 직접 입력해주세요.</p>
+      <input type="text" id="folder-prompt-input" placeholder="/Users/me/project">
+      <div class="row">
+        <button type="button" id="folder-prompt-cancel">취소</button>
+        <button type="button" id="folder-prompt-confirm" class="primary">열기</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

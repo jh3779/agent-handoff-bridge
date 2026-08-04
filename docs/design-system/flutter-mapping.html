@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Handoff Bridge DS · 4 구현 매핑</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <span class="brand">Agent Handoff Bridge DS <span class="mono" style="font-size:11px;font-weight:500">v0.2</span></span>
+  <a href="design-system.html">1 · 원칙 &amp; 파운데이션</a>
+  <a href="components.html">2 · 컴포넌트</a>
+  <a href="patterns.html">3 · 상태 패턴 · 접근성</a>
+  <span class="cur">4 · 구현 매핑</span>
+  <a href="wireframes.html">5 · 화면 · 와이어프레임</a>
+  <span class="spacer"></span>
+  <button data-theme-toggle>◐ 테마</button>
+</nav>
+
+<div class="wrap">
+
+  <header class="pagehead">
+    <div class="t">구현 매핑</div>
+    <div class="s">§1은 현재 <code>handoff_desktop.py</code>(tkinter/ttk, v0.1 폼 UI)의 실제 코드 역매핑. §1b·§1c는 2026-08-04 인터뷰로 확정된 v0.2 기술 스택·UX 결정 3건. §2 Conflict List는 아직 남은 것만 담는다.</div>
+    <div class="toc">
+      <a href="#s1">토큰 → ttk 매핑 (v0.1)</a><a href="#s1b">기술 스택 결정 (v0.2)</a>
+      <a href="#s1c">결정 기록</a><a href="#s2">Conflict List</a>
+    </div>
+  </header>
+
+  <section id="s1" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">1</span><span class="sec-t">디자인 토큰 → ttk 위젯</span><span class="tag">handoff_desktop.py 실제 코드 기준</span></div>
+    <div class="tblwrap">
+      <table>
+        <tr><th>디자인 요소</th><th>ttk 구현</th><th>파일:줄</th></tr>
+        <tr><td>패널 (Workspace/Target/Actions/Output)</td><td class="mono">ttk.LabelFrame(self, text="…")</td><td class="mono">handoff_desktop.py:81,89,124,151</td></tr>
+        <tr><td>Entry (경로/모델)</td><td class="mono">ttk.Entry(textvariable=…)</td><td class="mono">:84,103</td></tr>
+        <tr><td>Combobox (닫힌 선택지)</td><td class="mono">ttk.Combobox(state="readonly")</td><td class="mono">:95,99,105</td></tr>
+        <tr><td>버튼</td><td class="mono">ttk.Button + self.buttons 리스트(일괄 disable용)</td><td class="mono">:158-161 _button()</td></tr>
+        <tr><td>체크박스</td><td class="mono">ttk.Checkbutton (Execute provider / Auto fallback)</td><td class="mono">:142-147</td></tr>
+        <tr><td>Task / Turn Prompt</td><td class="mono">tkinter.scrolledtext.ScrolledText</td><td class="mono">:117,119</td></tr>
+        <tr><td>Output 로그</td><td class="mono">ScrolledText, height=18, append + see("end")</td><td class="mono">:155,174-176</td></tr>
+        <tr><td>확인/경고/정보/오류</td><td class="mono">tkinter.messagebox.askyesno/showwarning/showinfo/showerror</td><td class="mono">:222,254,271,322,348</td></tr>
+        <tr><td>Busy(버튼 일괄 비활성)</td><td class="mono">set_busy(bool) → button.configure(state=…)</td><td class="mono">:178-181</td></tr>
+        <tr><td>백그라운드 실행</td><td class="mono">threading.Thread(daemon=True) + self.after(0, …)로 메인스레드 콜백</td><td class="mono">:193-206</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section id="s1b" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">1b</span><span class="sec-t">v0.2 기술 스택 — 결정됨: 프레임워크 전환</span><span class="tag">2026-08-04 인터뷰로 확정 · 아래 결정 기록 참고</span></div>
+    <div class="note">사이드바 트리 + 채팅 버블 + 드래그&amp;드롭 + 슬라이드 드로어는 순정 <code>tkinter/ttk</code>로는 상당한 커스텀 드로잉이 필요했다. 세 옵션(tkinter Canvas / pywebview 임베드 / 프레임워크 전환) 중 사용자 인터뷰로 <b>프레임워크 전환(Tauri/Electron류)</b>이 선택됨 — "가장 자연스러운 채팅 UI"를 우선한 결정.</div>
+    <div class="tblwrap" style="margin-top:8px">
+      <table>
+        <tr><th>선택</th><th>확보하는 것</th><th>새로 떠안는 것</th></tr>
+        <tr><td><b>프레임워크 전환</b> (선택됨, 최종 프로덕션 목표)</td><td>말풍선·드로어·드래그오버 애니메이션을 네이티브 웹 스택으로 자연스럽게 구현</td><td>Python 단일 zip 배포가 더 이상 성립하지 않음 — 런타임 번들링, 별도 빌드/서명/배포 파이프라인 필요(<a href="#s2">CFL-09</a>)</td></tr>
+      </table>
+    </div>
+    <div class="note" style="margin-top:8px"><b>MVP 실용적 이탈 (2026-08-04)</b>: 첫 실제 구현(<code>handoff_webui.py</code> + <code>webui/</code>)은 "파일 열람·삽입만, provider 연결 없이 지금 테스트 가능하게" 요구사항에 맞춰 DEC-01을 아직 적용하지 않고 <b>Python 표준 라이브러리 <code>http.server</code> + 순수 JS</b>로 만들었다 — 새 의존성/툴체인 없이 최단 경로로 실물을 만들기 위한 선택. "웹이 아니라 프로그램처럼 테스트"라는 후속 요구사항에는 <b>pywebview를 선택적 의존성</b>으로 얹어 대응 — 설치돼 있으면 네이티브 창, 없으면 브라우저 탭으로 자동 대체(<code>choose_ui_mode()</code>). macOS에서 실제로 창을 띄우고 스크린샷까지 확인함. DEC-01(프레임워크 전환)은 여전히 최종 목표로 남아있고, 이 MVP를 그 방향으로 재작성할지 아니면 계속 확장할지는 <a href="#s2">CFL-14</a>로 남긴다.</div>
+  </section>
+
+  <section id="s1c" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">1c</span><span class="sec-t">결정 기록 (Decision Log)</span><span class="tag">2026-08-04 사용자 인터뷰 응답 3건</span></div>
+    <div class="tblwrap">
+      <table>
+        <tr><th>결정</th><th>내용</th><th>영향받는 문서/화면</th></tr>
+        <tr><td class="mono">DEC-01<br>(구 CFL-06)</td><td>v0.2 구현 기술 스택 = <b>프레임워크 전환</b>(Tauri/Electron류). tkinter/pywebview 옵션 폐기.</td><td>§1b 위 표 · <a href="#s2">CFL-09 신규 파생</a></td></tr>
+        <tr><td class="mono">DEC-02<br>(구 CFL-08)</td><td>입력창 send 버튼 = <b>세션당 첫 전송만 확인 다이얼로그, 이후 즉시 실행</b>. v0.1의 "매번 확인"과 "확인 없이 항상 실행" 둘 다 기각.</td><td><a href="wireframes.html#s3">SCR-01</a> · <a href="patterns.html#s4">패턴 §4</a> · <a href="components.html#s10">컴포넌트 §10</a></td></tr>
+        <tr><td class="mono">DEC-03<br>(구 CFL-07)</td><td>메시지 버블 렌더링 = <b>코드블록만 지원</b>(펜스 <code>```</code> 안만 모노스페이스 박스). 전체 마크다운·무지원 둘 다 기각.</td><td><a href="wireframes.html#s3">SCR-01</a> · <a href="components.html#s9">컴포넌트 §9</a></td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section id="s2" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">2</span><span class="sec-t">Conflict List</span><span class="tag">미해결 · 임의로 해결하지 않음</span></div>
+    <div class="tblwrap">
+      <table>
+        <tr><th>ID</th><th>내용</th><th>상태</th></tr>
+        <tr><td class="mono">CFL-01</td><td>상태 배지(대기/실행/완료/핸드오프/실패)가 v0.1 GUI에는 없다(로그 텍스트로만 표현). v0.2 재설계에서는 메시지 meta 칩으로 방향이 정해짐(<a href="components.html#s9">컴포넌트 §9</a>) — 다만 실제 코드는 여전히 없음.</td><td>방향만 결정, 구현 없음</td></tr>
+        <tr><td class="mono">CFL-03</td><td>auto-fallback 전환 알림 부재 문제. v0.2에서는 전환 자체가 새 agent 메시지로 스레드에 나타나 화면상 해결(<a href="wireframes.html#s3">SCR-01 예시</a>) — 사용자가 스크롤을 놓치는 경우의 배너/알림음 여부는 미결정.</td><td>부분 해결</td></tr>
+        <tr><td class="mono">CFL-05</td><td>원격 서버 Port 입력 검증 부재. v0.2 와이어프레임 범위 밖(별도 설정 화면 필요) — 이번 재설계에서 다루지 않음.</td><td>범위 밖</td></tr>
+        <tr><td class="mono">CFL-09</td><td><b>DEC-01의 직접 파생</b>: 프레임워크 전환 시 현재 <code>docs/release-process.md</code>·<code>scripts/package_platforms.py</code>가 만드는 "Python zip, git 불필요" 배포 모델이 그대로 유지되지 않는다. Tauri/Electron 빌드 산출물(설치형 바이너리, 서명, 자동 업데이트 여부)로 릴리즈 프로세스 자체를 다시 설계해야 함 — 이번 대화 범위 밖, 별도 논의 필요.</td><td>미결정 · 후속 작업</td></tr>
+        <tr><td class="mono">CFL-10</td><td>"프로젝트별 대화 히스토리"(<a href="wireframes.html#s5">SCR-03</a>)를 <b>한 화면에서</b> 여러 프로젝트별로 그룹핑해 보여주려면 앱이 "최근에 연 워크스페이스 목록"을 기억해야 한다 — 그러려면 앱 레벨(워크스페이스 밖) 레지스트리가 필요하다는 뜻인데, 그 저장 위치·형식은 여전히 미결정. <i>2026-08-04 구현으로 절반은 해소됨</i>: 대화 기록 자체는 이제 워크스페이스별로 실제 저장된다(<code>.handoff/webui/chat/</code>, <code>handoff_webui.py</code>) — 남은 건 "여러 워크스페이스를 한 드로어에 모아 보여주는 UI"뿐이다.</td><td>부분 해결 · UI만 남음</td></tr>
+        <tr><td class="mono">CFL-11</td><td>자동 업데이트 확인(<a href="wireframes.html#s9">SCR-07</a>)이 GitHub Releases API를 조회해야 하는데 이 저장소는 <b>private</b>다(<code>docs/security-model.md</code>). 익명 요청으로는 릴리즈 목록을 못 가져온다 — 사용자의 기존 <code>gh</code> 인증을 재사용할지, 별도 공개 버전-확인 엔드포인트(예: 최신 버전 번호만 노출하는 정적 JSON)를 만들지 미결정.</td><td>미결정</td></tr>
+        <tr><td class="mono">CFL-12</td><td>API 키 연결 모드(<a href="wireframes.html#s8">SCR-06</a>)는 provider CLI를 서브프로세스로 실행하는 현재 아키텍처(<code>handoff_bridge.py</code>의 <code>run_provider()</code>)와 근본적으로 다르다 — 세션 재개(<code>codex exec resume</code>, <code>claude --resume</code>), 사용량/에러 신호 파싱(JSONL 이벤트) 등 <code>docs/research.md</code>가 CLI 전용으로 설계한 기능들이 API 직접 호출에서는 다시 설계돼야 한다. 이번 화면 설계는 UI 진입점만 제공하고 이 아키텍처 문제는 다루지 않음.</td><td>미결정 · 큰 후속 작업</td></tr>
+        <tr><td class="mono">CFL-13</td><td>Gemini CLI를 "인식 대상"에 추가했지만(<a href="wireframes.html#s8">SCR-06</a>) 실제 <code>gemini</code> CLI의 바이너리명·설치 확인 방법·인증 커맨드·JSONL 이벤트 스키마는 검증되지 않았다 — <code>docs/research.md</code>가 Codex/Claude에 대해 했던 것과 같은 조사가 Gemini에 대해서는 아직 없음. 그 외 미래의 다른 모델 추가는 <a href="../provider-extensibility.md">provider-extensibility.md</a>에 일반화된 절차로만 문서화.</td><td>미결정 · 조사 필요</td></tr>
+        <tr><td class="mono">CFL-14</td><td><b>MVP 실용적 이탈의 후속 질문</b>: <code>handoff_webui.py</code>는 DEC-01(프레임워크 전환)이 아니라 stdlib <code>http.server</code>로 구현됐다(§1b). 이 MVP를 계속 확장(provider 연결·히스토리·API 키 추가)할지, 아니면 어느 시점에 DEC-01 스택으로 다시 쓸지 — 지금 결정하지 않음.</td><td>미결정</td></tr>
+        <tr><td class="mono">CFL-15</td><td>로컬 채팅 로그(<a href="../webui-chat-storage.md">webui-chat-storage.md</a>)에 보존/만료 정책이 없다 — 압축은 되지만 삭제는 절대 되지 않는다. 스키마도 버전 필드 없이 암묵적 v1이다. 둘 다 지금은 의도적으로 미룸.</td><td>미결정</td></tr>
+        <tr><td class="mono">CFL-16</td><td>히스토리 드로어(<a href="components.html#s11">§11</a>/<a href="components.html#s13">§13</a>)를 원래 설계할 때는 provider 실행 이력(<code>.handoff/runs/</code> + <code>state.json history[]</code>, <code>handoff_bridge.py</code> 소유)을 데이터 소스로 가정했다. 실제로 먼저 구현된 로컬 채팅 저장(<a href="../webui-chat-storage.md">webui-chat-storage.md</a>)은 메시지 단위의 별개 저장소 <code>.handoff/webui/chat/</code>이다. Phase 1(provider 연결, <a href="roadmap.md">roadmap.md</a>)이 실제로 codex/claude를 호출하기 시작하면, 히스토리 드로어가 "채팅 메시지"를 보여줄지 "provider 실행 세션"을 보여줄지, 두 저장소를 병합할지 별개로 둘지 — 아직 결정 안 됨.</td><td>미결정 · Phase 1에서 다시 논의</td></tr>
+      </table>
+    </div>
+    <div class="note" style="margin-top:10px">이 목록은 "고쳐야 한다"가 아니라 "아직 결정되지 않았다"는 뜻이다. 결정되면 이 표에서 지우고 §1/§1b과 <a href="wireframes.html">5 · 화면</a>을 갱신한다. 이 항목들을 <b>어떤 순서로</b> 풀어나갈지는 <a href="roadmap.md">roadmap.md</a>에 phase별로 정리해뒀다.</div>
+  </section>
+
+  <footer class="ds">이전 <a href="patterns.html">3 · 상태 패턴 · 접근성</a> · 다음 → <a href="wireframes.html">5 · 화면 · 와이어프레임</a></footer>
+</div>
+
+<script src="ds.js"></script>
+</body>
+</html>

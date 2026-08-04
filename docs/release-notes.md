@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- Web UI MVP:
+  - added `handoff_webui.py` — local, read-only stdlib HTTP server for the
+    v0.2 chat-redesign concept in `docs/design-system/`; no provider is
+    called yet, only workspace file browsing and drag/click-to-attach;
+  - added `webui/index.html`, `webui/app.css`, `webui/app.js`;
+  - added path-traversal-safe `/api/tree` and `/api/file` endpoints
+    (`safe_join()`), covered by `tests/test_handoff_webui.py` including a
+    live-server integration test and a symlink-escape test;
+  - fixed a real `install`/`check` gap found while wiring this in:
+    `docs/release-process.md` was required by `check` but never copied by
+    `install`, so a downstream `install` + `check` would fail immediately;
+  - added optional native app window support via `pywebview`
+    (`choose_ui_mode()`, `--browser`/`--no-browser` flags) so the MVP tests
+    as a real program instead of a browser tab, with automatic fallback to
+    a browser tab when `pywebview` isn't installed; verified end-to-end on
+    macOS with a real rendered-window screenshot, not just a code review;
+  - added VS Code-style **Open Folder**: the workspace is now switchable at
+    runtime (`POST /api/open-folder`, `AppState`) instead of fixed to
+    whatever `--workspace` was at startup — native OS folder picker via a
+    `pywebview` JS-API bridge (`Api.pick_folder()`), manual absolute-path
+    prompt fallback in plain browser mode;
+  - added local, per-workspace chat history: messages persist to
+    `<workspace>/.handoff/webui/chat/YYYY-MM.jsonl` (`POST`/`GET
+    /api/chat`), travels with the project folder like `.handoff/current.md`
+    already does; past months are gzip-compressed automatically
+    (`archive_old_months()`) so history doesn't grow unbounded;
+  - `.handoff/webui/chat/` added to `.handoff/.gitignore` — local chat
+    drafts default to not being committed;
+  - 19 new tests (chat storage, workspace-candidate validation, isolated
+    per-test live-server coverage for the two new endpoints) — 92 total.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

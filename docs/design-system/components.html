@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Handoff Bridge DS · 2 컴포넌트</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="topnav">
+  <span class="brand">Agent Handoff Bridge DS <span class="mono" style="font-size:11px;font-weight:500">v0.2</span></span>
+  <a href="design-system.html">1 · 원칙 &amp; 파운데이션</a>
+  <span class="cur">2 · 컴포넌트</span>
+  <a href="patterns.html">3 · 상태 패턴 · 접근성</a>
+  <a href="flutter-mapping.html">4 · 구현 매핑</a>
+  <a href="wireframes.html">5 · 화면 · 와이어프레임</a>
+  <span class="spacer"></span>
+  <button data-theme-toggle>◐ 테마</button>
+</nav>
+
+<div class="wrap">
+
+  <header class="pagehead">
+    <div class="t">컴포넌트 라이브러리</div>
+    <div class="s">§1–5는 v0.1 폼 기반 GUI(<code>handoff_desktop.py</code> 실제 구현) 레거시 참고용. §6 터미널은 <code>handoff_control.py</code>로 이번 재설계와 무관. §8–15는 <a href="wireframes.html#s2">v0.2 채팅형 재설계</a>의 신규 컴포넌트 — <b>§8(사이드바 트리)·§10(입력창/Open Folder)은 <code>handoff_webui.py</code>에 실제 구현됨</b>(provider 연결 제외). §9(메시지 버블)는 기본 말풍선만 구현, 코드블록 렌더링(DEC-03)은 아직. §11·§13–15(히스토리 드로어·Provider 연결·업데이트 확인)는 여전히 코드 없음, 요구사항/로드맵이 정본.</div>
+    <div class="toc">
+      <a href="#s1">버튼(legacy)</a><a href="#s2">입력 필드(legacy)</a><a href="#s3">상태 배지</a>
+      <a href="#s4">로그 콘솔(legacy)</a><a href="#s5">다이얼로그(legacy)</a><a href="#s6">터미널 메뉴</a>
+      <a href="#s8">사이드바 트리 <b>NEW</b></a><a href="#s9">메시지 버블 <b>NEW</b></a>
+      <a href="#s10">입력창 <b>NEW</b></a><a href="#s11">히스토리 항목 <b>NEW</b></a>
+      <a href="#s13">히스토리 그룹 <b>NEW</b></a><a href="#s14">Provider 연결·API 키 <b>NEW</b></a>
+      <a href="#s15">업데이트 배지 <b>NEW</b></a><a href="#s16">제외 목록</a>
+    </div>
+  </header>
+
+  <section id="s1" class="sec">
+    <div class="sec-h"><span class="sec-num">1</span><span class="sec-t">버튼 <span class="muted" style="font-weight:600;font-size:11px">(v0.1 레거시)</span></span><span class="tag">ttk.Button → .dbtn</span></div>
+    <div class="card pad">
+      <div class="row" style="gap:8px">
+        <div class="dbtn primary">Execute</div>
+        <div class="dbtn">Install</div>
+        <div class="dbtn">Preview</div>
+        <div class="dbtn disabled">Status</div>
+        <div class="dbtn" style="border-color:var(--ds-error);color:var(--ds-error)">Stop Remote</div>
+      </div>
+      <div class="note" style="margin-top:10px">Actions 패널의 12개 버튼은 전부 동일 위계(outline)다 — 유일하게 <b>Execute</b>만 "토큰을 소비할 수 있는" 유일한 행동이라 primary(filled)로 격상할 것을 권장 (현재 구현은 전부 동일 스타일, <a href="flutter-mapping.html#s2">구현 매핑 참조</a>).</div>
+      <div class="tag" style="margin-top:8px">근거: handoff_desktop.py:130-141 _button() 12회 호출</div>
+    </div>
+  </section>
+
+  <section id="s2" class="sec">
+    <div class="sec-h"><span class="sec-num">2</span><span class="sec-t">입력 필드 <span class="muted" style="font-weight:600;font-size:11px">(v0.1 레거시)</span></span><span class="tag">ttk.Entry / Combobox / ScrolledText</span></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+      <div class="card pad">
+        <div class="sec-t" style="font-size:13px">Entry — 경로/모델</div>
+        <div class="field" style="margin-top:8px">/Users/jihun/Documents/project</div>
+        <div class="tag" style="margin-top:8px">Workspace 경로, Model 라벨. 자유 입력 — <code>app-selected default</code> 같은 라벨은 값 그대로 기록되고 provider override로 전달되지 않는다(docs/agent-targeting-protocol.md "Model Field Rules").</div>
+      </div>
+      <div class="card pad">
+        <div class="sec-t" style="font-size:13px">Combobox — 닫힌 선택지</div>
+        <div class="combo" style="margin-top:8px">auto <span class="msym" style="font-size:16px">expand_more</span></div>
+        <div class="tag" style="margin-top:8px">Provider(auto/codex/claude), Primary(codex/claude), Instruction(new-task/continue/handoff/review/verify). <code>state="readonly"</code> — 목록 밖 값 입력 불가.</div>
+      </div>
+      <div class="card pad">
+        <div class="sec-t" style="font-size:13px">ScrolledText — Task / Turn Prompt</div>
+        <div class="ta" style="margin-top:8px">Describe the task.</div>
+        <div class="tag" style="margin-top:8px">두 필드가 나란히: Task(작업 전체 설명, init에 사용) / Turn Prompt(이번 턴 지시, run에 사용) — v0.2에서는 <a href="#s10">단일 입력창</a>으로 통합됨(첫 메시지=Task, 이후=Turn Prompt).</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="s3" class="sec">
+    <div class="sec-h"><span class="sec-num">3</span><span class="sec-t">상태 배지</span><span class="tag">현재 미구현 — v0.1 로그 텍스트 / v0.2 메시지 meta 칩(§9)에서 재사용</span></div>
+    <div class="card pad">
+      <div class="row" style="gap:8px">
+        <span class="badge" style="background:var(--ds-st-idle-bg);color:var(--ds-st-idle-fg)"><span class="msym" style="font-size:14px">radio_button_unchecked</span>대기</span>
+        <span class="badge" style="background:var(--ds-st-busy-bg);color:var(--ds-st-busy-fg)"><span class="spin" style="border-top-color:var(--ds-st-busy-fg);border-color:rgba(0,0,0,.2)"></span>실행 중</span>
+        <span class="badge" style="background:var(--ds-st-success-bg);color:var(--ds-st-success-fg)"><span class="msym" style="font-size:14px">check_circle</span>완료 · 핸드오프 불필요</span>
+        <span class="badge" style="background:var(--ds-st-handoff-bg);color:var(--ds-st-handoff-fg)"><span class="msym" style="font-size:14px">sync_alt</span>핸드오프 필요</span>
+        <span class="badge" style="background:var(--ds-st-fail-bg);color:var(--ds-st-fail-fg)"><span class="msym" style="font-size:14px">error</span>실패 · tool_failure</span>
+      </div>
+      <div class="note" style="margin-top:10px">색만으로 구분하지 않는다 — 아이콘 + 텍스트 라벨을 항상 함께 쓴다(접근성). 현재 GUI는 이 5개 상태를 전부 <b>Output 로그의 텍스트 한 줄</b>(<code class="mono">handoff needed: True (…)</code>)로만 표현한다 — 상태 배지 컴포넌트 자체는 아직 구현되어 있지 않음.</div>
+      <div class="tag" style="margin-top:8px">근거: handoff_bridge.py:770 print(f"handoff needed: …") · handoff_desktop.py:208-214 finish_command()</div>
+    </div>
+  </section>
+
+  <section id="s4" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">4</span><span class="sec-t">로그 콘솔 <span class="muted" style="font-weight:600;font-size:11px">(v0.1 레거시)</span></span><span class="tag">ScrolledText(Output) → .dwin .log</span></div>
+    <div class="log" style="max-width:520px">## Execute provider run
+$ python3 handoff_bridge.py --workspace /path run auto --execute --auto-fallback "Continue the task"
+Running codex; logs will be written to .handoff/runs/20260803T140512Z-codex
+codex exit code: 127
+handoff needed: True (tool_failure: provider command not found)
+Next prompt written to: .handoff/next-prompt.md
+Auto-fallback enabled; switching to claude.
+Exit code: 0</div>
+    <div class="note" style="margin-top:10px">모든 액션의 결과가 누적되는 단일 로그. 명령 에코(<code>$ …</code>)·stdout·stderr·종료 코드를 그대로 이어붙인다 — 별도 파싱/서식 없이 raw text. 항상 <code>see("end")</code>로 최신 줄까지 스크롤.</div>
+    <div class="note" style="margin-top:6px">v0.2는 이 단일 로그를 메시지별 <code>.log-excerpt</code>(§9)로 쪼갠다 — "어느 행동의 결과인지"가 스크롤 위치가 아니라 메시지 경계로 구분됨.</div>
+  </section>
+
+  <section id="s5" class="sec">
+    <div class="sec-h"><span class="sec-num">5</span><span class="sec-t">다이얼로그 <span class="muted" style="font-weight:600;font-size:11px">(v0.1 레거시, 원칙은 v0.2에도 유지)</span></span><span class="tag">tkinter.messagebox — 4종, 전부 실제 호출부 있음</span></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+      <div class="card pad">
+        <div style="font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px"><span class="msym" style="color:var(--ds-error)">help</span>확인 (askyesno)</div>
+        <div class="note" style="margin-top:6px">"This may spend provider tokens. Continue?" — 기본 포커스 없음(예/아니오 대칭), Execute 버튼 클릭 시.</div>
+        <div class="tag" style="margin-top:8px">execute_run():254</div>
+      </div>
+      <div class="card pad">
+        <div style="font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px"><span class="msym" style="color:var(--ds-tertiary)">warning</span>경고 (showwarning)</div>
+        <div class="note" style="margin-top:6px">"Enter a task before initializing." — Task 필드가 비어 있는데 Init Task를 누른 경우.</div>
+        <div class="tag" style="margin-top:8px">init_task():222</div>
+      </div>
+      <div class="card pad">
+        <div style="font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px"><span class="msym" style="color:var(--ds-primary)">info</span>정보 (showinfo)</div>
+        <div class="note" style="margin-top:6px">"…/current.md does not exist yet." / "Remote preview server is already running."</div>
+        <div class="tag" style="margin-top:8px">open_file():271 · start_remote_preview():322</div>
+      </div>
+      <div class="card pad">
+        <div style="font-size:13px;font-weight:700;display:flex;align-items:center;gap:6px"><span class="msym" style="color:var(--ds-error)">report</span>오류 (showerror)</div>
+        <div class="note" style="margin-top:6px">원격 서버 프로세스 자체를 못 띄웠을 때(포트 충돌 등) — provider 실행 실패는 오류 다이얼로그가 아니라 로그에만 기록됨(의도적 — 매 provider 실패마다 모달을 띄우지 않기 위함).</div>
+        <div class="tag" style="margin-top:8px">start_remote_preview():348</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="s6" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">6</span><span class="sec-t">터미널 메뉴 항목</span><span class="tag">handoff_control.py — GUI가 없을 때의 대체 경험</span></div>
+    <div class="term" style="max-width:400px">
+      <div class="tbar"><span></span><span></span><span></span></div>
+      <div class="tbody"><span class="prompt">Workspace:</span> /Users/jihun/project
+1. Install shared handoff files
+2. Create new task packet
+3. Preview next provider prompt
+4. Execute provider run
+<span class="prompt">Choose [3]:</span> <span class="inp">_</span></div>
+    </div>
+    <div class="note" style="margin-top:10px">번호 선택형 무한 루프 메뉴. 기본값은 항상 안전한 쪽(3=Preview)이지 4=Execute가 아니다 — 커서 엔터만 눌러도 토큰이 소비되지 않도록.</div>
+    <div class="tag" style="margin-top:6px">근거: handoff_control.py:108-142 menu(), 기본값 "3"</div>
+  </section>
+
+  <section id="s8" class="sec">
+    <div class="sec-h"><span class="sec-num">8</span><span class="sec-t">사이드바 트리 <b class="tag" style="color:var(--ds-primary)">NEW</b></span><span class="tag">.sidebar .tree — 폴더 확장/파일 선택</span></div>
+    <div class="card pad">
+      <div class="sidebar" style="width:220px;height:220px;border-radius:8px;border:1px solid var(--ds-outline-variant)">
+        <div class="sidebar-h">Workspace</div>
+        <div class="tree">
+          <div class="tree-row"><span class="msym">folder_open</span><span class="lbl" style="font-weight:700">project/</span></div>
+          <div class="tree-row tree-indent-1"><span class="msym">folder_open</span><span class="lbl">src/</span></div>
+          <div class="tree-row tree-indent-2 sel"><span class="msym">description</span><span class="lbl">auth.py</span><span class="chk on"></span></div>
+          <div class="tree-row tree-indent-1"><span class="msym">folder</span><span class="lbl">docs/</span></div>
+        </div>
+        <div class="sidebar-footer">1개 선택됨</div>
+      </div>
+      <div class="note" style="margin-top:10px">폴더 행 클릭 = 펼침/접힘(아이콘이 <code>folder</code>↔<code>folder_open</code>로 전환). 파일 행 클릭 = 체크박스 토글, 다중 선택 가능. 들여쓰기로 계층 표현(<code>.tree-indent-1/2/3</code>).</div>
+      <div class="tag" style="margin-top:8px">사용처: <a href="wireframes.html#s3">SCR-01</a> · <a href="wireframes.html#s6">SCR-04</a></div>
+    </div>
+  </section>
+
+  <section id="s9" class="sec">
+    <div class="sec-h"><span class="sec-num">9</span><span class="sec-t">메시지 버블 <b class="tag" style="color:var(--ds-primary)">NEW</b></span><span class="tag">.msg.user / .msg.agent — §3 상태 배지를 meta 칩으로 재사용</span></div>
+    <div class="card pad" style="max-width:480px">
+      <div class="msg user" style="max-width:100%">
+        <div class="avatar"><span class="msym" style="font-size:14px">person</span></div>
+        <div><div class="meta">나</div><div class="bubble">배포 스크립트 실패 원인을 확인해줘.</div></div>
+      </div>
+      <div class="msg agent" style="max-width:100%;margin-top:12px">
+        <div class="avatar"><span class="msym" style="font-size:15px">smart_toy</span></div>
+        <div>
+          <div class="meta">Codex <span class="badge" style="background:var(--ds-st-fail-bg);color:var(--ds-st-fail-fg);font-size:9.5px"><span class="msym" style="font-size:11px">error</span>실패</span></div>
+          <div class="bubble">tool_failure로 종료됨.
+            <div class="log-excerpt">codex exit code: 127
+handoff needed: True (tool_failure: provider command not found)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="note" style="margin-top:10px">user 버블은 우측 정렬 + primary-container 배경. agent 버블은 좌측 정렬 + outline. agent 메시지의 <code>.meta</code>에 provider명과 §3 상태 배지(소형)를 함께 표기 — 색만이 아니라 아이콘+텍스트 유지(접근성 원칙 상속).</div>
+  </section>
+
+  <section id="s10" class="sec">
+    <div class="sec-h"><span class="sec-num">10</span><span class="sec-t">입력창(Composer) <b class="tag" style="color:var(--ds-primary)">NEW</b></span><span class="tag">.composer — 첨부 칩 + 텍스트 입력 + provider/instruction 인라인</span></div>
+    <div class="card pad" style="max-width:480px">
+      <div class="composer" style="border:none;padding:0">
+        <div class="composer-attachments"><div class="chip"><span class="msym">description</span>auth.py<span class="msym" style="font-size:12px">close</span></div></div>
+        <div class="composer-row">
+          <div class="composer-iconbtn"><span class="msym">attach_file</span></div>
+          <div class="composer-input">메시지 입력…</div>
+          <div class="send"><span class="msym" style="color:var(--ds-on-primary)">arrow_upward</span></div>
+        </div>
+        <div class="composer-meta muted"><div class="combo">Provider: auto</div><div class="combo">Instruction: continue</div></div>
+      </div>
+    </div>
+    <div class="note" style="margin-top:10px">v0.1의 Target 패널(Provider/Primary/Model/Instruction 4개 Combobox+Entry)이 입력창 아래 인라인 메타 행으로 축소됨 — 매 메시지마다 바꿀 일이 드문 값들이라 항상 펼쳐둘 필요가 없다는 판단. 첨부 칩은 사이드바 선택(§8)과 드래그&amp;드롭(<a href="wireframes.html#s4">SCR-02</a>) 양쪽에서 채워진다.</div>
+  </section>
+
+  <section id="s11" class="sec">
+    <div class="sec-h"><span class="sec-num">11</span><span class="sec-t">히스토리 항목 <b class="tag" style="color:var(--ds-primary)">NEW</b></span><span class="tag">.history-item — 우상단 History 버튼의 드로어 목록</span></div>
+    <div class="card pad" style="max-width:320px">
+      <div class="history-item sel"><div class="hi-top"><span>codex</span><span class="muted mono" style="font-weight:400">2분 전</span></div><div class="hi-task">인증 모듈 리팩터링을 이어서 진행해줘</div></div>
+      <div class="history-item"><div class="hi-top"><span>claude</span><span class="badge" style="background:var(--ds-st-fail-bg);color:var(--ds-st-fail-fg);font-size:9px;padding:2px 7px">실패</span></div><div class="hi-task">배포 스크립트 수정 — tool_failure</div></div>
+    </div>
+    <div class="note" style="margin-top:10px">provider + 상대 시간 또는 결과 상태 배지(§3) + task 한 줄 요약. 클릭 시 해당 세션을 읽기 전용으로 불러온다.</div>
+    <div class="note" style="margin-top:6px"><b>데이터 소스는 아직 미확정</b> — 이 §11/§13 드로어를 처음 설계할 때는 provider 실행 이력(<code>.handoff/runs/&lt;run_id&gt;/</code> + <code>state.json</code>의 <code>history[]</code>, <code>handoff_bridge.py</code> 소유)을 가정했다. 그런데 이번 PR로 실제 구현된 로컬 채팅 저장은 그것과 다른 <code>.handoff/webui/chat/YYYY-MM.jsonl</code>(메시지 단위, <a href="../webui-chat-storage.md">webui-chat-storage.md</a>)이다. Phase 1(provider 연결)이 붙으면 이 드로어가 "메시지"를 보여줄지 "provider 실행 세션"을 보여줄지, 혹은 둘을 어떻게 연결할지 아직 결정되지 않았다 — <a href="flutter-mapping.html#s2">CFL-16</a>.</div>
+  </section>
+
+  <section id="s13" class="sec">
+    <div class="sec-h"><span class="sec-num">13</span><span class="sec-t">히스토리 그룹 헤더 <b class="tag" style="color:var(--ds-primary)">NEW</b></span><span class="tag">.hd-group — 프로젝트별 구성 (2026-08-04 요구사항)</span></div>
+    <div class="card pad" style="max-width:320px">
+      <div class="hd-group"><span class="msym">folder</span>agent-handoff-bridge <span class="tag" style="color:var(--ds-primary);font-size:9px;text-transform:none">현재</span><span class="cnt">2</span></div>
+      <div class="history-item"><div class="hi-top"><span>codex</span><span class="muted mono" style="font-weight:400">2분 전</span></div><div class="hi-task">인증 모듈 리팩터링을 이어서 진행해줘</div></div>
+      <div class="hd-group" style="margin-top:4px"><span class="msym">folder</span>docs-site <span class="cnt">1</span></div>
+      <div class="history-item"><div class="hi-task">README 다국어화 작업 초안 작성</div></div>
+    </div>
+    <div class="note" style="margin-top:10px">히스토리 드로어(§11)를 워크스페이스 폴더명 단위로 묶는다. 지금 열려있는 프로젝트는 "현재" 태그로 구분. 그룹 안은 최신순. 각 그룹의 데이터는 서로 다른 워크스페이스에서 오는데, 정확히 무엇(메시지 로그 vs provider 실행 이력, §11 참고)을 보여줄지는 <a href="flutter-mapping.html#s2">CFL-16</a> 미확정. 어느 쪽이든 앱이 "최근 워크스페이스 목록"을 별도로 기억해야 하는 것은 공통 — 그 메커니즘도 <a href="flutter-mapping.html#s2">CFL-10</a> 미확정.</div>
+    <div class="tag" style="margin-top:8px">사용처: <a href="wireframes.html#s5">SCR-03</a></div>
+  </section>
+
+  <section id="s14" class="sec">
+    <div class="sec-h"><span class="sec-num">14</span><span class="sec-t">Provider 연결 상태 · API 키 입력 <b class="tag" style="color:var(--ds-primary)">NEW</b></span><span class="tag">CLI 미사용자(토큰 기반 API 사용자) 대응</span></div>
+    <div class="card pad" style="max-width:420px">
+      <div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--ds-outline-variant)">
+        <span style="display:flex;align-items:center;gap:8px"><span class="msym" style="font-size:18px">terminal</span>Codex</span>
+        <span class="badge" style="background:var(--ds-st-success-bg);color:var(--ds-st-success-fg)"><span class="msym" style="font-size:13px">check_circle</span>CLI 감지됨</span>
+      </div>
+      <div class="row" style="justify-content:space-between;padding:8px 0">
+        <span style="display:flex;align-items:center;gap:8px"><span class="msym" style="font-size:18px">terminal</span>Claude Code</span>
+        <span class="badge" style="background:var(--ds-st-fail-bg);color:var(--ds-st-fail-fg)"><span class="msym" style="font-size:13px">error</span>CLI 없음</span>
+      </div>
+      <div class="row" style="gap:8px;padding:8px;background:var(--ds-surface-container-low);border-radius:8px;margin-top:4px">
+        <span class="msym" style="font-size:16px;color:var(--ds-on-surface-variant)">key</span>
+        <div class="field" style="flex:1;font-family:var(--ds-font-mono);letter-spacing:2px">••••••••••••••••••••</div>
+        <div class="dbtn" style="padding:5px 10px;height:auto;font-size:10.5px">저장</div>
+      </div>
+    </div>
+    <div class="note" style="margin-top:10px">provider별 연결 상태 배지 3종: <b>CLI 감지됨</b>(성공색) / <b>CLI 없음</b>(실패색, API 키 입력 노출) / <b>미확인</b>(대기색, Gemini처럼 감지 로직 자체가 아직 없는 경우). API 키 필드는 항상 마스킹, provider별로 독립.</div>
+    <div class="tag" style="margin-top:8px">사용처: <a href="wireframes.html#s8">SCR-06</a> · 아키텍처 영향: <a href="flutter-mapping.html#s2">CFL-12</a></div>
+  </section>
+
+  <section id="s15" class="sec">
+    <div class="sec-h"><span class="sec-num">15</span><span class="sec-t">업데이트 배지 · 팝오버 <b class="tag" style="color:var(--ds-primary)">NEW</b></span><span class="tag">자동 버전 확인</span></div>
+    <div class="card pad" style="max-width:280px">
+      <div class="tbtn" style="position:relative;border-color:var(--ds-tertiary);color:var(--ds-tertiary);display:inline-flex">
+        <span class="msym">download</span>업데이트
+        <span style="position:absolute;top:-3px;right:-3px;width:8px;height:8px;border-radius:50%;background:var(--ds-tertiary)"></span>
+      </div>
+    </div>
+    <div class="note" style="margin-top:10px">새 버전이 있을 때만 타이틀바에 나타나는 점(dot) 배지 — 평소엔 아이콘만. 클릭하면 팝오버로 버전·릴리즈 노트 링크·"나중에" 선택지를 보여준다(강제 업데이트 없음).</div>
+    <div class="tag" style="margin-top:8px">사용처: <a href="wireframes.html#s9">SCR-07</a> · 인증 제약: <a href="flutter-mapping.html#s2">CFL-11</a>(private repo)</div>
+  </section>
+
+  <section id="s16" class="sec card pad">
+    <div class="sec-h"><span class="sec-num">16</span><span class="sec-t">제외 목록</span><span class="tag">근거 없이 만들지 않은 것</span></div>
+    <div class="tblwrap">
+      <table>
+        <tr><th>제외한 컴포넌트/화면</th><th>사유</th></tr>
+        <tr><td>ChatGPT 모바일 Remote 화면</td><td>OpenAI가 소유·구현하는 외부 앱. 이 저장소는 프롬프트 텍스트만 생성한다(handoff_desktop.py:301 copy_mobile_prompt) — 화면 자체를 설계할 근거(스펙)가 없음. <a href="wireframes.html#s1">전체 흐름도에서는 외부 박스로만 표시</a>.</td></tr>
+        <tr><td>Claude 모바일 Code 화면</td><td>Anthropic이 소유·구현하는 외부 앱. 동일 사유.</td></tr>
+        <tr><td>외부에 공개된 웹 대시보드</td><td>이 프로젝트에 존재하지 않음(로그인, 다중 사용자, 외부 접근 가능한 웹 서비스 등). 혼동 방지: <code>handoff_webui.py</code>가 띄우는 <b>로컬 전용</b> Web UI MVP(127.0.0.1 바인딩, 인증 없음, 단일 사용자)는 존재하며 이 재설계의 실제 구현체다 — <a href="../cli-reference.md#web-ui-mvp">CLI Reference § Web UI (MVP)</a> 참고. 이 줄은 "브라우저 UI 자체가 없다"고 잘못 읽힐 수 있어 2026-08-04 갱신.</td></tr>
+        <tr><td>다크모드 강제 시스템 연동</td><td>tkinter 기본 테마는 OS 네이티브를 따르고 앱이 별도 라이트/다크 토큰을 구현하지 않음 — 이 문서(디자인 캔버스) 자체의 테마 토글과는 별개.</td></tr>
+        <tr><td>메시지 본문 전체 마크다운 렌더링</td><td>2026-08-04 인터뷰로 <a href="flutter-mapping.html#s1c">코드블록만 지원(DEC-03)</a>하기로 결정 — 제목·목록·굵게 등 전체 마크다운은 범위 밖.</td></tr>
+        <tr><td>API 키 직접 호출 아키텍처(세션 재개, 이벤트 파싱 재설계)</td><td>§14는 API 키를 <i>입력받는 화면</i>만 설계 — 그 뒤에서 실제로 어떻게 provider를 호출할지는 다루지 않음(<a href="flutter-mapping.html#s2">CFL-12</a>, 별도 아키텍처 논의 필요).</td></tr>
+        <tr><td>Gemini 외 추가 AI 모델의 화면·컴포넌트</td><td>요구사항이 "그 외 모델 추가는 문서로 남겨둘 것"으로 명시 — <a href="../provider-extensibility.md">provider-extensibility.md</a>에 일반화된 절차만 문서화하고 이 컴포넌트 라이브러리에는 넣지 않음.</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <footer class="ds">이전 <a href="design-system.html">1 · 원칙 &amp; 파운데이션</a> · 다음 → <a href="patterns.html">3 · 상태 패턴 · 접근성</a></footer>
+</div>
+
+<script src="ds.js"></script>
+</body>
+</html>
