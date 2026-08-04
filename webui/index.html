@@ -18,6 +18,9 @@
         <option value="codex">codex</option>
         <option value="claude">claude</option>
       </select>
+      <button class="tbtn" id="history-btn" type="button" title="다른 프로젝트의 최근 대화">
+        <span>🕐</span> History
+      </button>
       <span class="badge">Phase 1 · provider 연결됨</span>
     </div>
     <div class="body">
@@ -47,6 +50,11 @@
           </div>
           <div class="composer-note">전송은 선택한 provider(Codex/Claude)를 실제로 호출합니다 — 토큰이 소비될 수 있습니다. 이 세션의 첫 전송만 확인을 거치고, 이후는 바로 실행됩니다.</div>
         </div>
+      </div>
+      <div class="scrim" id="history-scrim"></div>
+      <div class="history-drawer" id="history-drawer">
+        <div class="hd-h">이전 대화 기록<button type="button" id="history-close-btn" title="닫기">✕</button></div>
+        <div class="hd-list" id="history-list"></div>
       </div>
     </div>
   </div>

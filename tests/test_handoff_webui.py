@@ -439,7 +439,11 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.base_dir = Path(self.tmp.name) / "Agent Handoff Bridge"
+        # .resolve(): create_workspace_for_first_message() resolves
+        # AUTO_WORKSPACE_BASE_DIR internally (path-normalization fix, see
+        # its own comment) -- matching that here avoids a spurious macOS
+        # /var vs /private/var mismatch in assertions below.
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
         self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
@@ -450,6 +454,29 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         self.assertEqual(workspace.parent, self.base_dir)
         self.assertTrue(workspace.is_dir())
         self.assertIn("Fix-the-deploy-script", workspace.name)
+
+    def test_symlinked_base_dir_is_resolved_to_its_real_target(self):
+        # Phase 3 regression: resolve_startup_workspace() and
+        # validate_workspace_candidate() (the other two ways
+        # AppState.workspace ever gets set) both .resolve(), but this one
+        # originally didn't -- Path.home() doesn't resolve symlinks (e.g.
+        # ~/Documents under iCloud Desktop & Documents sync), so the same
+        # physical folder reached via auto-create vs. Open Folder/CLI
+        # startup could stringify differently and duplicate in the
+        # Phase 3 history registry instead of deduping to one entry.
+        # Reproduced here with a real symlink standing in for that.
+        real_target = Path(self.tmp.name) / "real-target"
+        real_target.mkdir()
+        symlinked_base = Path(self.tmp.name) / "symlinked-base"
+        try:
+            symlinked_base.symlink_to(real_target)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks not supported on this platform/runner")
+
+        with mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", symlinked_base):
+            workspace = webui.create_workspace_for_first_message("hello", [])
+
+        self.assertEqual(workspace.parent, real_target.resolve())
 
     def test_runs_init_and_produces_state_json_with_task_set_to_the_message(self):
         workspace = webui.create_workspace_for_first_message("investigate the flaky test", [])
@@ -551,7 +578,11 @@ class CreateWorkspaceConcurrencyTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.base_dir = Path(self.tmp.name) / "Agent Handoff Bridge"
+        # .resolve(): create_workspace_for_first_message() resolves
+        # AUTO_WORKSPACE_BASE_DIR internally (path-normalization fix, see
+        # its own comment) -- matching that here avoids a spurious macOS
+        # /var vs /private/var mismatch in assertions below.
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
         self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
@@ -601,9 +632,262 @@ class CreateWorkspaceConcurrencyTests(unittest.TestCase):
         self.assertEqual(statuses, [200] * 8)
         # Exactly one workspace directory got created, not one per request
         # -- the bug this regression-tests produced up to 8 real folders on
-        # disk with AppState.workspace pointing at only one of them.
-        self.assertEqual(len(list(self.base_dir.iterdir())), 1)
+        # disk with AppState.workspace pointing at only one of them. (Phase
+        # 3's touch_registry() also writes registry.json alongside it, so
+        # filter to directories rather than asserting the dir is empty.)
+        created_dirs = [p for p in self.base_dir.iterdir() if p.is_dir()]
+        self.assertEqual(len(created_dirs), 1)
         self.assertIsNotNone(self.state.workspace)
+
+
+class RegistryTests(unittest.TestCase):
+    """AUTO_WORKSPACE_BASE_DIR patched to a tempdir for every test here --
+    must never touch the real ~/Documents/Agent Handoff Bridge/. Also
+    regression coverage for registry_path() being a function, not a
+    module-level constant bound once at import -- a constant wouldn't see
+    this patch and every test here would try to write to the real path."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        # .resolve(): create_workspace_for_first_message() resolves
+        # AUTO_WORKSPACE_BASE_DIR internally (path-normalization fix, see
+        # its own comment) -- matching that here avoids a spurious macOS
+        # /var vs /private/var mismatch in assertions below.
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_read_registry_missing_file_returns_empty_list(self):
+        self.assertEqual(webui.read_registry(), [])
+
+    def test_read_registry_unreadable_path_returns_empty_list_not_raise(self):
+        # registry.json existing as a *directory* (permissions issues are
+        # the more realistic real-world case, but a directory-where-a-file-
+        # is-expected is the portable way to force the same OSError family
+        # without relying on chmod, which root/CI can bypass).
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "registry.json").mkdir()
+        self.assertEqual(webui.read_registry(), [])
+
+    def test_read_registry_skips_malformed_entries_instead_of_crashing(self):
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "registry.json").write_text(
+            json.dumps([{"path": "/w/good", "name": "good"}, "not a dict", {"name": "no path field"}, 42]),
+            encoding="utf-8",
+        )
+        entries = webui.read_registry()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["path"], "/w/good")
+
+    def test_touch_registry_does_not_raise_when_the_write_fails(self):
+        # Regression: touch_registry() is called from POST /api/open-folder
+        # and main() *after* real state already changed (AppState.workspace
+        # assigned, or the server about to start) -- a write failure here
+        # (permissions, full disk, base dir exists as a file) must be
+        # best-effort, not propagate and desync the HTTP response / crash
+        # startup from what the server actually just did.
+        self.base_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.base_dir.write_text("a file, not a directory", encoding="utf-8")
+        try:
+            webui.touch_registry(Path("/some/workspace"), webui.utc_now())
+        except OSError:
+            self.fail("touch_registry() must not raise on a write failure")
+
+    def test_read_registry_malformed_json_returns_empty_list(self):
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "registry.json").write_text("not json", encoding="utf-8")
+        self.assertEqual(webui.read_registry(), [])
+
+    def test_read_registry_non_list_json_returns_empty_list(self):
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "registry.json").write_text('{"not": "a list"}', encoding="utf-8")
+        self.assertEqual(webui.read_registry(), [])
+
+    def test_touch_registry_writes_it_to_the_patched_base_dir_not_the_real_one(self):
+        webui.touch_registry(Path("/some/workspace"), datetime(2026, 8, 4, tzinfo=timezone.utc))
+        self.assertTrue((self.base_dir / "registry.json").exists())
+
+    def test_touch_registry_adds_an_entry(self):
+        webui.touch_registry(Path("/w/project-a"), datetime(2026, 8, 4, tzinfo=timezone.utc))
+        entries = webui.read_registry()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["path"], str(Path("/w/project-a")))
+        self.assertEqual(entries[0]["name"], "project-a")
+
+    def test_touching_the_same_workspace_again_moves_it_to_front_not_duplicates(self):
+        now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+        webui.touch_registry(Path("/w/a"), now)
+        webui.touch_registry(Path("/w/b"), now)
+        webui.touch_registry(Path("/w/a"), now)  # re-touch a
+        entries = webui.read_registry()
+        self.assertEqual([e["path"] for e in entries], [str(Path("/w/a")), str(Path("/w/b"))])
+
+    def test_caps_at_max_entries_evicting_the_oldest(self):
+        now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+        for i in range(webui.REGISTRY_MAX_ENTRIES + 3):
+            webui.touch_registry(Path(f"/w/project-{i}"), now)
+        entries = webui.read_registry()
+        self.assertEqual(len(entries), webui.REGISTRY_MAX_ENTRIES)
+        # most recent (highest i) survive, oldest (0, 1, 2) evicted
+        paths = [e["path"] for e in entries]
+        self.assertIn(str(Path(f"/w/project-{webui.REGISTRY_MAX_ENTRIES + 2}")), paths)
+        self.assertNotIn(str(Path("/w/project-0")), paths)
+
+
+class PairMessagesIntoTurnsTests(unittest.TestCase):
+    def test_user_message_alone_produces_a_turn_with_no_provider_yet(self):
+        turns = webui.pair_messages_into_turns([{"role": "user", "text": "hi", "ts": "t1"}])
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["text"], "hi")
+        self.assertIsNone(turns[0]["provider"])
+
+    def test_user_plus_agent_reply_forms_one_turn(self):
+        messages = [
+            {"role": "user", "text": "fix the bug", "ts": "t1"},
+            {"role": "agent", "text": "done", "provider": "codex", "status": "success", "ts": "t2"},
+        ]
+        turns = webui.pair_messages_into_turns(messages)
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["text"], "fix the bug")
+        self.assertEqual(turns[0]["provider"], "codex")
+        self.assertEqual(turns[0]["status"], "success")
+
+    def test_multiple_agent_replies_in_one_turn_use_the_last_one(self):
+        # DEC-12: auto-fallback (codex fails -> claude succeeds) -- the
+        # drawer should show how the turn actually ended up, not the first
+        # attempt.
+        messages = [
+            {"role": "user", "text": "fix the bug", "ts": "t1"},
+            {"role": "agent", "text": "rate limited", "provider": "codex", "status": "handoff", "ts": "t2"},
+            {"role": "agent", "text": "done", "provider": "claude", "status": "success", "ts": "t3"},
+        ]
+        turns = webui.pair_messages_into_turns(messages)
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["provider"], "claude")
+        self.assertEqual(turns[0]["status"], "success")
+
+    def test_system_messages_do_not_start_a_turn(self):
+        messages = [
+            {"role": "system", "text": "workspace switched", "ts": "t1"},
+            {"role": "user", "text": "hi", "ts": "t2"},
+        ]
+        turns = webui.pair_messages_into_turns(messages)
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0]["text"], "hi")
+
+    def test_two_separate_user_messages_produce_two_turns(self):
+        messages = [
+            {"role": "user", "text": "first", "ts": "t1"},
+            {"role": "agent", "text": "ok", "provider": "codex", "status": "success", "ts": "t2"},
+            {"role": "user", "text": "second", "ts": "t3"},
+            {"role": "agent", "text": "ok2", "provider": "claude", "status": "success", "ts": "t4"},
+        ]
+        turns = webui.pair_messages_into_turns(messages)
+        self.assertEqual([t["text"] for t in turns], ["first", "second"])
+
+
+class CollectRecentTurnsTests(unittest.TestCase):
+    def test_caps_at_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+            for i in range(8):
+                webui.append_chat_message(root, "user", f"turn {i}", [], now)
+                webui.append_chat_message(root, "agent", "ok", [], now, provider="codex", status="success")
+            turns = webui.collect_recent_turns(root, limit=5)
+            self.assertEqual(len(turns), 5)
+            # newest first
+            self.assertEqual(turns[0]["text"], "turn 7")
+
+    def test_scans_backward_across_months_when_current_month_is_short(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            older = datetime(2026, 6, 1, tzinfo=timezone.utc)
+            newer = datetime(2026, 8, 4, tzinfo=timezone.utc)
+            webui.append_chat_message(root, "user", "old turn", [], older)
+            webui.append_chat_message(root, "user", "new turn", [], newer)
+            turns = webui.collect_recent_turns(root, limit=5)
+            self.assertEqual({t["text"] for t in turns}, {"old turn", "new turn"})
+
+    def test_empty_workspace_returns_no_turns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(webui.collect_recent_turns(Path(tmp)), [])
+
+    def test_turn_split_across_a_month_boundary_still_pairs_correctly(self):
+        # Regression: pairing each month's file in isolation would drop
+        # the agent reply entirely (no preceding user message in its own
+        # month's list) and leave the user's turn with no provider/status
+        # -- a message sent right before a UTC month boundary, with the
+        # reply landing just after it, must still pair as one turn.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            end_of_july = datetime(2026, 7, 31, 23, 59, tzinfo=timezone.utc)
+            start_of_august = datetime(2026, 8, 1, 0, 1, tzinfo=timezone.utc)
+            webui.append_chat_message(root, "user", "cross-boundary turn", [], end_of_july)
+            webui.append_chat_message(
+                root, "agent", "done", [], start_of_august, provider="codex", status="success"
+            )
+            turns = webui.collect_recent_turns(root, limit=5)
+            self.assertEqual(len(turns), 1)
+            self.assertEqual(turns[0]["text"], "cross-boundary turn")
+            self.assertEqual(turns[0]["provider"], "codex")
+            self.assertEqual(turns[0]["status"], "success")
+
+
+class BuildHistoryDrawerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        # .resolve(): create_workspace_for_first_message() resolves
+        # AUTO_WORKSPACE_BASE_DIR internally (path-normalization fix, see
+        # its own comment) -- matching that here avoids a spurious macOS
+        # /var vs /private/var mismatch in assertions below.
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+        self.projects_dir = Path(self.tmp.name) / "projects"
+        self.projects_dir.mkdir()
+
+    def _make_project(self, name, text="hello"):
+        root = self.projects_dir / name
+        root.mkdir()
+        webui.append_chat_message(root, "user", text, [], webui.utc_now())
+        return root
+
+    def test_current_workspace_is_pinned_first_and_marked(self):
+        current = self._make_project("current-proj")
+        other = self._make_project("other-proj")
+        webui.touch_registry(other, webui.utc_now())
+        webui.touch_registry(current, webui.utc_now())
+        groups = webui.build_history_drawer(current)
+        self.assertEqual(groups[0]["path"], str(current))
+        self.assertTrue(groups[0]["current"])
+        self.assertFalse(groups[1]["current"])
+
+    def test_registry_entry_for_a_deleted_folder_is_silently_skipped(self):
+        gone = self.projects_dir / "deleted-proj"
+        gone.mkdir()
+        webui.touch_registry(gone, webui.utc_now())
+        shutil.rmtree(gone)
+        groups = webui.build_history_drawer(None)
+        self.assertEqual(groups, [])
+
+    def test_no_current_workspace_still_returns_registry_groups(self):
+        project = self._make_project("solo-proj")
+        webui.touch_registry(project, webui.utc_now())
+        groups = webui.build_history_drawer(None)
+        self.assertEqual(len(groups), 1)
+        self.assertFalse(groups[0]["current"])
+
+    def test_each_group_carries_its_own_turns(self):
+        project = self._make_project("with-turns", text="do the thing")
+        webui.touch_registry(project, webui.utc_now())
+        groups = webui.build_history_drawer(None)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["turns"][0]["text"], "do the thing")
 
 
 class ChatStorageTests(unittest.TestCase):
@@ -1282,7 +1566,11 @@ class NoWorkspaceLiveServerTests(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.base_dir = Path(self.tmp.name) / "Agent Handoff Bridge"
+        # .resolve(): create_workspace_for_first_message() resolves
+        # AUTO_WORKSPACE_BASE_DIR internally (path-normalization fix, see
+        # its own comment) -- matching that here avoids a spurious macOS
+        # /var vs /private/var mismatch in assertions below.
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
         self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
@@ -1386,6 +1674,120 @@ class NoWorkspaceLiveServerTests(unittest.TestCase):
         self.assertEqual(status1, 200)
         self.assertEqual(status2, 200)
         self.assertNotEqual(info1["workspace"], info2["workspace"])
+
+    def test_api_history_is_empty_before_any_workspace_exists(self):
+        status, data = self._get("/api/history")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["groups"], [])
+
+    def test_auto_created_workspace_shows_up_in_the_history_drawer(self):
+        # DEC-10: the registry (and so the drawer) must reflect
+        # auto-created workspaces too, not just explicit Open Folder.
+        self._post("/api/chat", {"role": "user", "text": "fix the deploy script", "attachments": []})
+        status, data = self._get("/api/history")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(data["groups"]), 1)
+        self.assertTrue(data["groups"][0]["current"])
+        self.assertEqual(data["groups"][0]["turns"][0]["text"], "fix the deploy script")
+
+
+class HistoryDrawerLiveServerTests(unittest.TestCase):
+    """AUTO_WORKSPACE_BASE_DIR patched to a tempdir -- covers the
+    registry-touch integration points a plain AppState(workspace) live
+    server exercises (Open Folder), which NoWorkspaceLiveServerTests
+    above (AppState(None)) can't reach directly."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        # .resolve(): create_workspace_for_first_message() resolves
+        # AUTO_WORKSPACE_BASE_DIR internally (path-normalization fix, see
+        # its own comment) -- matching that here avoids a spurious macOS
+        # /var vs /private/var mismatch in assertions below.
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+        # .resolve() here matches every real production path into
+        # AppState: resolve_startup_workspace()/validate_workspace_candidate()/
+        # create_workspace_for_first_message() all resolve before AppState
+        # ever sees the value -- AppState() itself does no resolution, so
+        # an unresolved path here would be an unrealistic setup (and, on
+        # macOS, a spurious /var vs /private/var mismatch against the
+        # registry's resolved entries).
+        self.root = (Path(self.tmp.name) / "root").resolve()
+        self.root.mkdir()
+        self.other = (Path(self.tmp.name) / "other").resolve()
+        self.other.mkdir()
+
+        # Real main() calls touch_registry() for its startup workspace
+        # (DEC-10); these tests build AppState directly, bypassing main(),
+        # so simulate that one call here -- otherwise self.root would
+        # never appear in the registry despite being a real, currently-open
+        # workspace, which doesn't reflect actual startup behavior.
+        webui.touch_registry(self.root, webui.utc_now())
+
+        self.state = webui.AppState(self.root)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def _get(self, path: str) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def _post(self, path: str, payload: dict) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def test_open_folder_registers_both_workspaces_in_the_drawer(self):
+        self._post("/api/open-folder", {"path": str(self.other)})
+        status, data = self._get("/api/history")
+        self.assertEqual(status, 200)
+        paths = {g["path"] for g in data["groups"]}
+        self.assertEqual(paths, {str(self.root), str(self.other)})
+        current = next(g for g in data["groups"] if g["current"])
+        self.assertEqual(current["path"], str(self.other))
+
+    def test_open_folder_still_succeeds_even_if_the_registry_write_fails(self):
+        # The registry is a Phase 3 convenience index, not durable state --
+        # a write failure (base dir exists as a file, permissions, full
+        # disk) must never turn a real, successful workspace switch into a
+        # client-visible failure. Simulated here the same way
+        # RegistryTests.test_touch_registry_does_not_raise_when_the_write_fails
+        # does: the base dir itself exists as a file, not a directory.
+        # setUp()'s own touch_registry() call already created it as a real
+        # directory, so clear that first.
+        shutil.rmtree(self.base_dir, ignore_errors=True)
+        self.base_dir.write_text("a file, not a directory", encoding="utf-8")
+
+        status, data = self._post("/api/open-folder", {"path": str(self.other)})
+
+        self.assertEqual(status, 200)
+        self.assertEqual(Path(data["workspace"]), self.other)
+
+    def test_startup_workspace_is_registered_without_any_api_call(self):
+        # DEC-10: main() touches the registry for the workspace it starts
+        # with too, not just explicit UI actions -- setUp() simulates that
+        # one main()-only call, so this just confirms it actually shows up
+        # without any further API interaction.
+        status, data = self._get("/api/history")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["groups"][0]["path"], str(self.root))
+        self.assertTrue(data["groups"][0]["current"])
 
 
 if __name__ == "__main__":

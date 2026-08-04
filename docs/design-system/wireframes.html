@@ -318,8 +318,8 @@
           </div>
         </div>
       </div>
-      <div class="hand" style="max-width:740px">그룹 헤더 = 워크스페이스 폴더명, "현재" 배지는 지금 열려 있는 프로젝트. 그룹 내부는 최신순. 항목 클릭 시 그 프로젝트로 <b>워크스페이스 자체를 전환</b>하고 해당 세션을 읽기 전용으로 불러온다.</div>
-      <div class="hand" style="max-width:740px;margin-top:4px">데이터 출처: 각 워크스페이스의 <code class="mono">.handoff/state.json</code> history[]는 그 프로젝트 안에만 있으므로, 드로어가 "다른 프로젝트"까지 보여주려면 앱이 별도로 "최근에 연 워크스페이스 목록"을 기억해야 한다 — 정확한 저장 방식은 <a href="flutter-mapping.html#s2">CFL-10</a>(미확정, 가정만 함).</div>
+      <div class="hand" style="max-width:740px">그룹 헤더 = 워크스페이스 폴더명, "현재" 배지는 지금 열려 있는 프로젝트. 그룹 내부는 최신순, 최근 5개까지만. 항목 클릭 시 그 프로젝트로 <b>워크스페이스 자체를 전환</b>하고 해당 월 채팅 기록을 불러온다 — 이후 보통 채팅처럼 정상 편집 가능(진짜 읽기 전용 뷰어 아님, <a href="flutter-mapping.html#s1c">DEC-11</a>).</div>
+      <div class="hand" style="max-width:740px;margin-top:4px">데이터 출처: <code class="mono">.handoff/webui/chat/</code> 로그(<a href="flutter-mapping.html#s1c">DEC-08</a>). "다른 프로젝트"까지 보여주기 위한 "최근에 연 워크스페이스 목록"은 <code class="mono">~/Documents/Agent Handoff Bridge/</code> 안의 앱 레벨 레지스트리(최대 50개, LRU)로 관리 — <a href="flutter-mapping.html#s1c">DEC-09/DEC-10</a>.</div>
     </div>
   </section>
 

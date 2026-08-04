@@ -1,9 +1,11 @@
 # Web UI Chat Storage — Data Model
 
-Source of truth for the on-disk format `handoff_webui.py` reads and writes.
-This repo has no ADR directory or numbered decision-record series — plain
-`docs/*.md`, cross-linked from `docs/index.md`, is the convention (see
-`docs/quality-gates.md`, `docs/provider-extensibility.md` for the same
+Source of truth for the on-disk formats `handoff_webui.py` reads and
+writes: the per-workspace chat log below, and the app-level
+["recently-opened" registry](#recently-opened-registry-phase-3) Phase 3
+added. This repo has no ADR directory or numbered decision-record series —
+plain `docs/*.md`, cross-linked from `docs/index.md`, is the convention
+(see `docs/quality-gates.md`, `docs/provider-extensibility.md` for the same
 pattern). This doc exists so that convention covers the new local data
 model the [Web UI MVP](cli-reference.md#web-ui-mvp) introduced, not just
 its CLI usage.
@@ -149,6 +151,85 @@ proprietary code, so if a workspace's chat history is ever force-added
 despite the ignore (`git add -f`), `scripts/scan_secrets.py` still applies
 to it like any other tracked file — it is deliberately **not** added to
 that script's `PATH_ALLOWLIST`.
+
+## Recently-Opened Registry (Phase 3)
+
+Unlike everything above, this file lives **outside any single workspace**
+— it's app-level state, not per-project, because its whole purpose is
+listing *other* projects the [history drawer](cli-reference.md#web-ui-mvp)
+shows alongside the current one:
+
+```
+~/Documents/Agent Handoff Bridge/registry.json
+```
+
+Same base directory Phase 2 introduced for auto-created workspaces
+(`AUTO_WORKSPACE_BASE_DIR`) — reused rather than adding a second,
+OS-specific app-data path (`~/Library/Application Support`, `%APPDATA%`,
+`~/.config`); see [DEC-09](design-system/flutter-mapping.html#s1c).
+
+**Schema** — a JSON array, most-recently-opened first:
+
+```json
+[{"path": "/Users/me/project", "name": "project", "last_opened": "2026-08-04T00:45:55+00:00"}]
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `path` | string | `str(workspace)` at the moment it was touched — see "Path normalization" below |
+| `name` | string | `workspace.name`, cached at write time so the drawer doesn't need to touch the filesystem per entry to render a label |
+| `last_opened` | string | `datetime.isoformat()`, UTC — used only to order entries, not displayed as-is |
+
+**Path normalization**: all three writers (`main()` at startup,
+`POST /api/open-folder`, `POST /api/chat`'s auto-create path) always pass
+an already-`.resolve()`d `Path` — `resolve_startup_workspace()` and
+`validate_workspace_candidate()` resolve directly,
+`create_workspace_for_first_message()` resolves `AUTO_WORKSPACE_BASE_DIR`
+before building the new path (a real bug, caught in a pre-commit
+self-review and fixed: `Path.home()` doesn't itself resolve symlinks —
+e.g. `~/Documents` under iCloud Desktop & Documents sync — so an
+unresolved write could duplicate one physical folder under two path
+strings). `touch_registry()` itself does no normalization of its own; it
+trusts the caller.
+
+**Cap**: 50 entries (`REGISTRY_MAX_ENTRIES`), LRU — `touch_registry()`
+dedupes by exact `path` string match, moves the touched entry to the
+front, and truncates. An entry whose folder no longer exists on disk is
+never deleted from the file itself; `build_history_drawer()` just skips
+it at render time (`workspace.is_dir()` check) — so a `registry.json` can
+technically accumulate stale entries past 50 real ones if enough distinct
+paths get touched without ever being pruned. Not a correctness problem
+(they're invisible either way), just means the file's row count and the
+drawer's visible count can diverge.
+
+**Locking**: a plain in-process `threading.Lock` (`_REGISTRY_LOCK`), not
+`handoff_bridge.WriteLock` — the contention this guards against is HTTP
+request threads within *one* `handoff_webui.py` process, not separate CLI
+invocations racing each other the way `WriteLock` exists for. Two
+separate `handoff_webui.py` processes touching the registry at the same
+moment can still lose one process's update (last-`os.replace()`-wins;
+`atomic_write_text()` still guarantees the file itself is never
+corrupted, just that an update can be silently dropped) — an accepted
+tradeoff for what is app-level LRU-index convenience state, not
+durable/authoritative data (`.handoff/state.json` and
+`.handoff/current.md`, per `docs/architecture.md`'s "State Boundaries",
+remain the durable handoff surface; the registry is not read by
+anything outside `handoff_webui.py` itself).
+
+**Failure isolation**: every read/write path treats a missing, corrupt,
+type-malformed, or unreadable registry as "empty", not an error —
+`read_registry()` catches `OSError`/`UnicodeDecodeError`/
+`json.JSONDecodeError` and filters out any entry that isn't a dict with a
+string `path`; `touch_registry()` catches `OSError` around the write
+itself and only logs a warning. This is deliberate: `touch_registry()` is
+always called *after* the real state change it's attached to already
+happened (`AppState.workspace` assigned, or the server about to finish
+starting), so letting a registry failure propagate would turn a
+successful workspace switch/startup into a client-visible error for a
+feature that's a convenience index, not the operation itself. Verified in
+`tests/test_handoff_webui.py`'s `RegistryTests` (missing/malformed/
+unreadable file, write failure) and `HistoryDrawerLiveServerTests::
+test_open_folder_still_succeeds_even_if_the_registry_write_fails`.
 
 ## Known Open Questions
 

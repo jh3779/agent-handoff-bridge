@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from handoff_bridge import HANDOFF_DIR, WriteLock, choose_auto_provider
+from handoff_bridge import HANDOFF_DIR, WriteLock, atomic_write_text, choose_auto_provider
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
@@ -281,12 +281,21 @@ def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Pa
     base_name = build_auto_workspace_name(text, attachments, utc_now())
     try:
         AUTO_WORKSPACE_BASE_DIR.mkdir(parents=True, exist_ok=True)
+        # .resolve() to match the other two ways AppState.workspace ever
+        # gets set (resolve_startup_workspace(), validate_workspace_candidate())
+        # -- Path.home() doesn't itself resolve symlinks (e.g. ~/Documents
+        # under iCloud Desktop & Documents sync), so without this, the same
+        # physical folder reached different ways (auto-create now, Open
+        # Folder or plain --workspace startup later) could stringify
+        # differently and show up as two separate entries in the Phase 3
+        # history registry instead of deduping to one.
+        base_dir = AUTO_WORKSPACE_BASE_DIR.resolve()
         candidate_name = base_name
         suffix = 2
-        while (AUTO_WORKSPACE_BASE_DIR / candidate_name).exists():
+        while (base_dir / candidate_name).exists():
             candidate_name = f"{base_name}-{suffix}"
             suffix += 1
-        new_workspace = AUTO_WORKSPACE_BASE_DIR / candidate_name
+        new_workspace = base_dir / candidate_name
         new_workspace.mkdir()
     except OSError as exc:
         # e.g. ~/Documents/Agent Handoff Bridge exists as a *file*, a
@@ -473,6 +482,166 @@ def archive_old_months(workspace: Path, now: datetime) -> list[str]:
             path.unlink()
             archived.append(month)
     return archived
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 (docs/design-system/roadmap.md, SCR-03): multi-project history
+# drawer. Design decisions (DEC-08~12) recorded in
+# docs/design-system/flutter-mapping.html#s1c -- resolved via a pre-
+# implementation interview, not invented here.
+# ---------------------------------------------------------------------------
+
+# DEC-09: reuses the location Phase 2 already established as "the app owns
+# this", rather than an OS-specific app-data path (~/Library/Application
+# Support, %APPDATA%, ~/.config).
+REGISTRY_MAX_ENTRIES = 50  # DEC-09
+HISTORY_TURNS_PER_WORKSPACE = 5  # DEC-11
+
+# HTTP-thread contention in one process, not separate CLI processes --
+# same reasoning as _WORKSPACE_CREATE_LOCK, not handoff_bridge.WriteLock.
+_REGISTRY_LOCK = threading.Lock()
+
+
+def registry_path() -> Path:
+    # A function, not a module-level constant bound once at import time --
+    # tests patch AUTO_WORKSPACE_BASE_DIR to a tempdir (never touch the
+    # real ~/Documents/), and a constant computed at import wouldn't see
+    # that patch since it'd already be bound to the real path by then.
+    return AUTO_WORKSPACE_BASE_DIR / "registry.json"
+
+
+def read_registry() -> list[dict]:
+    """Entries ordered most-recently-opened first. Never raises -- a
+    missing, corrupt, or unreadable (permissions) registry file just
+    means an empty "recently opened" list, same posture as
+    read_state_history()."""
+    path = registry_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if isinstance(e, dict) and isinstance(e.get("path"), str)]
+
+
+def touch_registry(workspace: Path, now: datetime) -> None:
+    """DEC-10: called at every point AppState.workspace gets set (Open
+    Folder, auto-create, and plain CLI startup with an existing
+    workspace) so the drawer reflects projects opened from other
+    terminals too, not just explicit in-app actions.
+
+    Moves `workspace` to the front (most-recently-opened), dedupes by
+    path, and evicts the oldest entries past REGISTRY_MAX_ENTRIES
+    (DEC-09). Entries for folders that no longer exist are pruned lazily
+    at read time (build_history_drawer()), not here.
+
+    Best-effort: this is a Phase 3 convenience index, not durable state
+    (docs/architecture.md's "State Boundaries" -- .handoff/state.json and
+    .handoff/current.md are the durable handoff surface, not this). A
+    write failure here (~/Documents/Agent Handoff Bridge unreadable,
+    exists as a file, a full disk, a permissions error) must never break
+    the workspace switch/auto-create/startup it's attached to -- all
+    three call sites already changed real state (AppState.workspace,
+    or in main()'s case the whole server is about to come up) by the time
+    this runs, so raising here would desync what the server just did from
+    what the client/operator sees happen.
+    """
+    try:
+        with _REGISTRY_LOCK:
+            path_str = str(workspace)
+            entries = [e for e in read_registry() if e.get("path") != path_str]
+            entries.insert(0, {"path": path_str, "name": workspace.name or path_str, "last_opened": now.isoformat()})
+            atomic_write_text(
+                registry_path(), json.dumps(entries[:REGISTRY_MAX_ENTRIES], ensure_ascii=False, indent=2)
+            )
+    except OSError as exc:
+        print(f"[webui] warning: failed to update recent-workspaces registry: {exc}", file=sys.stderr)
+
+
+def pair_messages_into_turns(messages: list[dict]) -> list[dict]:
+    """DEC-08: one drawer item = one user message + whichever agent
+    message(s) followed it, not a raw 1:1 mapping of chat log lines.
+    "system" messages (e.g. workspace-switch notices) don't start a turn.
+    DEC-12: when auto-fallback produced more than one agent reply for the
+    same turn, the *last* one's provider/status wins -- overwriting as
+    each subsequent agent message is seen naturally implements that.
+    """
+    turns: list[dict] = []
+    current: dict | None = None
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            current = {
+                "ts": message.get("ts"),
+                "text": message.get("text") or "",
+                "provider": None,
+                "status": None,
+            }
+            turns.append(current)
+        elif role == "agent" and current is not None:
+            current["provider"] = message.get("provider")
+            current["status"] = message.get("status")
+    return turns
+
+
+def collect_recent_turns(workspace: Path, limit: int = HISTORY_TURNS_PER_WORKSPACE) -> list[dict]:
+    """Newest-first, scanning months backward only as far as needed to
+    fill `limit` -- DEC-11's "그룹당 최근 5개" doesn't require reading
+    every month a long-lived project has ever had.
+
+    Pairs across the merged, chronologically-ordered messages from every
+    month scanned so far in each pass -- pairing each month's file in
+    isolation would silently drop or misattribute a turn whose agent
+    reply landed in the *next* month's file (e.g. a message sent right
+    before a UTC month boundary): the user message would show up with no
+    provider/status, and the agent reply would be dropped outright, since
+    pair_messages_into_turns() resets its "current turn" per call.
+    """
+    messages: list[dict] = []
+    turns: list[dict] = []
+    for month in reversed(list_available_months(workspace)):
+        messages = read_month_messages(workspace, month) + messages
+        turns = pair_messages_into_turns(messages)
+        if len(turns) >= limit:
+            break
+    return list(reversed(turns))[:limit]
+
+
+def build_history_drawer(current_workspace: Path | None) -> list[dict]:
+    """DEC-09/11: the current workspace (if any) is pinned first
+    regardless of recency, then the rest of the registry ordered
+    most-recently-opened first. A registry entry whose folder no longer
+    exists is silently skipped (DEC-09) -- not surfaced as an error, since
+    "some project you opened once got deleted" isn't actionable here."""
+    groups: list[dict] = []
+    seen_paths: set[str] = set()
+
+    def add_group(path_str: str, name: str) -> None:
+        if path_str in seen_paths:
+            return
+        workspace = Path(path_str)
+        if not workspace.is_dir():
+            return
+        seen_paths.add(path_str)
+        groups.append(
+            {
+                "path": path_str,
+                "name": name,
+                "current": current_workspace is not None and workspace == current_workspace,
+                "turns": collect_recent_turns(workspace),
+            }
+        )
+
+    if current_workspace is not None:
+        add_group(str(current_workspace), current_workspace.name or str(current_workspace))
+    for entry in read_registry():
+        path_str = entry.get("path")
+        if path_str:
+            add_group(path_str, entry.get("name") or Path(path_str).name)
+    return groups
 
 
 # ---------------------------------------------------------------------------
@@ -805,6 +974,8 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     self._send_json(
                         200, {"month": month, "months": list_available_months(workspace), "messages": messages}
                     )
+            elif parsed.path == "/api/history":
+                self._send_json(200, {"groups": build_history_drawer(workspace)})
             else:
                 self.send_error(404, "not found")
 
@@ -842,6 +1013,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         with _WORKSPACE_CREATE_LOCK:
                             if state.workspace is None:
                                 state.workspace = create_workspace_for_first_message(text, attachments)
+                                touch_registry(state.workspace, utc_now())
                     message = append_chat_message(state.workspace, role, text, attachments, utc_now())
                     self._send_json(200, message)
                 except WorkspaceError as exc:
@@ -853,6 +1025,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     state.workspace = candidate
                     ensure_chat_gitignore(candidate)
                     archive_old_months(candidate, utc_now())
+                    touch_registry(candidate, utc_now())
                     self._send_json(200, {"workspace": str(candidate), "name": candidate.name or str(candidate)})
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
@@ -1000,6 +1173,7 @@ def main(argv: list[str] | None = None) -> int:
     if state.workspace is not None:
         ensure_chat_gitignore(state.workspace)
         archive_old_months(state.workspace, utc_now())
+        touch_registry(state.workspace, utc_now())  # DEC-10: CLI startup counts too
 
     handler = build_handler(state)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)

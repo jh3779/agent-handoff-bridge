@@ -228,6 +228,95 @@
     before and after;
   - 2 more tests -- 183 total.
 
+- Web UI Phase 3 (multi-project history drawer, SCR-03):
+  - a pre-implementation design interview resolved DEC-08~12
+    (`docs/design-system/flutter-mapping.html#s1c`) before any code
+    changed, fully resolving both CFL-16 (history drawer data source) and
+    the remaining piece of CFL-10 (registry mechanism) -- both removed
+    from the Conflict List;
+  - **data source** (DEC-08): the drawer reads
+    `.handoff/webui/chat/` logs, not the originally-assumed provider run
+    history (`.handoff/runs/` + `state.json`'s `history[]`) -- the
+    wireframe's literal user-typed text only exists in the chat log.
+    `pair_messages_into_turns()` collapses a `user` message plus whatever
+    `agent` message(s) followed it into one drawer item; when
+    auto-fallback produced more than one `agent` reply, the *last* one's
+    provider/status wins (DEC-12) -- how the turn actually ended up
+    matters more than the first attempt;
+  - **registry** (DEC-09/10): a small `registry.json` under
+    `~/Documents/Agent Handoff Bridge/` (the location Phase 2 already
+    established as app-owned, not an OS-specific app-data path) tracks up
+    to 50 recently-opened workspaces, LRU-ordered, updated at every point
+    `AppState.workspace` gets set -- `main()`'s startup, `POST
+    /api/open-folder`, and the Phase 2 auto-create path, not just explicit
+    UI actions. An entry whose folder no longer exists is silently
+    skipped at render time, not surfaced as an error;
+  - fixed a real bug found *during* this implementation, before it ever
+    shipped: the registry's file path was first written as a module-level
+    constant (`REGISTRY_PATH = AUTO_WORKSPACE_BASE_DIR / "registry.json"`)
+    bound once at import time -- tests patch `AUTO_WORKSPACE_BASE_DIR` to
+    a tempdir to avoid ever touching the real
+    `~/Documents/Agent Handoff Bridge/`, but a constant computed at import
+    wouldn't see that patch, so every registry test would have silently
+    written to the real path. Caught before writing any registry tests;
+    fixed by making it a function (`registry_path()`) that re-reads the
+    module global on every call;
+  - **drawer UX** (DEC-11): current workspace pinned first regardless of
+    recency, then the rest of the registry most-recently-opened first, up
+    to 5 turns per workspace. Clicking an item reuses the existing
+    `switchWorkspaceTo()` (same code path as Open Folder) rather than a
+    new "read-only session viewer" -- simpler, and the wireframe's literal
+    "읽기 전용" wording wasn't judged worth the added complexity;
+  - new `GET /api/history` endpoint; `webui/index.html`/`app.js`/`app.css`
+    gained the History titlebar button, slide-in drawer, and scrim;
+  - fixed a real gap found in a pre-commit self-review: unlike the other
+    two ways `AppState.workspace` ever gets set
+    (`resolve_startup_workspace()`, `validate_workspace_candidate()`, both
+    already `.resolve()`), `create_workspace_for_first_message()` built
+    the new workspace path from `AUTO_WORKSPACE_BASE_DIR` without
+    resolving it. `Path.home()` doesn't itself resolve symlinks (e.g.
+    `~/Documents` under iCloud Desktop & Documents sync) -- the same
+    physical folder reached via auto-create vs. Open Folder/CLI startup
+    later could stringify differently and duplicate in the registry
+    instead of deduping to one entry. Reproduced with a real symlink in a
+    test, confirmed it failed before the fix and passed after;
+  - fixed two more real gaps from a follow-up review round:
+    `touch_registry()`/`read_registry()` let `OSError` (base dir exists as
+    a file, permissions, full disk) propagate uncaught -- since
+    `touch_registry()` is called from `POST /api/open-folder` and `main()`
+    *after* the real state change it's attached to already happened
+    (`AppState.workspace` assigned, or the server about to finish
+    starting), a registry write failure could turn a successful workspace
+    switch into a client-visible 500, or stop the whole server from
+    starting, over what's just an LRU convenience index. Now best-effort:
+    read failures return an empty list, write failures log a warning and
+    return, verified by an HTTP-level test that `/api/open-folder` still
+    returns 200 with the base dir forced to fail. Separately,
+    `collect_recent_turns()` paired each scanned month's messages in
+    isolation, so a turn whose user message landed in one month's file and
+    whose agent reply landed in the next (e.g. sent right at a UTC month
+    boundary) would show up with no provider/status and silently drop the
+    reply -- now pairs across the merged, chronologically-ordered messages
+    from every month scanned, verified with a reproduced-and-fixed
+    regression test;
+  - documented `registry.json`'s schema, path-normalization contract,
+    50-entry LRU cap, locking, and failure-isolation policy in
+    [`docs/webui-chat-storage.md`](webui-chat-storage.md#recently-opened-registry-phase-3)
+    -- the repo's existing real data-model reference doc (not a new
+    fictional one), extended rather than left undocumented;
+  - verified with more tests (registry CRUD including failure isolation,
+    turn-pairing including the multi-agent-reply and month-boundary
+    cases, month-by-month backward scanning in `collect_recent_turns()`,
+    drawer assembly, path-normalization via a real symlink, and
+    live-server HTTP integration tests including the registry-failure
+    case) -- exact count drifts with each fix, so trust
+    `python3 -m unittest discover -s tests -v` over a number pinned here
+    (see the Phase 1 entry above for why). Also a real end-to-end run:
+    `$HOME` swapped to a temp directory, auto-created one workspace via a
+    Korean first message, opened a second via Open Folder, and confirmed
+    `GET /api/history` showed both in the right order with the right
+    turns via curl.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

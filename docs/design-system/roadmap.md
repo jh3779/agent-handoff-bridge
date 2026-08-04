@@ -6,13 +6,14 @@ Gemini를 실제로 호출하고, 워크스페이스를 자유롭게 오가며, 
 대화 기록을 한 곳에서 훑어보고, 최신 버전을 스스로 확인하는 채팅형
 에이전트 클라이언트.
 
-**지금 상태 (Phase 0 · Phase 1 · Phase 2 완료)**: `handoff_webui.py` +
+**지금 상태 (Phase 0 · Phase 1 · Phase 2 · Phase 3 완료)**: `handoff_webui.py` +
 `webui/` — 파일 브라우징, 드래그/클릭 첨부, VS Code식 Open Folder,
 워크스페이스별 로컬 채팅 기록(월별 gzip 압축), 네이티브 창(pywebview,
 선택적 의존성), **실제 Codex/Claude 호출**(`POST /api/run`,
-auto-fallback 포함), 그리고 **워크스페이스 미선택 시 자동 폴더 생성**
+auto-fallback 포함), **워크스페이스 미선택 시 자동 폴더 생성**
 (첫 메시지 전송 시 `~/Documents/Agent Handoff Bridge/<날짜-요약>`을
-생성해 install+init까지 실행).
+생성해 install+init까지 실행), 그리고 **멀티 프로젝트 히스토리 드로어**
+(최근에 연 워크스페이스를 앱 레벨 레지스트리로 기억, 클릭 시 즉시 전환).
 `python3 -m unittest discover -s tests -v`로 커버됨 — 정확한 테스트 개수는
 드리프트하기 쉬우므로(리뷰에서 지적된 문서 간 불일치 참고) 여기 고정 숫자로
 적지 않는다; 실행 결과를 신뢰하라.
@@ -133,21 +134,73 @@ auto-fallback 포함), 그리고 **워크스페이스 미선택 시 자동 폴�
 
 **해소한 항목**: SCR-05 실제 구현, DEC-04(2차 수정)/05/06/07 실제 적용.
 
-## Phase 3 — 멀티 프로젝트 히스토리 드로어
+## Phase 3 — 멀티 프로젝트 히스토리 드로어 ✅ 완료
 
 **목표**: [SCR-03](wireframes.html#s5)의 "여러 프로젝트를 한 드로어에서"를
 완성한다. Phase 0에서 이미 워크스페이스별 저장(`.handoff/webui/chat/`)은
 끝났으므로, 남은 건 "최근에 연 워크스페이스 목록"을 앱 레벨에 기억하는
 레지스트리와 그걸 보여주는 드로어 UI뿐이다.
 
-**선행 질문**: 이 드로어가 "채팅 메시지"(Phase 0의 `.handoff/webui/chat/`)
-와 "provider 실행 세션"(Phase 1의 `.handoff/runs/`) 중 무엇을 보여줄지
-[CFL-16](flutter-mapping.html#s2)이 아직 미결정이다 — Phase 1이 끝나고
-둘 다 실제로 존재하게 된 뒤에 결정하는 편이 낫다(둘 중 하나는 아직
-가짜 데이터이므로). 그래서 Phase 3을 Phase 1 뒤에 배치했다.
+**선행 질문**(착수 전 해소됨): 이 드로어가 "채팅 메시지"(Phase 0의
+`.handoff/webui/chat/`)와 "provider 실행 세션"(Phase 1의
+`.handoff/runs/`) 중 무엇을 보여줄지 [CFL-16](flutter-mapping.html#s2)이
+미결정이었다 — Phase 1이 끝나 둘 다 실제로 존재하게 된 뒤에 결정하는
+편이 낫다고 보고 Phase 3을 Phase 1 뒤에 배치했었다.
+
+**설계 확정** (2026-08-04, 구현 전 사전 인터뷰 5건 →
+[flutter-mapping.html DEC-08~12](flutter-mapping.html#s1c)):
+- 데이터 출처: `.handoff/webui/chat/` 로그(원래 가정이던 provider 실행
+  이력 `.handoff/runs/`+`state.json` `history[]` 기각) — 사용자가 실제
+  입력한 문장은 채팅 로그에만 있음(DEC-08).
+- 레지스트리: `~/Documents/Agent Handoff Bridge/` 안에 저장(Phase 2가
+  확립한 "앱 소유 위치" 재사용, OS별 app-data 경로 기각), 최대 50개
+  LRU, 더 존재하지 않는 폴더는 렌더링 시 조용히 걸러냄(DEC-09).
+- 갱신 시점: `AppState.workspace`가 설정되는 모든 지점 — Open
+  Folder·자동생성뿐 아니라 `--workspace`로 시작하는 CLI 기동도 포함
+  (DEC-10).
+- 그룹당 항목: 워크스페이스당 최근 5개까지만. 클릭 시: 워크스페이스
+  전환 + 해당 월 채팅 로드, 이후 정상 편집 가능(진짜 읽기 전용 뷰어
+  기각, DEC-11).
+- auto-fallback으로 한 turn에 agent 메시지가 여러 개면 마지막 메시지
+  (최종 provider/상태) 기준으로 표시(DEC-12).
 
 **해소하는 항목**: [CFL-10](flutter-mapping.html#s2) 완전 해소,
-[CFL-16](flutter-mapping.html#s2) 해소.
+[CFL-16](flutter-mapping.html#s2) 완전 해소 — 둘 다 Conflict List에서
+제거됨.
+
+**실제로 한 것**:
+- `registry_path()`가 함수인 이유: `~/Documents/Agent Handoff Bridge/registry.json`
+  경로를 모듈 로드 시점에 상수로 고정하면 테스트가
+  `AUTO_WORKSPACE_BASE_DIR`를 임시 디렉터리로 패치해도 반영되지 않아
+  실제 `~/Documents/`를 건드릴 위험이 있었다 — 구현 중 직접 발견해
+  함수로 바꿈.
+- `touch_registry()`를 `AppState.workspace`가 설정되는 3곳 전부에 연결:
+  `main()`(CLI 시작), `POST /api/open-folder`, `POST /api/chat`의
+  자동 생성 경로. 항목은 경로 기준 dedupe 후 맨 앞으로, 50개
+  초과분은 가장 오래된 것부터 제거.
+- `pair_messages_into_turns()`가 채팅 로그를 turn 단위로 묶는다 —
+  `user` 메시지 하나 + 뒤따르는 `agent` 메시지(들)를 항목 1개로,
+  auto-fallback으로 `agent` 메시지가 여러 개면 마지막 메시지의
+  provider/status로 계속 덮어써서 자연스럽게 "최종 결과"만 남긴다
+  (DEC-12).
+- `collect_recent_turns()`가 최신 달부터 거꾸로 훑어서 5개(DEC-11)를
+  채울 때까지만 읽는다 — 오래된 프로젝트라고 모든 달을 다 읽지 않음.
+- `build_history_drawer()`: 현재 워크스페이스를 레지스트리 유무와
+  무관하게 항상 맨 앞에 고정하고, 그 다음은 레지스트리의
+  최근-연-순서 그대로. 폴더가 사라진 레지스트리 항목은 조용히
+  건너뜀(에러 없음, DEC-09).
+- `GET /api/history` 신설, `webui/app.js`는 기존 `switchWorkspaceTo()`를
+  그대로 재사용해 항목 클릭 시 워크스페이스 전환(DEC-11 — 새 코드
+  경로 불필요).
+
+**검증**: 레지스트리 CRUD(실패 격리 포함), turn 페어링(월 경계 케이스
+포함), `collect_recent_turns()`의 달-건너뛰기, 드로어 조립 로직, 실
+서버로 띄운 HTTP 통합 테스트 추가 — 정확한 개수는
+`python3 -m unittest discover -s tests -v`로 확인(고정 숫자를 여기 적지
+않는 이유는 위 Phase 1 문단과 동일 — 드리프트하기 쉬움). `$HOME`을
+임시 디렉터리로 바꿔치기한 실제 프로세스로 전체 흐름(빈 워크스페이스 →
+한글 첫 메시지로 자동 생성 → Open Folder로 두 번째 프로젝트 전환 →
+히스토리 드로어에 둘 다 정확한 순서로 표시)을 curl로 검증.
 
 ## Phase 4 — CLI 미설치 사용자 온보딩 + API 키 모드
 
@@ -212,8 +265,8 @@ DEC-01이 가리키는 실제 프로덕션 스택(Tauri/Electron류)으로 이�
 |---|---|---|
 | 0 — 로컬 MVP | ✅ 완료 | — |
 | 1 — Provider 연결(CLI) | ✅ 완료 | CFL-01, CFL-03, DEC-02/03 적용 |
-| 2 — 자동 폴더 생성 | 미착수 | (SCR-05 구현) |
-| 3 — 멀티 프로젝트 히스토리 | 미착수 | CFL-10 |
+| 2 — 자동 폴더 생성 | ✅ 완료 | SCR-05 구현, DEC-04~07 적용 |
+| 3 — 멀티 프로젝트 히스토리 | ✅ 완료 | CFL-10/16 해소, DEC-08~12 적용 |
 | 4 — API 키 모드 | 미착수 | CFL-12 |
 | 5 — Gemini + provider 확장성 | 미착수 | CFL-13 |
 | 6 — 자동 업데이트 확인 | 미착수 | CFL-11 |
