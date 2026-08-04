@@ -1,8 +1,9 @@
 // Agent Handoff Bridge -- MVP web UI client.
 // File browsing + attaching + a VS Code-style "Open Folder" switch, with a
-// local per-workspace chat draft history. No provider is ever called from
-// here -- "send" persists to <workspace>/.handoff/webui/chat/ and renders
-// locally. See webui/index.html's composer-note and
+// local per-workspace chat draft history. "Send" persists the message to
+// <workspace>/.handoff/webui/chat/ *and* actually calls Codex/Claude via
+// POST /api/run (Phase 1) -- attachments are folded into that prompt, not
+// just the chat log. See webui/index.html's composer-note and
 // docs/provider-extensibility.md for what's intentionally not wired up yet.
 (function () {
   "use strict";
@@ -456,7 +457,7 @@
     const busyMsg = renderBusyMessage(provider);
     sendBtn.disabled = true;
     try {
-      const result = await postJSON("/api/run", { provider, text });
+      const result = await postJSON("/api/run", { provider, text, attachments: userMessage.attachments });
       busyMsg.remove();
       for (const agentMessage of result.messages) renderMessage(agentMessage);
     } catch (err) {

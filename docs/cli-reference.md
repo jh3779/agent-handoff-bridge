@@ -187,7 +187,9 @@ it does:
 
 - Serves a page with a workspace file-tree sidebar and a chat-style composer.
 - Lets you click a file in the tree, or drag a file onto the chat area, to
-  attach it to the draft message.
+  attach it to the draft message. Attachments are folded into the actual
+  provider prompt (`build_run_prompt()`), not just the chat log — a
+  message with only attachments and no typed text is a valid send.
 - Lets you switch workspace at runtime with **Open Folder** (VS Code-style —
   a real OS folder picker in the native window; a manual absolute-path
   prompt in browser mode), instead of only being able to browse the single

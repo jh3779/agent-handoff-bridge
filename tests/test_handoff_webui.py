@@ -491,6 +491,35 @@ class ClassifyRunStatusTests(unittest.TestCase):
         self.assertEqual(webui.classify_run_status(True, "quota: matched quota signal"), "handoff")
 
 
+class BuildRunPromptTests(unittest.TestCase):
+    def test_text_only_passes_through_unchanged(self):
+        self.assertEqual(webui.build_run_prompt("hello", []), "hello")
+
+    def test_attachment_content_is_included(self):
+        prompt = webui.build_run_prompt(
+            "look at this", [{"name": "a.py", "path": "a.py", "content": "print(1)", "truncated": False}]
+        )
+        self.assertIn("look at this", prompt)
+        self.assertIn("a.py", prompt)
+        self.assertIn("print(1)", prompt)
+
+    def test_truncated_attachment_is_noted(self):
+        prompt = webui.build_run_prompt(
+            "", [{"name": "big.txt", "path": "big.txt", "content": "...", "truncated": True}]
+        )
+        self.assertIn("(truncated)", prompt)
+
+    def test_binary_attachment_with_no_content_is_noted_not_dropped(self):
+        prompt = webui.build_run_prompt("", [{"name": "image.png", "path": "image.png", "content": None}])
+        self.assertIn("image.png", prompt)
+        self.assertIn("no preview available", prompt)
+
+    def test_attachment_only_with_no_text_still_produces_a_prompt(self):
+        prompt = webui.build_run_prompt("", [{"name": "a.py", "path": "a.py", "content": "x = 1", "truncated": False}])
+        self.assertTrue(prompt.strip())
+        self.assertIn("x = 1", prompt)
+
+
 class ReadStateHistoryTests(unittest.TestCase):
     def test_missing_state_file_returns_empty_list(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -533,6 +562,32 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
             idx = command.index("--timeout-seconds")
             self.assertEqual(command[idx + 1], str(webui.PROVIDER_RUN_TIMEOUT_SECONDS))
             self.assertEqual(spy.call_args.kwargs["timeout"], webui.OUTER_SUBPROCESS_TIMEOUT_SECONDS)
+
+    def test_attachment_content_reaches_the_actual_prompt_file(self):
+        # build_run_prompt() has its own unit tests (BuildRunPromptTests);
+        # this closes the loop by checking run_provider_via_bridge() writes
+        # that exact combined text into the --prompt-file the bridge reads
+        # from -- not just that the two pieces work in isolation.
+        captured = {}
+        real_run = subprocess.run  # patching handoff_webui.subprocess.run patches this module's too (same object)
+
+        def _capture_prompt_file_then_run(command, **kwargs):
+            idx = command.index("--prompt-file")
+            captured["prompt_text"] = Path(command[idx + 1]).read_text(encoding="utf-8")
+            return real_run(command, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+            prompt = webui.build_run_prompt(
+                "do the thing", [{"name": "a.py", "path": "a.py", "content": "print('hi')", "truncated": False}]
+            )
+            with mock.patch("handoff_webui.subprocess.run", side_effect=_capture_prompt_file_then_run):
+                webui.run_provider_via_bridge(root, "codex", prompt, None, "continue")
+
+        self.assertIn("do the thing", captured["prompt_text"])
+        self.assertIn("a.py", captured["prompt_text"])
+        self.assertIn("print('hi')", captured["prompt_text"])
 
     def test_successful_run_produces_one_history_record(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -683,6 +738,27 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
 
     def test_run_with_empty_text_is_rejected(self):
         status, data = self._post("/api/run", {"provider": "codex", "text": "   "})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_run_with_no_text_but_an_attachment_is_accepted(self):
+        # The composer allows sending an attachment with no typed text
+        # (updateSendState() in webui/app.js) -- the server must accept
+        # that, not just the client.
+        _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+        status, data = self._post(
+            "/api/run",
+            {
+                "provider": "codex",
+                "text": "",
+                "attachments": [{"name": "a.py", "path": "a.py", "content": "print(1)", "truncated": False}],
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(data["messages"][0]["status"], "success")
+
+    def test_run_with_no_text_and_no_attachments_is_rejected(self):
+        status, data = self._post("/api/run", {"provider": "codex", "text": "", "attachments": []})
         self.assertEqual(status, 400)
         self.assertIn("error", data)
 

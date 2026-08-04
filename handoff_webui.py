@@ -364,6 +364,30 @@ def read_state_history(workspace: Path) -> list[dict]:
     return read_state_dict(workspace).get("history", [])
 
 
+def build_run_prompt(text: str, attachments: list[dict]) -> str:
+    """Combine the composer text with any attached files into the single
+    string that becomes the provider's actual prompt.
+
+    Without this, an attachment only ever reached the chat log (POST
+    /api/chat persists it on the "user" message) -- POST /api/run sent just
+    `text`, so a file the user thought they'd attached was never part of
+    what the provider actually saw. docs/design-system/wireframes.html
+    describes attachments as context for "the next message", so that's the
+    contract this restores.
+    """
+    parts = [text] if text else []
+    for attachment in attachments:
+        name = attachment.get("name") or attachment.get("path") or "attachment"
+        content = attachment.get("content")
+        header = f"### Attached file: {name}"
+        if content is None:
+            parts.append(f"{header}\n(binary or unreadable -- no preview available)")
+        else:
+            note = " (truncated)" if attachment.get("truncated") else ""
+            parts.append(f"{header}{note}\n```\n{content}\n```")
+    return "\n\n".join(parts)
+
+
 def run_provider_via_bridge(
     workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str
 ) -> list[dict]:
@@ -594,11 +618,15 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     if provider not in ("auto", "codex", "claude"):
                         raise WorkspaceError(f"invalid provider: {provider}")
                     text = str(body.get("text") or "").strip()
-                    if not text:
-                        raise WorkspaceError("text is required")
+                    attachments = body.get("attachments") or []
+                    if not isinstance(attachments, list):
+                        raise WorkspaceError("attachments must be a list")
+                    if not text and not attachments:
+                        raise WorkspaceError("text or attachments required")
                     model = body.get("model") or None
                     workspace = state.workspace
-                    records = run_provider_via_bridge(workspace, provider, text, model, "continue")
+                    prompt = build_run_prompt(text, attachments)
+                    records = run_provider_via_bridge(workspace, provider, prompt, model, "continue")
                     messages = []
                     for record in records:
                         status = classify_run_status(record["handoff_needed"], record["reason"])
@@ -651,7 +679,7 @@ class Api:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="MVP web UI: browse/switch workspace and draft attachments (no provider calls)."
+        description="MVP web UI: browse/switch workspace, chat, and run Codex/Claude (Phase 1: POST /api/run)."
     )
     parser.add_argument("--workspace", default=".", help="Initial workspace folder. Switchable at runtime.")
     parser.add_argument(
@@ -712,7 +740,7 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://{args.host}:{args.port}/"
     print(f"Agent Handoff Bridge web UI (MVP) serving {workspace}")
     print(f"  {url}")
-    print("  File browsing + local chat drafts only. No provider is called.")
+    print("  File browsing + local chat, and POST /api/run actually calls Codex/Claude.")
     print(f"  Chat history: <workspace>/{CHAT_DIR_RELATIVE.as_posix()}/ (monthly, compressed after month-end)")
 
     mode = choose_ui_mode(args.browser, webview is not None)

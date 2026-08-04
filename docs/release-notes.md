@@ -95,6 +95,16 @@
     before any real history record existed to resolve it from --
     `docs/webui-chat-storage.md`'s schema says `provider` is "never
     `auto`"; now resolved via `choose_auto_provider()` on that path;
+  - fixed a real UX gap: attachments reached `POST /api/chat` (the chat
+    log) but never `POST /api/run` -- the provider itself never saw a file
+    the user thought they'd attached, and an attachments-only send (no
+    typed text, which the composer allows) failed outright with "text is
+    required". `build_run_prompt()` folds attachment name/content into the
+    actual `--prompt-file` text; `/api/run` now accepts text-or-attachments
+    instead of requiring text;
+  - refreshed startup/help text and the `webui/app.js` header comment,
+    which still said "no provider is called" after Phase 1 wired
+    `POST /api/run` up for real;
   - added tests for all of the above -- run
     `python3 -m unittest discover -s tests -v` for the current pass/fail
     count rather than trusting a number pinned here; it drifts every time a

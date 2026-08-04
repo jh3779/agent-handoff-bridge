@@ -62,6 +62,14 @@ between the source file and the JSONL log — monthly gzip compression
 (below) is the accepted mitigation for that, not content-stripping, per the
 original request that introduced this feature.
 
+`attachments` on a `POST /api/run` call also become part of the actual
+provider prompt, not just this chat log — `build_run_prompt()`
+(`handoff_webui.py`) folds each attachment's name/content into the text
+written to `--prompt-file` before the provider ever runs. This was a real
+gap for one round of review: the client sent `attachments` to `/api/chat`
+but not to `/api/run`, so a file the user "attached" was persisted locally
+but never actually reached Codex/Claude.
+
 **`agent` role messages** (Phase 1) are never written by the client directly
 — `POST /api/run` is the only writer; `POST /api/chat` rejects `role: "agent"`
 with 400 (`CLIENT_WRITABLE_CHAT_ROLES = ("user", "system")` in
