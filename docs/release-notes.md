@@ -868,6 +868,41 @@
     added — a response with no tool-call block is exactly their fixture
     shape, so the loop's zero-iteration case reproduces the old behavior
     verbatim. Exact count via `python3 -m unittest discover -s tests -v`.
+  - **Round 2** (independent self-review before opening the PR, then a
+    real automated review on GitHub, both genuinely useful — 3 real
+    findings between them, no stale/false claims this round): the
+    self-review found `MAX_TOOL_ITERATIONS` was bounding HTTP round
+    trips, not actual tool executions -- since a single response
+    (either vendor) can legitimately carry more than one tool call, a
+    model batching many into one response could execute well past the
+    intended cap; both loops now track a running executed-count instead.
+    Same review found the Anthropic loop only ever executed
+    `tool_use_blocks[0]`, silently dropping any others if the API ever
+    didn't honor `disable_parallel_tool_use` (a hint, not a guarantee) --
+    it now executes every block, matching the OpenAI loop's existing
+    defensive handling of a multi-call response. The GitHub review then
+    found two more, both fixed: a mid-turn API failure (network error,
+    non-200) discarded the transcript of any tool that had *already*
+    executed on an earlier iteration -- if `write_file`/`edit_file`/
+    `run_shell` already had a real effect before the *next* call failed,
+    that record vanished along with the error, undermining DEC-21's own
+    premise that skipping per-tool-call confirmation is safe because
+    activity stays visible after the fact (`_error_with_transcript()`
+    now prefixes any accumulated transcript onto the failure message);
+    and `read_file` returned `read_file_preview()`'s content directly,
+    bounded only by `MAX_FILE_BYTES` (~256KB, what's read off disk) and
+    not by `TOOL_OUTPUT_MAX_CHARS` (4000 chars, what's fed into the
+    *next* API call) the way `run_shell`'s output already was -- a
+    handful of large-file reads in one turn could still blow past the
+    context/cost budget that constant exists to bound. One review
+    suggestion (also address the fenced-code-block audit trail
+    potentially breaking if tool output/arguments contain their own
+    ` ``` `) was addressed too even though the review itself marked it
+    optional, not merge-blocking -- it directly supports the same
+    post-hoc-visibility guarantee the other two fixes protect
+    (`_escape_fence()`, applied to both tool names/arguments and
+    results before they're folded into the transcript). New regression
+    tests cover all of this directly.
 
 ## v0.1.0 — 2026-08-03
 

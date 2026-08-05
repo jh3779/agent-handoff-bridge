@@ -2251,6 +2251,35 @@ class CallProviderApiTests(unittest.TestCase):
         self.assertNotIn("sk-super-secret-value", result["message"])
 
 
+class ToolCallTranscriptTests(unittest.TestCase):
+    """_escape_fence()/_tool_call_transcript_block() -- the fenced-
+    code-block audit trail DEC-21 relies on for post-hoc visibility in
+    place of a per-tool-call confirmation. A review round found that
+    tool output/arguments containing their own ``` run could break the
+    frontend's fence-matching regex (webui/app.js only recognizes a
+    literal ``` delimiter, no longer-fence escape hatch exists), cutting
+    the transcript off mid-way."""
+
+    def test_escape_fence_breaks_up_a_triple_backtick_run(self):
+        self.assertNotIn("```", webui._escape_fence("before ``` after"))
+
+    def test_escape_fence_leaves_ordinary_text_untouched(self):
+        self.assertEqual(webui._escape_fence("no backticks here"), "no backticks here")
+
+    def test_escape_fence_handles_longer_backtick_runs_too(self):
+        self.assertNotIn("```", webui._escape_fence("`````"))
+
+    def test_transcript_block_with_embedded_fence_in_result_stays_a_single_block(self):
+        block = webui._tool_call_transcript_block("run_shell", '{"command": "cat f.md"}', "# title\n```python\nprint(1)\n```\n")
+        # The whole block must still open with exactly one ``` and close
+        # with exactly one ``` -- an embedded fence in the middle must not
+        # produce extra fence boundaries the frontend regex would split on.
+        self.assertTrue(block.startswith("```\n"))
+        self.assertTrue(block.endswith("\n```"))
+        inner = block[len("```\n") : -len("\n```")]
+        self.assertNotIn("```", inner)
+
+
 class ToolDefinitionTests(unittest.TestCase):
     """anthropic_tool_definitions()/openai_tool_definitions() are both
     derived from the single _TOOL_SPECS list -- this guards against the
@@ -2289,6 +2318,17 @@ class ToolExecutorTests(unittest.TestCase):
     def test_read_file_missing_path_argument_is_an_error_not_a_crash(self):
         result = webui.execute_tool_call(self.workspace, "read_file", {})
         self.assertTrue(result.startswith("error:"))
+
+    def test_read_file_output_over_the_cap_is_truncated_not_silently_cut(self):
+        # A review round found this tool bypassed TOOL_OUTPUT_MAX_CHARS
+        # entirely -- read_file_preview()'s own MAX_FILE_BYTES cap (~256KB)
+        # bounds what's read off disk, not what's fed into the next API
+        # call, so a single large file could still blow past the same
+        # context/cost budget run_shell's output already respects.
+        (self.workspace / "big.txt").write_text("a" * (webui.TOOL_OUTPUT_MAX_CHARS + 500), encoding="utf-8")
+        result = webui.execute_tool_call(self.workspace, "read_file", {"path": "big.txt"})
+        self.assertIn("(truncated)", result)
+        self.assertLessEqual(len(result), webui.TOOL_OUTPUT_MAX_CHARS + 50)
 
     def test_read_file_path_escape_is_rejected(self):
         result = webui.execute_tool_call(self.workspace, "read_file", {"path": "../outside.txt"})
@@ -2494,6 +2534,46 @@ class AgenticLoopTests(unittest.TestCase):
             result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertEqual(http_spy.call_count, 1)
         self.assertEqual(result["text"], "just chatting")
+
+    def test_anthropic_a_tool_that_already_ran_is_not_lost_when_the_next_call_fails(self):
+        # A review round found that a tool with real side effects
+        # (write_file/edit_file/run_shell) executing on one iteration,
+        # followed by the *next* API call failing, used to discard the
+        # record of what already ran along with the failed call --
+        # DEC-21's whole rationale for skipping a per-tool-call
+        # confirmation depends on that record staying visible.
+        tool_use_response = (
+            200,
+            {"content": [{"type": "tool_use", "id": "toolu_1", "name": "run_shell", "input": {"command": "rm important.txt"}}]},
+        )
+        with mock.patch(
+            "handoff_webui._http_post_json", side_effect=[tool_use_response, urllib.error.URLError("boom")]
+        ), mock.patch("handoff_webui.execute_tool_call", return_value="deleted"):
+            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertFalse(result["ok"])
+        self.assertIn("run_shell", result["message"])
+        self.assertIn("deleted", result["message"])
+        self.assertIn("network error", result["message"])
+
+    def test_anthropic_error_before_any_tool_runs_has_no_transcript_prefix(self):
+        with mock.patch("handoff_webui._http_post_json", side_effect=urllib.error.URLError("boom")):
+            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["message"].startswith("network error calling Anthropic Messages API:"))
+
+    def test_openai_a_tool_that_already_ran_is_not_lost_when_the_next_call_fails(self):
+        function_call_response = (
+            200,
+            {"output": [{"type": "function_call", "call_id": "call_1", "name": "run_shell", "arguments": '{"command": "rm important.txt"}'}]},
+        )
+        with mock.patch(
+            "handoff_webui._http_post_json", side_effect=[function_call_response, urllib.error.URLError("boom")]
+        ), mock.patch("handoff_webui.execute_tool_call", return_value="deleted"):
+            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertFalse(result["ok"])
+        self.assertIn("run_shell", result["message"])
+        self.assertIn("deleted", result["message"])
+        self.assertIn("network error", result["message"])
 
     def test_openai_executes_a_function_call_then_returns_the_final_text(self):
         function_call_response = (

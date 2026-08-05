@@ -1059,8 +1059,20 @@ def _tool_read_file(workspace: Path, tool_input: dict) -> str:
         result = read_file_preview(workspace, path)
     except WorkspaceError as exc:
         return f"error: {exc}"
-    note = "\n(truncated)" if result["truncated"] else ""
-    return f"{result['content']}{note}"
+    content = result["content"]
+    # MAX_FILE_BYTES (read_file_preview()'s own cap, ~256KB) bounds how
+    # much this project will ever read off disk for a preview -- a
+    # review round pointed out that's not the same as bounding how much
+    # ends up in a single tool_result feeding the *next* API call, which
+    # is what TOOL_OUTPUT_MAX_CHARS is actually for (same reasoning
+    # _tool_run_shell() already applies to its own output). Without this,
+    # a model reading a handful of large files in one turn could still
+    # blow past the context/cost this constant exists to bound.
+    truncated = result["truncated"] or len(content) > TOOL_OUTPUT_MAX_CHARS
+    if len(content) > TOOL_OUTPUT_MAX_CHARS:
+        content = content[:TOOL_OUTPUT_MAX_CHARS]
+    note = "\n(truncated)" if truncated else ""
+    return f"{content}{note}"
 
 
 def _tool_write_file(workspace: Path, tool_input: dict) -> str:
@@ -1159,19 +1171,55 @@ def execute_tool_call(workspace: Path, name: str, tool_input: dict) -> str:
         return f"error: tool '{name}' raised an unexpected exception: {exc}"
 
 
+def _escape_fence(text: str) -> str:
+    # webui/app.js's DEC-03 renderer matches exactly ``` as a fence
+    # delimiter (renderTextWithCodeBlocks()'s regex has no longer-fence
+    # escape hatch to fall back to) -- a review round pointed out that
+    # if tool output or arguments ever contain their own ``` run (a file
+    # whose content includes a fenced block, a shell command that prints
+    # one), this project's only audit trail for tool activity could be
+    # cut off mid-way, hiding what actually ran. A zero-width space
+    # between each backtick in any 3+ run breaks the literal-```
+    # match without being visible to a human reading the transcript.
+    return re.sub(r"`{3,}", lambda m: "\u200b".join(m.group(0)), text)
+
+
 def _tool_call_transcript_block(name: str, raw_args: str, result_text: str) -> str:
     # Reuses DEC-03 (fenced ```code``` blocks are the only markdown this
     # project's chat bubbles render specially) instead of inventing a new
     # message role/schema just to show tool activity -- this folds
     # straight into final_text and renders with zero frontend changes.
-    return f"```\n$ {name}({raw_args})\n{result_text}\n```"
+    safe_args = _escape_fence(raw_args)
+    safe_result = _escape_fence(result_text)
+    return f"```\n$ {name}({safe_args})\n{safe_result}\n```"
+
+
+def _error_with_transcript(transcript_parts: list[str], message: str) -> dict:
+    # A review round found that a mid-loop API failure (network error,
+    # non-200) used to discard `transcript_parts` outright -- if a tool
+    # with real side effects (write_file, edit_file, run_shell) already
+    # ran on an earlier iteration before the *next* API call failed, the
+    # record of what actually executed vanished along with it. DEC-21's
+    # whole rationale for skipping a per-tool-call confirmation is that
+    # tool activity stays visible in the persisted chat log after the
+    # fact -- that guarantee is void if a failure can silently erase it,
+    # so any already-accumulated transcript is prepended to the error
+    # message here rather than dropped.
+    if not transcript_parts:
+        return {"ok": False, "message": message}
+    transcript_so_far = "\n\n".join(transcript_parts)
+    return {"ok": False, "message": f"{transcript_so_far}\n\n{message}"}
 
 
 def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict], workspace: Path) -> dict:
     """Returns {"ok": True, "text": str} or {"ok": False, "message": str} --
     `message` is built only from the response body/exception text, never
     from `api_key`, so a saved key can never leak into a chat log entry via
-    an error message.
+    an error message. If one or more tools already executed before a
+    later call in the same turn failed, `message` is prefixed with the
+    transcript of what ran (_error_with_transcript()) -- a mid-turn API
+    failure must never silently erase the record of a write_file/
+    edit_file/run_shell that already had a real effect.
 
     Runs the tool-use turn loop (CFL-17/DEC-21; request/response shapes
     -- tools[].input_schema, tool_choice.disable_parallel_tool_use,
@@ -1220,12 +1268,12 @@ def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict], 
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             # _http_post_json() already retried transient failures
             # (API_KEY_MODE_MAX_RETRIES times) before re-raising this.
-            return {"ok": False, "message": f"network error calling Anthropic Messages API: {exc}"}
+            return _error_with_transcript(transcript_parts, f"network error calling Anthropic Messages API: {exc}")
         if status != 200:
             error = data.get("error") if isinstance(data, dict) else None
             error_type = (error or {}).get("type", "api_error")
             error_message = (error or {}).get("message", json.dumps(data, ensure_ascii=False))
-            return {"ok": False, "message": f"Anthropic API error ({status} {error_type}): {error_message}"}
+            return _error_with_transcript(transcript_parts, f"Anthropic API error ({status} {error_type}): {error_message}")
         content = data.get("content", []) if isinstance(data, dict) else []
         text = "".join(block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text")
         if text:
@@ -1281,9 +1329,9 @@ def call_openai_responses_api(api_key: str, model: str, messages: list[dict], wo
         try:
             status, data = _http_post_json(OPENAI_RESPONSES_URL, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            return {"ok": False, "message": f"network error calling OpenAI Responses API: {exc}"}
+            return _error_with_transcript(transcript_parts, f"network error calling OpenAI Responses API: {exc}")
         except json.JSONDecodeError as exc:
-            return {"ok": False, "message": f"OpenAI API returned a non-JSON response: {exc}"}
+            return _error_with_transcript(transcript_parts, f"OpenAI API returned a non-JSON response: {exc}")
         if status != 200:
             error = data.get("error") if isinstance(data, dict) else None
             error_type = (error or {}).get("type", "api_error") if isinstance(error, dict) else "api_error"
@@ -1292,7 +1340,7 @@ def call_openai_responses_api(api_key: str, model: str, messages: list[dict], wo
                 if isinstance(error, dict)
                 else json.dumps(data, ensure_ascii=False)
             )
-            return {"ok": False, "message": f"OpenAI API error ({status} {error_type}): {error_message}"}
+            return _error_with_transcript(transcript_parts, f"OpenAI API error ({status} {error_type}): {error_message}")
         output = data.get("output", []) if isinstance(data, dict) else []
         for item in output:
             if not isinstance(item, dict) or item.get("type") != "message":
