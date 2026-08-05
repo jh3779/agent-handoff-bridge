@@ -794,8 +794,20 @@
   // ---------- update check (Phase 6, SCR-07/components.html §15) ----------
 
   let latestUpdateInfo = null;
+  // Starts true, flips to false only once a GET /api/update-check
+  // response actually reports checked: true (see checkForUpdate() below).
+  // Review fix: without this, clicking the button during the polling
+  // window (checked still false, so latestUpdateInfo is still null too)
+  // showed the same "최신 버전을 사용 중입니다" toast as a real confirmed
+  // up-to-date result -- a false reassurance if an update actually
+  // existed and just hadn't been confirmed yet.
+  let updateCheckPending = true;
 
   function openUpdatePopover() {
+    if (updateCheckPending) {
+      showToast("업데이트 확인 중입니다…");
+      return;
+    }
     if (!latestUpdateInfo) {
       // components.html §15: the button/icon is always visible ("평소엔
       // 아이콘만"), only the dot is conditional -- reuse the existing
@@ -835,8 +847,12 @@
         if (attempt < UPDATE_CHECK_MAX_POLLS) {
           window.setTimeout(() => checkForUpdate(attempt + 1), UPDATE_CHECK_POLL_INTERVAL_MS);
         }
+        // Polling exhausted with no confirmed answer -- updateCheckPending
+        // deliberately stays true rather than falling through to "up to
+        // date," since that was never actually confirmed either.
         return;
       }
+      updateCheckPending = false;
       if (data.update_available) {
         latestUpdateInfo = data;
         updateDot.classList.add("show");

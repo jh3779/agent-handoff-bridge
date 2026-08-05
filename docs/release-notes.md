@@ -736,6 +736,16 @@
     once. 4 more new tests (plus 2 existing ones updated to assert on
     the new field) covering the pending-vs-checked distinction
     specifically.
+  - **Round 3** (follow-up review confirming round 2's fix, then one
+    more low-severity, non-blocking finding): clicking the update button
+    during the ~15s polling window (round 2's fix) showed the same
+    "최신 버전을 사용 중입니다" toast as a genuinely confirmed up-to-date
+    result, even though nothing had actually been confirmed yet — a
+    minor false reassurance if an update actually existed and just
+    hadn't been polled-in yet. Added a frontend `updateCheckPending`
+    flag (starts `true`, flips to `false` only once a response actually
+    reports `checked: true`) so the button shows "업데이트 확인
+    중입니다…" during that window instead.
 
 ## v0.1.0 — 2026-08-03
 
