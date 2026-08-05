@@ -284,7 +284,12 @@ provider with no local CLI can be connected via API key instead (chat-only
   delete — a separate **"연결 해제"** button (shown only once a key is
   configured) is the only way to actually remove one, so reopening the
   panel just to change a provider's model doesn't accidentally wipe its
-  key. Full schema, dispatch priority, and security posture:
+  key. There is currently **no way to change only the model** without
+  re-pasting the key — "저장" always sends both together and does nothing
+  at all if the key field is empty, so updating a provider's model means
+  re-entering its key alongside the new model value. A model-only update
+  path is a possible future addition, not something this phase supports.
+  Full schema, dispatch priority, and security posture:
   [Web UI Chat Storage § Credentials & API-Key Mode](webui-chat-storage.md#credentials--api-key-mode-phase-4).
 
 **Why a subprocess, not an in-process function call**: `handoff_bridge.py`'s
