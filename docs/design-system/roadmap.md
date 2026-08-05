@@ -368,8 +368,15 @@ List에서 제거됨.
   `gh release view --repo <repo> --json tagName,url`을 `short_run()`으로
   호출(10초 타임아웃, `gh` 미설치/미인증/타임아웃 전부 이미 처리됨),
   `BRIDGE_VERSION`과 비교해 더 새 릴리즈가 있을 때만
-  `{latest_version, current_version, url}` 반환, 그 외엔 전부 `None` —
-  실패를 사용자에게 노출하지 않는 `touch_registry()`와 같은 원칙.
+  `{status: "available", latest_version, current_version, url}` 반환,
+  성공했지만 최신이면 `{status: "current", current_version}`, `gh`
+  미설치/미인증/오프라인/파싱 실패 등 확인 자체가 안 되면
+  `{status: "unavailable", current_version}` — 절대 `None`을 반환하거나
+  예외를 던지지 않고, 실패를 사용자에게 노출하지 않는 `touch_registry()`와
+  같은 원칙이되 "확인 불가"와 "확인 완료·최신"은 서로 다른 `status`로
+  구분됨([flutter-mapping.html DEC-20](flutter-mapping.html#s1c), 최초엔
+  이 두 경우가 똑같이 `None`이라 리뷰에서 CFL-18로 지적됐고 이후 별도로
+  해소).
 - `handoff_webui.py`: `AppState.update_info`(기본 `None`) +
   `update_checked`(기본 `False`) 추가. `main()`이 서버 시작 직후
   `_check_for_update_in_background()`를 데몬 스레드로 실행 — 실제 네트워크
@@ -388,11 +395,20 @@ List에서 제거됨.
   `webui/app.js`가 `checked: false`인 동안 짧게(1.5초 간격, 최대 10회 =
   15초, `gh` 기본 타임아웃 10초를 넉넉히 넘김) 재조회하도록 수정.
 
+- **후속 수정(DEC-20, CFL-18 해소)**: 위 "그 외엔 전부 `None`"이던 초기
+  구현은 "확인했지만 최신"과 "확인 자체가 불가"를 구분하지 못해 `gh`가
+  없는 사용자에게도 "최신 버전을 사용 중입니다"라는 사실과 다른 안내를
+  보여줬다. `status: available|current|unavailable` 3분류로 다시 나누고,
+  `GET /api/update-check`도 `update_available` 불리언 대신 이 `status`를
+  그대로 노출하도록 수정 — `webui/app.js`는 `unavailable` 전용 토스트
+  ("업데이트를 확인할 수 없습니다")를 새로 추가.
+
 **검증**: `parse_version_tuple()`(v-prefix, 파싱 실패, 길이 다른 버전
-비교), `check_for_update()`(신규 릴리즈 감지·동일 버전·과거 버전·
-`gh` 미설치/에러/malformed JSON 전부 `None`, `--repo` 플래그로 cwd에
-의존하지 않음 확인), `GET /api/update-check`(미확인/확인+없음/확인+있음
-세 상태 구분), 백그라운드 체크가 `state.update_info`/`update_checked`를
+비교), `check_for_update()`(신규 릴리즈 감지·동일 버전·과거 버전 모두
+올바른 `status`로 구분, `gh` 미설치/에러/malformed JSON 전부
+`status: "unavailable"`, `--repo` 플래그로 cwd에 의존하지 않음 확인),
+`GET /api/update-check`(미확인·확인+최신·확인+신규·확인 불가 네 상태
+구분), 백그라운드 체크가 `state.update_info`/`update_checked`를
 올바르게 세팅하는지. 정확한
 개수는 `python3 -m unittest discover -s tests -v`로 확인.
 

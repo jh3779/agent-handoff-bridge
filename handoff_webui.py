@@ -1508,9 +1508,14 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 # isn't meaningful regardless of what value happens to be
                 # sitting in it, so this never spreads a value the
                 # `checked: false` response shouldn't be making claims
-                # about either way.
+                # about either way. Once checked, `info` is always a dict
+                # with a `status` field (CFL-18: "available"/"current"/
+                # "unavailable" -- check_for_update() never returns None
+                # anymore, precisely so "genuinely current" and "couldn't
+                # check at all" are distinguishable here instead of both
+                # collapsing into the same response).
                 info = state.update_info if checked else None
-                self._send_json(200, {"checked": checked, "update_available": info is not None, **(info or {})})
+                self._send_json(200, {"checked": checked, **(info or {})})
             else:
                 self.send_error(404, "not found")
 
@@ -1704,6 +1709,14 @@ class AppState:
         # checking" as "no update," even once the real answer arrived
         # moments later. app.js now polls while `checked` is false
         # instead of asking only once.
+        #
+        # update_info is None until update_checked is True, and always a
+        # dict (never None) once it is -- check_for_update() (CFL-18)
+        # always returns a dict with a `status` field
+        # ("available"/"current"/"unavailable"), so "genuinely current"
+        # and "couldn't check at all" stay distinguishable all the way
+        # through to the frontend instead of both collapsing into the
+        # same falsy value.
         self.update_checked = False
         self.update_info: dict | None = None
 
@@ -1781,8 +1794,8 @@ def _check_for_update_in_background(state: "AppState") -> None:
     docs/design-system/wireframes.html SCR-07's "앱 시작 시 백그라운드로
     최신 릴리즈 확인" -- once at startup, not on every request.
     check_for_update() itself never raises (gh missing/unauthenticated/
-    offline all just resolve to None), so nothing here needs its own
-    try/except.
+    offline all just resolve to a `{"status": "unavailable", ...}` dict,
+    CFL-18), so nothing here needs its own try/except.
 
     Sets `update_info` before `update_checked` -- a reader that observes
     `update_checked is True` must never see a stale/uninitialized

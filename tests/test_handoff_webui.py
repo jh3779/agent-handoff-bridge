@@ -2526,21 +2526,31 @@ class CheckForUpdateInBackgroundTests(unittest.TestCase):
         state = webui.AppState(None)
         with mock.patch(
             "handoff_webui.check_for_update",
-            return_value={"latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"},
+            return_value={
+                "status": "available",
+                "latest_version": "0.2.0",
+                "current_version": "0.1.0",
+                "url": "https://example.invalid",
+            },
         ):
             webui._check_for_update_in_background(state)
+        self.assertEqual(state.update_info["status"], "available")
         self.assertEqual(state.update_info["latest_version"], "0.2.0")
         self.assertTrue(state.update_checked)
 
-    def test_none_result_leaves_update_info_none_but_still_marks_checked(self):
-        # The critical distinction the race fix depends on: a completed
-        # check that found nothing must be told apart from a check that
-        # simply hasn't run yet -- both leave update_info as None, but
-        # only a real completion sets update_checked.
+    def test_unavailable_result_still_marks_checked_with_the_real_status(self):
+        # CFL-18: check_for_update() never returns None anymore -- even a
+        # "couldn't check" outcome is a real dict with status:
+        # "unavailable", distinguishable from "not checked yet" (which is
+        # what leaves state.update_info as None, before this function
+        # ever runs -- see test_a_fresh_appstate_has_not_been_checked_yet
+        # above).
         state = webui.AppState(None)
-        with mock.patch("handoff_webui.check_for_update", return_value=None):
+        with mock.patch(
+            "handoff_webui.check_for_update", return_value={"status": "unavailable", "current_version": "0.1.0"}
+        ):
             webui._check_for_update_in_background(state)
-        self.assertIsNone(state.update_info)
+        self.assertEqual(state.update_info, {"status": "unavailable", "current_version": "0.1.0"})
         self.assertTrue(state.update_checked)
 
 
@@ -2573,26 +2583,42 @@ class UpdateCheckLiveServerTests(unittest.TestCase):
         # single-shot frontend fetch that landed in this window used to
         # permanently (and silently) miss a real update found moments
         # later, since both cases used to collapse into the same
-        # {"update_available": False} response.
+        # response.
         status, data = self._get("/api/update-check")
         self.assertEqual(status, 200)
-        self.assertEqual(data, {"checked": False, "update_available": False})
+        self.assertEqual(data, {"checked": False})
 
     def test_checked_with_no_update_found_is_distinguishable_from_pending(self):
         self.state.update_checked = True
+        self.state.update_info = {"status": "current", "current_version": "0.1.0"}
         status, data = self._get("/api/update-check")
         self.assertEqual(status, 200)
-        self.assertEqual(data, {"checked": True, "update_available": False})
+        self.assertEqual(data, {"checked": True, "status": "current", "current_version": "0.1.0"})
 
     def test_populated_update_info_is_reflected(self):
         self.state.update_checked = True
-        self.state.update_info = {"latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"}
+        self.state.update_info = {
+            "status": "available",
+            "latest_version": "0.2.0",
+            "current_version": "0.1.0",
+            "url": "https://example.invalid",
+        }
         status, data = self._get("/api/update-check")
         self.assertEqual(status, 200)
         self.assertTrue(data["checked"])
-        self.assertTrue(data["update_available"])
+        self.assertEqual(data["status"], "available")
         self.assertEqual(data["latest_version"], "0.2.0")
         self.assertEqual(data["url"], "https://example.invalid")
+
+    def test_unavailable_status_is_reflected_distinctly_from_current(self):
+        # CFL-18: "couldn't check at all" (gh missing/unauthenticated/
+        # offline) must never look like "checked, nothing newer" to a
+        # client reading this response.
+        self.state.update_checked = True
+        self.state.update_info = {"status": "unavailable", "current_version": "0.1.0"}
+        status, data = self._get("/api/update-check")
+        self.assertEqual(status, 200)
+        self.assertEqual(data, {"checked": True, "status": "unavailable", "current_version": "0.1.0"})
 
     def test_sequential_requests_observe_the_real_pending_to_checked_transition(self):
         # A review pointed out the other tests here only ever assert the
@@ -2604,7 +2630,7 @@ class UpdateCheckLiveServerTests(unittest.TestCase):
 
         def _delayed_check():
             release.wait(timeout=5)
-            return {"latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"}
+            return {"status": "available", "latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"}
 
         with mock.patch("handoff_webui.check_for_update", side_effect=_delayed_check):
             bg_thread = threading.Thread(
@@ -2617,7 +2643,7 @@ class UpdateCheckLiveServerTests(unittest.TestCase):
                 # never a stale/incorrect "checked" answer for it.
                 status, data = self._get("/api/update-check")
                 self.assertEqual(status, 200)
-                self.assertEqual(data, {"checked": False, "update_available": False})
+                self.assertEqual(data, {"checked": False})
             finally:
                 release.set()
                 bg_thread.join(timeout=5)
@@ -2626,7 +2652,7 @@ class UpdateCheckLiveServerTests(unittest.TestCase):
             status, data = self._get("/api/update-check")
             self.assertEqual(status, 200)
             self.assertTrue(data["checked"])
-            self.assertTrue(data["update_available"])
+            self.assertEqual(data["status"], "available")
             self.assertEqual(data["latest_version"], "0.2.0")
 
 

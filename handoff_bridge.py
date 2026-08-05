@@ -291,37 +291,59 @@ def parse_version_tuple(version_str: str) -> "tuple[int, ...] | None":
         return None
 
 
-def check_for_update() -> "dict[str, str] | None":
-    """Returns {"latest_version", "current_version", "url"} if a newer
-    release exists on GitHub, else None. Never raises -- `gh` missing,
-    unauthenticated, offline, rate-limited, or returning something
-    unparseable all just mean "can't tell right now," the same
-    fail-silent posture as touch_registry() elsewhere in this project:
-    this is a background convenience check
-    (docs/design-system/wireframes.html SCR-07 -- "앱 시작 시 백그라운드로
-    최신 릴리즈 확인"), not something that should ever surface an error to
-    a user who didn't ask for one.
+def check_for_update() -> "dict[str, str]":
+    """Always returns a dict with a `status` field -- never raises, and
+    never returns `None`:
+
+    - `{"status": "available", "latest_version", "current_version", "url"}`
+      -- a genuinely newer release exists.
+    - `{"status": "current", "current_version"}` -- checked successfully,
+      nothing newer.
+    - `{"status": "unavailable", "current_version"}` -- couldn't tell.
+      `gh` missing, unauthenticated, offline, rate-limited, or returning
+      something unparseable all collapse into this one status, the same
+      fail-silent posture as touch_registry() elsewhere in this project:
+      this is a background convenience check
+      (docs/design-system/wireframes.html SCR-07 -- "앱 시작 시 백그라운드로
+      최신 릴리즈 확인"), not something that should surface a detailed
+      error to a user who didn't ask for one.
+
+    CFL-18 (docs/design-system/flutter-mapping.html#s2): an earlier
+    version returned `None` for *both* "genuinely current" and
+    "couldn't check at all," which the caller couldn't tell apart --
+    `gh` missing/unauthenticated (real, DEC-19-documented failure paths)
+    displayed the same "you're up to date" message as an actual
+    successful check, which isn't true. `status` makes the two
+    distinguishable.
     """
     exit_code, stdout, _stderr = short_run(
         ["gh", "release", "view", "--repo", GITHUB_REPO, "--json", "tagName,url"]
     )
+    unavailable = {"status": "unavailable", "current_version": BRIDGE_VERSION}
     if exit_code != 0:
-        return None
+        return unavailable
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError:
-        return None
+        return unavailable
     if not isinstance(data, dict):
-        return None
+        return unavailable
     tag = data.get("tagName")
     url = data.get("url")
     if not isinstance(tag, str) or not isinstance(url, str):
-        return None
+        return unavailable
     latest = parse_version_tuple(tag)
     current = parse_version_tuple(BRIDGE_VERSION)
-    if latest is None or current is None or latest <= current:
-        return None
-    return {"latest_version": tag.lstrip("vV"), "current_version": BRIDGE_VERSION, "url": url}
+    if latest is None or current is None:
+        return unavailable
+    if latest <= current:
+        return {"status": "current", "current_version": BRIDGE_VERSION}
+    return {
+        "status": "available",
+        "latest_version": tag.lstrip("vV"),
+        "current_version": BRIDGE_VERSION,
+        "url": url,
+    }
 
 
 def resolve_workspace(path: str, create: bool = False) -> Path:

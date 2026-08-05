@@ -783,6 +783,29 @@
       this existed even though the test class already had the
       `ThreadingHTTPServer` machinery to close it cheaply;
     - corrected an inflated test count from round 2's own entry above.
+  - **Round 5** (CFL-18 fix, DEC-20 — the one finding round 3/4 explicitly
+    left as "low-severity, not merge-blocking"): `check_for_update()`
+    returned `None` for two genuinely different situations — "checked
+    successfully, nothing newer" and "couldn't check at all" (`gh`
+    missing/unauthenticated/offline/unparseable response) — and callers
+    couldn't tell them apart, so a user whose `gh` wasn't set up saw the
+    same "최신 버전을 사용 중입니다" toast as someone who'd actually been
+    confirmed current. `check_for_update()` now always returns a dict
+    (never `None`) with a `status` field: `"available"` (unchanged shape
+    plus the field), `"current"`, or `"unavailable"` — the last one
+    collapsing every unreadable-response case, matching this project's
+    existing fail-silent posture for a background convenience check, just
+    now distinguishable from "current" instead of indistinguishable from
+    it. `GET /api/update-check` drops the old `update_available` boolean
+    and exposes `status` directly. `webui/app.js` tracks
+    `latestUpdateStatus` (`"pending"|"available"|"current"|"unavailable"`)
+    instead of the old pending-only boolean, and the update button now
+    shows a fourth distinct toast — "업데이트를 확인할 수 없습니다." — for
+    the unavailable case instead of silently borrowing the "current"
+    wording. Tests updated across all three `CheckForUpdate*` classes for
+    the new contract, plus a new case covering `unavailable` end-to-end
+    over the real live server. Exact count via
+    `python3 -m unittest discover -s tests -v`.
 
 ## v0.1.0 — 2026-08-03
 
