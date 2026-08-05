@@ -533,6 +533,150 @@
       snapshot-in-time framing for a vaguer one with no real gain.
     - 9 more new regression tests in this round.
 
+- Web UI Phase 5 (Gemini CLI as a third provider + generalized fallback
+  **target selection**, not full N-way retry-until-exhausted chaining —
+  auto-fallback is still exactly one hop, unchanged from the original
+  2-provider design; see the round-2 entry below for why "N-way
+  fallback" needed this clarification): resolves CFL-13.
+  `docs/research-gemini-cli.md` written first
+  (same discipline as `docs/research.md` for Codex/Claude) — found Gemini
+  fits the existing subprocess architecture but has no free auth-status
+  command, no session ID in its JSON output, and returns one JSON object
+  per run instead of a JSONL stream. Two of those needed a real
+  pre-implementation decision, not just mechanical extension:
+  - `handoff_bridge.py`: `PROVIDERS` extended to `("codex", "claude",
+    "gemini")`. `other_provider()`'s hardcoded binary toggle replaced
+    with `next_provider(current, tried)`, which walks `PROVIDERS` in
+    order and wraps around — all three call sites
+    (`init_handoff()`/`choose_auto_provider()`/`run_provider()`'s
+    auto-fallback) now use it; auto-fallback is still exactly one hop,
+    only *which* provider it lands on generalized;
+  - `provider_command()` gained a `gemini` branch (prompt via stdin like
+    the other two, `--resume latest` once a prior clean run is recorded
+    in this workspace) and `summarize_gemini()` was added, parsing a
+    single end-of-run JSON object directly rather than going through
+    `parse_jsonl()`;
+  - `session_id` for Gemini is always the literal sentinel `"latest"`,
+    never a real ID — Gemini's JSON response has none — set only when a
+    run completes cleanly with no `error` field, which is exactly when
+    `provider_command()`'s next call is safe to add `--resume latest` to
+    (DEC-17: chosen after confirming Gemini sessions are scoped per
+    workspace directory, not global, which substantially narrows the
+    "could resume the wrong conversation" risk that made this a real
+    decision rather than a given);
+  - `diagnose()` gained a `gemini` row via the existing `PROVIDERS` loop
+    for free, plus an explicit "gemini auth: not checked" line (DEC-18)
+    — Gemini has no free auth-status subcommand, and a real probe would
+    cost a token on every `diagnose` run, so this deliberately doesn't
+    check rather than making `diagnose` sometimes-free;
+  - `handoff_webui.py`: `API_KEY_MODE_PROVIDERS = ("codex", "claude")`
+    added as its own tuple, deliberately not derived from the
+    now-3-wide `PROVIDERS` import — Phase 4's API-key mode scope (DEC-15)
+    was never revisited to include Gemini, so it must not silently
+    inherit a new entry just because the shared CLI-dispatch tuple grew.
+    `/api/run` now accepts `gemini`; `/api/providers` shows Gemini's real
+    CLI-detection badge (finally resolving what SCR-06 originally shipped
+    as a "미확인" placeholder) via a new `api_key_mode_supported` field
+    that stays `false` for it, so the connection panel shows status
+    without offering a key field;
+  - `webui/index.html`/`app.js`: `gemini` added to the provider selector;
+    the connection panel checks `api_key_mode_supported` before rendering
+    the key/model inputs;
+  - `docs/provider-extensibility.md`'s "The Current Code Assumes Exactly
+    Two Providers" section rewritten from a plan into a record of what
+    actually changed (`classify_handoff()` itself needed no changes, as
+    predicted; `ERROR_PATTERNS` needed one small addition, corrected in
+    round 2 below);
+  - 17 new/updated tests in `tests/test_handoff_bridge.py` (`next_provider()`
+    ordering/wraparound/skip-tried, `provider_command()`'s gemini branch,
+    `summarize_gemini()` success/error/malformed input, a real-subprocess
+    integration test with a fake `gemini` binary) plus updates to
+    `tests/test_handoff_webui.py` for the `API_KEY_MODE_PROVIDERS`
+    separation. Exact count via
+    `python3 -m unittest discover -s tests -v`.
+  - **Round 2** (independent adversarial review, before merge): found one
+    real bug the N-way refactor missed and one real gap in the resume
+    sentinel, both fixed:
+    - `handoff_webui.py`'s outer-subprocess-timeout handler had its own,
+      separate hardcoded `"claude" if ... == "codex" else "codex"`
+      binary guess for which provider was still running when the whole
+      thing got killed (`other_provider()`'s replacement in
+      `handoff_bridge.py` never touched this webui-local copy of the
+      same pattern) — wrong whenever the original provider was
+      `"claude"` (a claude run needing handoff recurses into `gemini`,
+      not `"codex"`), which would have misattributed the timed-out
+      provider in the persisted chat log. Fixed by reusing
+      `next_provider()` directly instead of reimplementing the guess;
+    - `summarize_gemini()` only checked the JSON response body's
+      `error` field before marking the `"latest"` resume sentinel, never
+      `exit_code` — since Gemini's own docs don't fully document
+      exit-code/JSON-body correlation on failure, a nonzero exit with a
+      superficially clean body could have marked a failed run resumable.
+      Now requires `exit_code == 0` too.
+  - **Round 2** (real automated review posted on the PR itself, not a
+    pasted transcript this time): 2 real bugs and 1 real doc
+    contradiction found, all fixed:
+    - a Gemini `AuthError`/exit-41 auth failure classified as `unknown`
+      instead of `auth` — `ERROR_PATTERNS`'s auth regex only matched
+      Codex/Claude's own error vocabulary
+      (`not logged in`/`authentication_failed`/`unauthorized`/`forbidden`),
+      none of which Gemini's literal, verified error strings contain.
+      Added `AuthError`/`FatalAuthenticationError` to the pattern —
+      exact, sourced strings from `docs/research-gemini-cli.md`, not a
+      guess at unverified text;
+    - the single-hop auto-fallback could skip past an installed,
+      working provider entirely: `next_provider()` (and
+      `choose_auto_provider()`'s handoff-needed branch) picked the next
+      provider in `PROVIDERS` order with no regard for whether it was
+      actually installed — with exactly two providers this never
+      mattered (no third option to skip past), but with three, a codex
+      failure landing on an uninstalled claude meant gemini was never
+      reached, even though it was right there and working. Added
+      `next_available_provider()`, a `shutil.which()`-aware wrapper used
+      everywhere a fallback target is actually *picked* (not the purely
+      informational message in `init_handoff()`); `handoff_webui.py`'s
+      timeout-guess (fixed in round 1, above) now calls it too, to keep
+      guessing the same thing the real subprocess actually does;
+    - `docs/provider-extensibility.md`'s intro still said "nothing
+      described here is implemented yet" directly above a section titled
+      "...(Resolved In Phase 5)" — reworded to describe both the
+      still-forward-looking parts (a hypothetical fourth provider,
+      API-key-mode extension) and the now-historical Gemini record in
+      the same doc.
+    - 7 more new tests in this round (plus 3 pre-existing
+      `ChooseAutoProviderTests` pinned to a mocked `shutil.which`, since
+      `next_available_provider()` made their outcome depend on what's
+      actually installed on whatever machine runs the suite), including
+      a real-subprocess integration test reproducing the exact
+      skip-uninstalled-provider scenario with fake `codex`/`gemini`
+      binaries and no `claude` on `PATH` at all.
+  - **Round 3** (same PR, follow-up automated review confirming round 2's
+    fixes landed, then raising two more points):
+    - a real CI failure this round's own testing didn't catch locally:
+      `tests/test_handoff_webui.py`'s outer-timeout guess test never
+      mocked `shutil.which`, so it passed on a dev machine with real
+      `codex`/`claude` installed but failed in CI's clean environment
+      (nothing installed) — `next_available_provider()`'s guess correctly
+      fell through to `"codex"` there, since the test's "claude timed
+      out" premise implicitly requires claude to have been launchable at
+      all. Pinned `shutil.which` in that test to make the premise
+      concrete instead of depending on the host's real installed set;
+    - **naming precision, not a behavior change**: pointed out that
+      "N-way fallback" oversold what actually shipped — auto-fallback
+      remained exactly one hop throughout, by design (unchanged from the
+      original 2-provider system, to bound token spend if a fallback
+      also fails late). What Phase 5 actually generalized was *which*
+      provider that one hop can land on. Reworded the headline framing
+      above and in `docs/research-gemini-cli.md`'s implementation plan
+      to say "fallback target selection," not "N-way fallback," since
+      the prose already explaining the one-hop constraint wasn't
+      preventing the section *title* from implying more than it delivered;
+    - this file's own Phase 5 entry said `classify_handoff()`/
+      `ERROR_PATTERNS` "needed no changes" one paragraph above the round-2
+      entry documenting that `ERROR_PATTERNS` *did* need one addition —
+      corrected to say what's actually true of each (`classify_handoff()`
+      itself: no changes; `ERROR_PATTERNS`: one addition).
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

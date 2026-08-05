@@ -236,9 +236,10 @@ handoff needed: True (tool_failure: provider command not found)</div>
         <div class="dbtn" style="padding:5px 10px;height:auto;font-size:10.5px">저장</div>
       </div>
     </div>
-    <div class="note" style="margin-top:10px">provider별 연결 상태 배지 3종: <b>CLI 감지됨</b>(성공색) / <b>CLI 없음</b>(실패색, API 키 입력 노출) / <b>미확인</b>(대기색, Gemini처럼 감지 로직 자체가 아직 없는 경우). API 키 필드는 항상 마스킹, provider별로 독립.</div>
+    <div class="note" style="margin-top:10px">provider별 연결 상태 배지 3종: <b>CLI 감지됨</b>(성공색) / <b>CLI 없음</b>(실패색, API 키 입력 노출 — 단 API 키 모드를 지원하는 provider에서만) / <b>미확인</b>(대기색, 감지 로직 자체가 아직 없는 경우 — 와이어프레임 작성 당시 Gemini가 이 상태의 예시였으나, Phase 5에서 실제 감지 로직이 생겨 지금은 이 상태에 해당하는 provider가 없다). API 키 필드는 항상 마스킹, provider별로 독립.</div>
     <div class="note" style="margin-top:6px"><b>Phase 4에서 실제 구현됨</b>(<code>handoff_webui.py</code>의 <code>GET /api/providers</code>·<code>POST /api/provider-key</code>, <code>webui/index.html</code>의 Diagnose 버튼 + 연결 패널) — 단 <a href="flutter-mapping.html#s1c">DEC-13</a>에 따라 <b>채팅 전용</b>: 이 화면에서 저장한 API 키는 provider의 텍스트 응답만 받아오고 파일을 편집하거나 명령을 실행하지 않는다. 전체 에이전트 기능 패리티는 <a href="flutter-mapping.html#s2">CFL-17</a>로 미래 phase에 연기.</div>
-    <div class="tag" style="margin-top:8px">사용처: <a href="wireframes.html#s8">SCR-06</a> · 결정 기록: <a href="flutter-mapping.html#s1c">DEC-13~16</a> · 후속 과제: <a href="flutter-mapping.html#s2">CFL-17</a></div>
+    <div class="note" style="margin-top:6px"><b>Phase 5에서 갱신됨</b>: Gemini CLI 감지가 실제로 구현됐다(<a href="flutter-mapping.html#s1c">DEC-17~18</a>) — 이제 CLI 감지됨/없음 배지가 정확히 뜨지만, API 키 모드는 여전히 codex·claude로만 한정(<code>handoff_webui.py</code>의 <code>API_KEY_MODE_PROVIDERS</code>가 <code>PROVIDERS</code>와 의도적으로 분리) — Gemini의 "CLI 없음" 상태는 키 입력 필드를 노출하지 않는다.</div>
+    <div class="tag" style="margin-top:8px">사용처: <a href="wireframes.html#s8">SCR-06</a> · 결정 기록: <a href="flutter-mapping.html#s1c">DEC-13~18</a> · 후속 과제: <a href="flutter-mapping.html#s2">CFL-17</a></div>
   </section>
 
   <section id="s15" class="sec">

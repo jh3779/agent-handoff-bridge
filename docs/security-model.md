@@ -32,8 +32,12 @@ Never commit:
 - `.handoff/mobile-*-instruction.txt`;
 - `~/Documents/Agent Handoff Bridge/credentials.json`.
 
-The bridge (`handoff_bridge.py`) shells out to `codex` and `claude`; each
-provider uses its own local auth and permission model — this is unchanged.
+The bridge (`handoff_bridge.py`) shells out to `codex`, `claude`, and (as
+of Phase 5) `gemini`; each provider uses its own local auth and
+permission model — this is unchanged. Gemini has no free auth-status
+command to check (`docs/research-gemini-cli.md`), so `diagnose()`
+deliberately does not probe it — see
+[CLI Reference § Diagnose](cli-reference.md#diagnose).
 
 **Exception, deliberate**: the Web UI's Phase 4 API-key mode
 (`handoff_webui.py`, [CLI Reference § Web UI](cli-reference.md#web-ui-mvp))
