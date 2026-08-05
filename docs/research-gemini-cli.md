@@ -39,6 +39,19 @@ differences change the implementation, not just the provider name:
   --output-format stream-json`. Also auto-triggers in non-TTY contexts
   (piped stdin/stdout), and accepts piped file content as context
   (`cat file | gemini -p "..."`).
+- **Bare piped stdin with no `-p` flag at all also triggers
+  non-interactive mode and is treated as the prompt itself** — "Positional
+  query args without `-p` default to interactive unless piped," and
+  `echo "text" | gemini` (no `-p`) is a documented equivalent, not just
+  `-p "..."` with piped stdin as supplementary context. This is the form
+  `provider_command()`'s `gemini` branch actually uses (prompt via
+  `subprocess.run(..., input=prompt, ...)`, matching how the Codex/Claude
+  branches already pass their prompt on stdin rather than as an inline
+  argv string — consistent with this project's general preference for
+  stdin/file-based prompt passing over inline argv, established for the
+  other two providers well before this phase). Source:
+  [docs/cli/headless.md](https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/cli/headless.md),
+  [docs/cli/tutorials/automation.md](https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/cli/tutorials/automation.md).
 - JSON mode's response shape (confirmed with a real worked example):
   ```json
   {
