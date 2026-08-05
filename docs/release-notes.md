@@ -733,9 +733,11 @@
     from "checked, nothing found," and the frontend now polls (1.5s
     interval, up to 10 times — comfortably past `short_run()`'s 10s
     default timeout) while `checked` is false instead of asking exactly
-    once. 4 more new tests (plus 2 existing ones updated to assert on
-    the new field) covering the pending-vs-checked distinction
-    specifically.
+    once. New and updated tests cover the pending-vs-checked distinction
+    specifically — exact count via `python3 -m unittest discover -s tests -v`,
+    per this file's usual anti-drift practice (an exact figure here was
+    corrected once already after a review found it didn't match the real
+    diff).
   - **Round 3** (follow-up review confirming round 2's fix, then one
     more low-severity, non-blocking finding): clicking the update button
     during the ~15s polling window (round 2's fix) showed the same
@@ -746,6 +748,41 @@
     flag (starts `true`, flips to `false` only once a response actually
     reports `checked: true`) so the button shows "업데이트 확인
     중입니다…" during that window instead.
+  - **Round 4** (independent self-review, requested explicitly before
+    merge rather than waiting further on external review): traced the
+    actual bytecode-level read/write ordering rather than trusting the
+    round-2 fix's own comments, and found a real (if narrow) reader-side
+    counterpart to the exact race round 2 fixed:
+    - `GET /api/update-check`'s handler read `update_info` *before*
+      `update_checked` — the opposite order from how the background
+      thread writes them (`update_info` then `update_checked`, so a
+      reader checking `update_checked` second always sees it True only
+      after `update_info` is really populated). If the two writes landed
+      in the gap between the handler's own two reads, it could observe a
+      stale (pre-write) `info` alongside a fresh `checked = True`,
+      reporting "checked, no update" for a request that actually raced a
+      real update being found — silently reproducing round 2's bug from
+      the other side. Fixed by reading `checked` first: the only
+      possible stale read becomes `checked = False`, which just makes
+      the polling client ask again (safe direction to be wrong in) —
+      the value in `update_info` is no longer even consulted unless
+      `checked` was already observed `True`;
+    - `webui/app.js`'s polling `catch` block gave up permanently on any
+      single fetch exception, not just after retries were exhausted —
+      undermining the round-2 fix's entire premise (retrying) if even
+      one transient blip happened (e.g. the server not yet accepting
+      connections in the instant right after startup). Now retried the
+      same bounded way as an unfinished check;
+    - an off-by-one let 11 fetches through a "`UPDATE_CHECK_MAX_POLLS =
+      10`" bound (`attempt < 10` with a 0-indexed `attempt` allows
+      attempts 0 through 10); fixed to `attempt + 1 < 10`;
+    - added a live-server test exercising the actual pending → checked
+      *transition* (a genuine background thread gated by a
+      `threading.Event`, not just the two static end-states the earlier
+      tests asserted directly via `state.*` assignment) — the gap for
+      this existed even though the test class already had the
+      `ThreadingHTTPServer` machinery to close it cheaply;
+    - corrected an inflated test count from round 2's own entry above.
 
 ## v0.1.0 — 2026-08-03
 

@@ -2594,6 +2594,41 @@ class UpdateCheckLiveServerTests(unittest.TestCase):
         self.assertEqual(data["latest_version"], "0.2.0")
         self.assertEqual(data["url"], "https://example.invalid")
 
+    def test_sequential_requests_observe_the_real_pending_to_checked_transition(self):
+        # A review pointed out the other tests here only ever assert the
+        # two static end-states by setting state.* directly -- this one
+        # exercises the actual transition a real page load experiences,
+        # over the real live server, with a genuine background thread
+        # (gated by an Event instead of a real multi-second `gh` call).
+        release = threading.Event()
+
+        def _delayed_check():
+            release.wait(timeout=5)
+            return {"latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"}
+
+        with mock.patch("handoff_webui.check_for_update", side_effect=_delayed_check):
+            bg_thread = threading.Thread(
+                target=webui._check_for_update_in_background, args=(self.state,), daemon=True
+            )
+            bg_thread.start()
+            try:
+                # The background thread is parked on `release` -- a
+                # request arriving now must observe the pending state,
+                # never a stale/incorrect "checked" answer for it.
+                status, data = self._get("/api/update-check")
+                self.assertEqual(status, 200)
+                self.assertEqual(data, {"checked": False, "update_available": False})
+            finally:
+                release.set()
+                bg_thread.join(timeout=5)
+            # Once the background thread has actually finished, the same
+            # endpoint must reflect the real result on the next request.
+            status, data = self._get("/api/update-check")
+            self.assertEqual(status, 200)
+            self.assertTrue(data["checked"])
+            self.assertTrue(data["update_available"])
+            self.assertEqual(data["latest_version"], "0.2.0")
+
 
 if __name__ == "__main__":
     unittest.main()

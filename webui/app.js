@@ -840,28 +840,43 @@
   const UPDATE_CHECK_POLL_INTERVAL_MS = 1500;
   const UPDATE_CHECK_MAX_POLLS = 10;
 
+  function scheduleUpdateCheckRetry(attempt) {
+    // attempt is 0-indexed (the first fetch already happened before this
+    // is ever called), so this caps the total fetch count at
+    // UPDATE_CHECK_MAX_POLLS, not UPDATE_CHECK_MAX_POLLS + 1 -- a review
+    // found the original `attempt < UPDATE_CHECK_MAX_POLLS` check let one
+    // extra fetch through (attempts 0..10 = 11 calls for a "10" bound).
+    if (attempt + 1 < UPDATE_CHECK_MAX_POLLS) {
+      window.setTimeout(() => checkForUpdate(attempt + 1), UPDATE_CHECK_POLL_INTERVAL_MS);
+    }
+    // Otherwise: polling exhausted with no confirmed answer --
+    // updateCheckPending deliberately stays true rather than falling
+    // through to "up to date," since that was never actually confirmed.
+  }
+
   async function checkForUpdate(attempt = 0) {
+    let data;
     try {
-      const data = await fetchJSON("/api/update-check");
-      if (!data.checked) {
-        if (attempt < UPDATE_CHECK_MAX_POLLS) {
-          window.setTimeout(() => checkForUpdate(attempt + 1), UPDATE_CHECK_POLL_INTERVAL_MS);
-        }
-        // Polling exhausted with no confirmed answer -- updateCheckPending
-        // deliberately stays true rather than falling through to "up to
-        // date," since that was never actually confirmed either.
-        return;
-      }
-      updateCheckPending = false;
-      if (data.update_available) {
-        latestUpdateInfo = data;
-        updateDot.classList.add("show");
-      }
+      data = await fetchJSON("/api/update-check");
     } catch {
-      // Silent, deliberately -- docs/research on this feature treats a
-      // failed/unavailable check (gh missing, offline, rate-limited) the
-      // same as "no update," never a user-visible error for a background
-      // convenience check nobody asked to run.
+      // A transient fetch failure (e.g. the server briefly not accepting
+      // connections in the instant right after startup) must not
+      // permanently give up on the whole check -- that would undermine
+      // the entire point of polling (review fix: the original version
+      // only retried on "not checked yet" and treated any fetch
+      // exception as final, even a one-off blip on the very first
+      // attempt). Retried the same bounded way as an unfinished check.
+      scheduleUpdateCheckRetry(attempt);
+      return;
+    }
+    if (!data.checked) {
+      scheduleUpdateCheckRetry(attempt);
+      return;
+    }
+    updateCheckPending = false;
+    if (data.update_available) {
+      latestUpdateInfo = data;
+      updateDot.classList.add("show");
     }
   }
 

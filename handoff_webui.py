@@ -1485,10 +1485,32 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 # real `gh` call is network I/O and can easily still be
                 # in flight by the time the page's first request for this
                 # arrives, especially right after server startup.
-                info = state.update_info
-                self._send_json(
-                    200, {"checked": state.update_checked, "update_available": info is not None, **(info or {})}
-                )
+                #
+                # Read `checked` BEFORE `info`, opposite of the write
+                # order in _check_for_update_in_background() (info then
+                # checked) -- a second review found this matters: if the
+                # background thread's two writes land in the gap between
+                # this handler's own two reads, reading `info` first
+                # could observe the pre-write `None` alongside a
+                # freshly-written `checked = True`, reporting "checked,
+                # no update" for a request that actually raced a real
+                # update being found. Reading `checked` first instead
+                # means the only possible stale read is `checked = False`
+                # paired with a not-yet-visible `info` -- which just tells
+                # the polling client to ask again, the safe direction to
+                # be wrong in (under-reporting readiness self-corrects on
+                # the next poll; over-reporting readiness with stale data
+                # does not, since the client stops polling on `checked:
+                # true`).
+                checked = state.update_checked
+                # Only look at `info` at all once `checked` was observed
+                # True -- if the writer hasn't gotten there yet, `info`
+                # isn't meaningful regardless of what value happens to be
+                # sitting in it, so this never spreads a value the
+                # `checked: false` response shouldn't be making claims
+                # about either way.
+                info = state.update_info if checked else None
+                self._send_json(200, {"checked": checked, "update_available": info is not None, **(info or {})})
             else:
                 self.send_error(404, "not found")
 
