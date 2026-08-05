@@ -2174,12 +2174,24 @@ class HttpPostJsonTests(unittest.TestCase):
 
 
 class CallProviderApiTests(unittest.TestCase):
+    """A fixture with no tool_use/function_call block (every fixture
+    here) exercises the tool loop's zero-iteration case -- one HTTP call,
+    same behavior as before CFL-17 added the loop around these
+    functions. AgenticLoopTests below covers the actual tool-call path."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
     def test_anthropic_success_extracts_text(self):
         with mock.patch(
             "handoff_webui._http_post_json",
             return_value=(200, {"content": [{"type": "text", "text": "hi there"}]}),
         ):
-            result = webui.call_anthropic_messages_api("sk-secret", "claude-sonnet-5", [{"role": "user", "content": "hi"}])
+            result = webui.call_anthropic_messages_api(
+                "sk-secret", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace
+            )
         self.assertTrue(result["ok"])
         self.assertEqual(result["text"], "hi there")
 
@@ -2188,14 +2200,14 @@ class CallProviderApiTests(unittest.TestCase):
             "handoff_webui._http_post_json",
             return_value=(401, {"error": {"type": "authentication_error", "message": "invalid x-api-key"}}),
         ):
-            result = webui.call_anthropic_messages_api("sk-super-secret-value", "claude-sonnet-5", [])
+            result = webui.call_anthropic_messages_api("sk-super-secret-value", "claude-sonnet-5", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("authentication_error", result["message"])
         self.assertNotIn("sk-super-secret-value", result["message"])
 
     def test_anthropic_network_error_does_not_raise(self):
         with mock.patch("handoff_webui._http_post_json", side_effect=urllib.error.URLError("boom")):
-            result = webui.call_anthropic_messages_api("sk-secret", "claude-sonnet-5", [])
+            result = webui.call_anthropic_messages_api("sk-secret", "claude-sonnet-5", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("network error", result["message"])
         self.assertNotIn("sk-secret", result["message"])
@@ -2209,7 +2221,7 @@ class CallProviderApiTests(unittest.TestCase):
             "handoff_webui._http_post_json",
             return_value=(0, {"error": {"type": "invalid_request", "message": "request headers were rejected"}}),
         ):
-            result = webui.call_anthropic_messages_api("sk-secret-with-crlf", "claude-sonnet-5", [])
+            result = webui.call_anthropic_messages_api("sk-secret-with-crlf", "claude-sonnet-5", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("invalid_request", result["message"])
         self.assertNotIn("sk-secret-with-crlf", result["message"])
@@ -2222,7 +2234,9 @@ class CallProviderApiTests(unittest.TestCase):
                 {"output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hi from openai"}]}]},
             ),
         ):
-            result = webui.call_openai_responses_api("sk-secret", "gpt-5.1-codex", [{"role": "user", "content": "hi"}])
+            result = webui.call_openai_responses_api(
+                "sk-secret", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace
+            )
         self.assertTrue(result["ok"])
         self.assertEqual(result["text"], "hi from openai")
 
@@ -2231,10 +2245,279 @@ class CallProviderApiTests(unittest.TestCase):
             "handoff_webui._http_post_json",
             return_value=(429, {"error": {"type": "rate_limit_error", "message": "too many requests"}}),
         ):
-            result = webui.call_openai_responses_api("sk-super-secret-value", "gpt-5.1-codex", [])
+            result = webui.call_openai_responses_api("sk-super-secret-value", "gpt-5.1-codex", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("rate_limit_error", result["message"])
         self.assertNotIn("sk-super-secret-value", result["message"])
+
+
+class ToolDefinitionTests(unittest.TestCase):
+    """anthropic_tool_definitions()/openai_tool_definitions() are both
+    derived from the single _TOOL_SPECS list -- this guards against the
+    two vendor schemas drifting out of sync with each other."""
+
+    def test_both_vendor_schemas_list_the_same_four_tool_names(self):
+        anthropic_names = {t["name"] for t in webui.anthropic_tool_definitions()}
+        openai_names = {t["name"] for t in webui.openai_tool_definitions()}
+        self.assertEqual(anthropic_names, {"read_file", "write_file", "edit_file", "run_shell"})
+        self.assertEqual(anthropic_names, openai_names)
+
+    def test_openai_definitions_are_strict_function_tools(self):
+        for tool in webui.openai_tool_definitions():
+            self.assertEqual(tool["type"], "function")
+            self.assertTrue(tool["strict"])
+            self.assertFalse(tool["parameters"]["additionalProperties"])
+
+    def test_anthropic_definitions_use_input_schema_not_parameters(self):
+        for tool in webui.anthropic_tool_definitions():
+            self.assertIn("input_schema", tool)
+            self.assertNotIn("parameters", tool)
+            self.assertEqual(tool["input_schema"]["type"], "object")
+
+
+class ToolExecutorTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_read_file_returns_contents(self):
+        (self.workspace / "a.txt").write_text("hello world", encoding="utf-8")
+        result = webui.execute_tool_call(self.workspace, "read_file", {"path": "a.txt"})
+        self.assertEqual(result, "hello world")
+
+    def test_read_file_missing_path_argument_is_an_error_not_a_crash(self):
+        result = webui.execute_tool_call(self.workspace, "read_file", {})
+        self.assertTrue(result.startswith("error:"))
+
+    def test_read_file_path_escape_is_rejected(self):
+        result = webui.execute_tool_call(self.workspace, "read_file", {"path": "../outside.txt"})
+        self.assertTrue(result.startswith("error:"))
+
+    def test_write_file_creates_a_new_file_including_parent_dirs(self):
+        result = webui.execute_tool_call(self.workspace, "write_file", {"path": "nested/dir/new.txt", "content": "hi"})
+        self.assertIn("wrote", result)
+        self.assertEqual((self.workspace / "nested" / "dir" / "new.txt").read_text(encoding="utf-8"), "hi")
+
+    def test_write_file_overwrites_an_existing_file(self):
+        (self.workspace / "b.txt").write_text("old", encoding="utf-8")
+        webui.execute_tool_call(self.workspace, "write_file", {"path": "b.txt", "content": "new"})
+        self.assertEqual((self.workspace / "b.txt").read_text(encoding="utf-8"), "new")
+
+    def test_write_file_path_escape_is_rejected(self):
+        result = webui.execute_tool_call(self.workspace, "write_file", {"path": "/etc/passwd", "content": "x"})
+        self.assertTrue(result.startswith("error:"))
+        self.assertFalse(Path("/etc/passwd_should_never_exist").exists())
+
+    def test_edit_file_replaces_a_unique_match(self):
+        (self.workspace / "c.txt").write_text("foo bar baz", encoding="utf-8")
+        result = webui.execute_tool_call(self.workspace, "edit_file", {"path": "c.txt", "old_string": "bar", "new_string": "qux"})
+        self.assertIn("edited", result)
+        self.assertEqual((self.workspace / "c.txt").read_text(encoding="utf-8"), "foo qux baz")
+
+    def test_edit_file_zero_matches_is_an_error_and_leaves_the_file_untouched(self):
+        (self.workspace / "d.txt").write_text("unchanged", encoding="utf-8")
+        result = webui.execute_tool_call(self.workspace, "edit_file", {"path": "d.txt", "old_string": "missing", "new_string": "x"})
+        self.assertTrue(result.startswith("error:"))
+        self.assertEqual((self.workspace / "d.txt").read_text(encoding="utf-8"), "unchanged")
+
+    def test_edit_file_ambiguous_match_is_rejected_not_guessed(self):
+        (self.workspace / "e.txt").write_text("dup dup", encoding="utf-8")
+        result = webui.execute_tool_call(self.workspace, "edit_file", {"path": "e.txt", "old_string": "dup", "new_string": "x"})
+        self.assertTrue(result.startswith("error:"))
+        self.assertEqual((self.workspace / "e.txt").read_text(encoding="utf-8"), "dup dup")
+
+    def test_edit_file_nonexistent_file_is_an_error(self):
+        result = webui.execute_tool_call(self.workspace, "edit_file", {"path": "nope.txt", "old_string": "a", "new_string": "b"})
+        self.assertTrue(result.startswith("error:"))
+
+    def test_run_shell_returns_exit_code_and_output(self):
+        result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "echo hello-from-shell-tool"})
+        self.assertIn("exit code: 0", result)
+        self.assertIn("hello-from-shell-tool", result)
+
+    def test_run_shell_runs_in_the_workspace_directory(self):
+        (self.workspace / "marker.txt").write_text("x", encoding="utf-8")
+        result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "ls"})
+        self.assertIn("marker.txt", result)
+
+    def test_run_shell_nonzero_exit_is_reported_not_treated_as_a_tool_error(self):
+        result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "exit 3"})
+        self.assertIn("exit code: 3", result)
+
+    def test_run_shell_timeout_is_reported_as_an_error_string(self):
+        with mock.patch(
+            "handoff_webui.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="sleep 999", timeout=webui.TOOL_EXEC_TIMEOUT_SECONDS),
+        ):
+            result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "sleep 999"})
+        self.assertTrue(result.startswith("error:"))
+        self.assertIn("timed out", result)
+
+    def test_run_shell_output_over_the_cap_is_truncated_not_silently_cut(self):
+        with mock.patch(
+            "handoff_webui.subprocess.run",
+            return_value=subprocess.CompletedProcess(args="x", returncode=0, stdout="a" * (webui.TOOL_OUTPUT_MAX_CHARS + 500), stderr=""),
+        ):
+            result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "x"})
+        self.assertIn("(output truncated)", result)
+        self.assertLessEqual(len(result), webui.TOOL_OUTPUT_MAX_CHARS + 200)
+
+    def test_unknown_tool_name_is_an_error_not_a_crash(self):
+        result = webui.execute_tool_call(self.workspace, "delete_everything", {})
+        self.assertTrue(result.startswith("error:"))
+
+    def test_an_exception_inside_an_executor_is_caught_not_propagated(self):
+        # _TOOL_EXECUTORS binds the function object at import time, so
+        # patching handoff_webui._tool_read_file by name wouldn't affect
+        # the dispatcher's already-stored reference -- the dict entry
+        # itself has to be swapped.
+        with mock.patch.dict(
+            "handoff_webui._TOOL_EXECUTORS", {"read_file": mock.Mock(side_effect=RuntimeError("boom"))}
+        ):
+            result = webui.execute_tool_call(self.workspace, "read_file", {"path": "a.txt"})
+        self.assertTrue(result.startswith("error:"))
+        self.assertIn("boom", result)
+
+
+class AgenticLoopTests(unittest.TestCase):
+    """call_anthropic_messages_api()/call_openai_responses_api()'s tool
+    loop (CFL-17/DEC-21) -- execute_tool_call() itself is mocked here so
+    these tests isolate the loop's control flow (when to call again, how
+    results feed back, the iteration bound) from the tool executors,
+    which ToolExecutorTests already covers directly."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_anthropic_executes_a_tool_call_then_returns_the_final_text(self):
+        tool_use_response = (
+            200,
+            {
+                "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "a.txt"}},
+                ]
+            },
+        )
+        final_response = (200, {"content": [{"type": "text", "text": "the file says hi"}]})
+        with mock.patch("handoff_webui._http_post_json", side_effect=[tool_use_response, final_response]), mock.patch(
+            "handoff_webui.execute_tool_call", return_value="hi"
+        ) as exec_spy:
+            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "read a.txt"}], self.workspace)
+        self.assertTrue(result["ok"])
+        exec_spy.assert_called_once_with(self.workspace, "read_file", {"path": "a.txt"})
+        self.assertIn("the file says hi", result["text"])
+        self.assertIn("read_file", result["text"])
+
+    def test_anthropic_stops_after_max_tool_iterations(self):
+        always_calls_tool = (
+            200,
+            {"content": [{"type": "tool_use", "id": "toolu_x", "name": "run_shell", "input": {"command": "echo hi"}}]},
+        )
+        with mock.patch("handoff_webui._http_post_json", return_value=always_calls_tool), mock.patch(
+            "handoff_webui.execute_tool_call", return_value="ok"
+        ) as exec_spy:
+            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "loop forever"}], self.workspace)
+        self.assertTrue(result["ok"])
+        self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
+        self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
+
+    def test_anthropic_feeds_tool_result_back_with_the_matching_tool_use_id(self):
+        tool_use_response = (
+            200,
+            {"content": [{"type": "tool_use", "id": "toolu_abc", "name": "read_file", "input": {"path": "a.txt"}}]},
+        )
+        final_response = (200, {"content": [{"type": "text", "text": "done"}]})
+        with mock.patch(
+            "handoff_webui._http_post_json", side_effect=[tool_use_response, final_response]
+        ) as http_spy, mock.patch("handoff_webui.execute_tool_call", return_value="file contents"):
+            webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+        second_call_body = http_spy.call_args_list[1].args[2]
+        tool_result_message = second_call_body["messages"][-1]
+        self.assertEqual(tool_result_message["role"], "user")
+        self.assertEqual(tool_result_message["content"][0]["type"], "tool_result")
+        self.assertEqual(tool_result_message["content"][0]["tool_use_id"], "toolu_abc")
+        self.assertEqual(tool_result_message["content"][0]["content"], "file contents")
+
+    def test_anthropic_no_tool_use_returns_on_the_first_call(self):
+        with mock.patch(
+            "handoff_webui._http_post_json", return_value=(200, {"content": [{"type": "text", "text": "just chatting"}]})
+        ) as http_spy:
+            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertEqual(http_spy.call_count, 1)
+        self.assertEqual(result["text"], "just chatting")
+
+    def test_openai_executes_a_function_call_then_returns_the_final_text(self):
+        function_call_response = (
+            200,
+            {"output": [{"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": '{"path": "a.txt"}'}]},
+        )
+        final_response = (
+            200,
+            {"output": [{"type": "message", "content": [{"type": "output_text", "text": "the file says hi"}]}]},
+        )
+        with mock.patch(
+            "handoff_webui._http_post_json", side_effect=[function_call_response, final_response]
+        ), mock.patch("handoff_webui.execute_tool_call", return_value="hi") as exec_spy:
+            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "read a.txt"}], self.workspace)
+        self.assertTrue(result["ok"])
+        exec_spy.assert_called_once_with(self.workspace, "read_file", {"path": "a.txt"})
+        self.assertIn("the file says hi", result["text"])
+
+    def test_openai_executes_multiple_function_calls_in_one_output(self):
+        two_calls_response = (
+            200,
+            {
+                "output": [
+                    {"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": '{"path": "a.txt"}'},
+                    {"type": "function_call", "call_id": "call_2", "name": "read_file", "arguments": '{"path": "b.txt"}'},
+                ]
+            },
+        )
+        final_response = (200, {"output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}]})
+        with mock.patch(
+            "handoff_webui._http_post_json", side_effect=[two_calls_response, final_response]
+        ), mock.patch("handoff_webui.execute_tool_call", return_value="ok") as exec_spy:
+            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertTrue(result["ok"])
+        self.assertEqual(exec_spy.call_count, 2)
+
+    def test_openai_stops_after_max_tool_iterations(self):
+        always_calls_function = (
+            200,
+            {"output": [{"type": "function_call", "call_id": "call_x", "name": "run_shell", "arguments": '{"command": "echo hi"}'}]},
+        )
+        with mock.patch("handoff_webui._http_post_json", return_value=always_calls_function), mock.patch(
+            "handoff_webui.execute_tool_call", return_value="ok"
+        ) as exec_spy:
+            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "loop forever"}], self.workspace)
+        self.assertTrue(result["ok"])
+        self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
+        self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
+
+    def test_openai_malformed_arguments_json_does_not_crash_the_loop(self):
+        bad_args_response = (
+            200,
+            {"output": [{"type": "function_call", "call_id": "call_1", "name": "read_file", "arguments": "{not valid json"}]},
+        )
+        final_response = (200, {"output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}]})
+        with mock.patch(
+            "handoff_webui._http_post_json", side_effect=[bad_args_response, final_response]
+        ), mock.patch("handoff_webui.execute_tool_call", return_value="ok") as exec_spy:
+            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertTrue(result["ok"])
+        exec_spy.assert_called_once_with(self.workspace, "read_file", {})
+
+    def test_openai_no_function_call_returns_on_the_first_call(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(200, {"output": [{"type": "message", "content": [{"type": "output_text", "text": "just chatting"}]}]}),
+        ) as http_spy:
+            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertEqual(http_spy.call_count, 1)
+        self.assertEqual(result["text"], "just chatting")
 
 
 class RunProviderViaApiKeyTests(unittest.TestCase):

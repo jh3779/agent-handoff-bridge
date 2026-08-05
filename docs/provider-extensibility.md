@@ -11,12 +11,12 @@ and its Conflict List entries CFL-12/CFL-13 in
 This started as a documentation-only deliverable (nothing described here
 was implemented yet) so the next real implementation pass wouldn't have
 to rediscover these constraints from scratch. That implementation pass
-happened in Phase 5 for the CLI-based case (Gemini) — the sections below
-now mix the original forward-looking plan (still accurate for a
-hypothetical *fourth* CLI provider, or for the API-key-based path, which
-remains undesigned beyond Phase 4's chat-only scope) with a record of
-what actually happened for Gemini specifically. Each section says which
-it is.
+happened in Phase 5 for the CLI-based case (Gemini), and again for the
+API-key-based path's full agentic parity (CFL-17, resolved as DEC-21) —
+the sections below now mix the original forward-looking plan (still
+accurate for a hypothetical *fourth* CLI provider) with a record of what
+actually happened for Gemini and for the API-key path specifically. Each
+section says which it is.
 
 ## The Current Code Assumed Exactly Two Providers (Resolved In Phase 5)
 
@@ -114,11 +114,12 @@ sequence, kept as the template for a fourth provider someday:
 
 ## Adding An API-Key-Based Provider (No Local CLI)
 
-**Implemented in Phase 4** (`docs/design-system/roadmap.md`), chat-only
-scope, per [DEC-13~16](design-system/flutter-mapping.html#s1c) — this
-section originally described the open questions before that work started
-(as CFL-12); kept below for what was actually decided plus what's still
-open.
+**Implemented in Phase 4** (`docs/design-system/roadmap.md`), per
+[DEC-13~16](design-system/flutter-mapping.html#s1c) — this section
+originally described the open questions before that work started (as
+CFL-12); kept below for what was actually decided. Started chat-only;
+extended to full agentic parity by the CFL-17 follow-up
+([DEC-21](design-system/flutter-mapping.html#s1c)), see below.
 
 - `run_provider()`'s CLI subprocess path is completely unchanged.
   `_run_provider_via_bridge_locked()` (`handoff_webui.py`) only diverts to
@@ -144,15 +145,22 @@ open.
   and [wireframes.html §S8](design-system/wireframes.html#s8) is now real —
   `webui/index.html`'s Diagnose button opens it, backed by
   `GET /api/providers`/`POST /api/provider-key`.
-- **Still open, deliberately** ([CFL-17](design-system/flutter-mapping.html#s2)):
-  this API-key path only exchanges text. It does not read or edit workspace
-  files, and does not run shell commands — the CLI's actual agentic
-  capability. Neither vendor's direct API exposes that behind a plain
-  API-key call; getting there means this project defining its own file-
-  read/write/edit and shell-exec tool schemas and running its own tool-use
-  turn loop, which is a substantially larger and riskier build (a new,
-  bridge-controlled shell-exec surface) than this phase's scope. Deferred to
-  a future phase by explicit user decision, not an oversight.
+- **Full agentic parity, added by the CFL-17 follow-up**
+  ([DEC-21](design-system/flutter-mapping.html#s1c)): this API-key path
+  no longer only exchanges text. `call_anthropic_messages_api()`/
+  `call_openai_responses_api()` run a bridge-built tool-use turn loop
+  (`read_file`/`write_file`/`edit_file`/`run_shell`, one schema list in
+  `_TOOL_SPECS` rendered into each vendor's own shape) so the model can
+  read/edit workspace files and run shell commands the same way CLI mode
+  can. File tools reuse `safe_join()` for workspace confinement;
+  `run_shell` runs with `cwd=workspace` and no further restriction, the
+  same trust level CLI mode's own subprocesses already have. DEC-02
+  (confirm only the first send per session) covers every tool call this
+  loop makes, so nothing beyond that first confirmation gates a shell
+  command once a session is underway — a real, consciously-accepted
+  tradeoff from DEC-21's design interview, not an oversight. Full
+  reasoning: `docs/webui-chat-storage.md`'s "Tool loop" section and
+  [flutter-mapping.html DEC-21](design-system/flutter-mapping.html#s1c).
 
 ## Checklist When A Provider Is Actually Added
 

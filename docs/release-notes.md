@@ -807,6 +807,68 @@
     over the real live server. Exact count via
     `python3 -m unittest discover -s tests -v`.
 
+- CFL-17 follow-up (full agentic parity for API-key mode, resolved as
+  DEC-21): API-key mode started chat-only (DEC-13, Phase 4); this adds
+  the file-edit/shell-exec parity with CLI mode that Phase 4 explicitly
+  deferred. A design interview resolved two open forks: build file tools
+  and the shell tool together in one pass (the larger, riskier option —
+  not the more conservative file-tools-only recommendation), and reuse
+  DEC-02 (confirm only the first send per session) for every tool call
+  this adds rather than requiring a stronger per-call confirmation.
+  - `handoff_webui.py`: four tools (`read_file`, `write_file`,
+    `edit_file`, `run_shell`), declared once in `_TOOL_SPECS` and
+    rendered into each vendor's own schema shape
+    (`anthropic_tool_definitions()`/`openai_tool_definitions()`) so the
+    two can't silently drift apart. `execute_tool_call()` dispatches to
+    the matching executor and never raises — an unknown tool name or a
+    bug inside an executor degrades to an error string the model can see,
+    not a crash mid-conversation. File tools reuse the existing
+    `safe_join()`/`read_file_preview()` primitives for workspace
+    confinement and the existing size cap; `run_shell` runs
+    `subprocess.run(..., shell=True, cwd=workspace)` with a timeout
+    (`TOOL_EXEC_TIMEOUT_SECONDS`, reusing `API_KEY_MODE_TIMEOUT_SECONDS`'
+    value) and an output-length cap (`TOOL_OUTPUT_MAX_CHARS`, truncated
+    with an explicit note, never silently) — no command allowlist, by
+    the interview's own choice, on the reasoning that a bridge-controlled
+    shell tool confined to the workspace directory isn't a new tier of
+    trust beyond what CLI mode's own `codex`/`claude` subprocesses
+    already have when they actually run.
+  - `call_anthropic_messages_api()`/`call_openai_responses_api()` grew
+    the actual turn loop in place, rather than introducing new sibling
+    functions — a response with no tool-call block still returns on the
+    first HTTP call, the exact behavior these two functions had before
+    this change, so a plain chat turn is unaffected. Anthropic's loop
+    sets `tool_choice.disable_parallel_tool_use: true` (one tool call
+    per turn, simpler to log and reason about); OpenAI's Responses API
+    has no documented equivalent, so a response containing more than one
+    `function_call` item executes and returns results for all of them.
+    Both bound a single turn to `MAX_TOOL_ITERATIONS = 15` tool calls,
+    returning whatever text exists plus a note if hit, so a confused
+    model can't loop indefinitely burning API cost. Tool-call activity
+    (tool name, arguments, result) is folded into `final_text` as a
+    fenced code block — DEC-03's existing code-block rendering, not a
+    new message schema or frontend change — so what ran is visible in
+    the persisted chat log even though DEC-02's single confirm gate means
+    nothing interrupts the turn to ask per call.
+  - Both vendors' tool-use JSON shapes (Anthropic's `tool_use`/
+    `tool_result` content blocks, OpenAI's `function_call`/
+    `function_call_output` items) were confirmed against each vendor's
+    current official documentation before implementing, not assumed from
+    older or general knowledge — cited in each function's docstring.
+  - New tests: tool schema consistency between the two vendor shapes,
+    each tool executor directly (path-escape rejection via `safe_join()`,
+    `edit_file`'s exact-one-match requirement, `run_shell`'s timeout and
+    output-truncation handling, an executor exception being caught not
+    propagated), and the turn loop itself with `execute_tool_call()`
+    mocked out (a tool-call round trip, the `MAX_TOOL_ITERATIONS` bound,
+    the `tool_use_id`/`call_id` correctly threaded back, OpenAI's
+    multiple-function-calls-in-one-output case, malformed
+    `arguments` JSON not crashing the loop). Existing tests covering the
+    pre-tool-loop single-call behavior needed only a `workspace` argument
+    added — a response with no tool-call block is exactly their fixture
+    shape, so the loop's zero-iteration case reproduces the old behavior
+    verbatim. Exact count via `python3 -m unittest discover -s tests -v`.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

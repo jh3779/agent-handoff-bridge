@@ -190,8 +190,9 @@ Chat redesign from [`docs/design-system/`](design-system/README.md) — as of
 Phase 1, this actually calls Codex/Claude; as of Phase 2, `--workspace` is
 optional; as of Phase 3, a history drawer shows recent activity across
 every project you've opened, not just the current one; as of Phase 4, a
-provider with no local CLI can be connected via API key instead (chat-only
-— see below); as of Phase 5, Gemini CLI is a third selectable provider; as
+provider with no local CLI can be connected via API key instead (full
+agentic parity with CLI mode as of the CFL-17 follow-up below, chat-only
+before that); as of Phase 5, Gemini CLI is a third selectable provider; as
 of Phase 6, a titlebar badge checks for a newer release. A local stdlib
 HTTP server. What it does:
 
@@ -280,12 +281,15 @@ HTTP server. What it does:
   provider's CLI-detection status. A provider with **no local CLI detected**
   can be connected instead by pasting an API key (and optionally a model) —
   this calls the provider's HTTP API directly instead of a local subprocess.
-  **Chat-only**: this mode exchanges text only, and does not read/edit
-  workspace files or run shell commands the way CLI mode does — full
-  agentic parity is deliberately deferred to a future phase
-  ([CFL-17](design-system/flutter-mapping.html#s2)). A provider whose CLI
-  *is* detected always uses the CLI path, even if a key is also saved for
-  it. Keys are stored in
+  Full agentic parity with CLI mode
+  ([CFL-17](design-system/flutter-mapping.html#s1c), resolved as DEC-21):
+  the model can read, write, and edit files under the workspace and run
+  shell commands in it via a bridge-built tool loop, the same as CLI mode
+  can — DEC-02 (confirm only the first send per session) covers every tool
+  call this makes too, so nothing beyond that first confirmation gates a
+  file write or a shell command once a session is underway. A provider
+  whose CLI *is* detected always uses the CLI path, even if a key is also
+  saved for it. Keys are stored in
   `~/Documents/Agent Handoff Bridge/credentials.json` (`0600`
   permissions), never inside a workspace. A saved key is never echoed back
   into the panel, so **"저장" with an empty key field is a no-op**, not a
