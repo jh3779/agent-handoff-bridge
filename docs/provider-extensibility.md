@@ -8,9 +8,15 @@ model beyond that" to be documented rather than designed — see
 and its Conflict List entries CFL-12/CFL-13 in
 [docs/design-system/flutter-mapping.html](design-system/flutter-mapping.html#s2).
 
-This is a documentation-only deliverable: nothing described here is
-implemented yet. It exists so the next real implementation pass doesn't have
-to rediscover these constraints from scratch.
+This started as a documentation-only deliverable (nothing described here
+was implemented yet) so the next real implementation pass wouldn't have
+to rediscover these constraints from scratch. That implementation pass
+happened in Phase 5 for the CLI-based case (Gemini) — the sections below
+now mix the original forward-looking plan (still accurate for a
+hypothetical *fourth* CLI provider, or for the API-key-based path, which
+remains undesigned beyond Phase 4's chat-only scope) with a record of
+what actually happened for Gemini specifically. Each section says which
+it is.
 
 ## The Current Code Assumed Exactly Two Providers (Resolved In Phase 5)
 
@@ -46,12 +52,20 @@ what had to change, not a forward-looking plan:
   not a JSONL event stream at all, so `parse_jsonl()` doesn't apply to it
   and `summarize_gemini()` parses `stdout` directly instead of taking
   pre-parsed `events`.
-- `ERROR_PATTERNS` / `classify_handoff()` turned out to genuinely need no
-  changes, as predicted — they still classify Gemini's failures via
-  generic stdout/stderr/`errors` text matching. Gemini's own docs don't
-  expose a distinct rate-limit/quota/context-length signal beyond a
-  generic API error, so this project's existing text-pattern approach
-  ends up doing relatively more work for Gemini than it does for
+- `classify_handoff()` itself needed no changes, as predicted — it still
+  classifies Gemini's failures via generic stdout/stderr/`errors` text
+  matching, provider-agnostic as before. `ERROR_PATTERNS`'s `auth` entry
+  did need one addition, found by review after this section originally
+  claimed "no changes needed at all": Gemini's literal, verified
+  `error.type` value `"AuthError"` (and exit code 41's label,
+  `FatalAuthenticationError`) didn't match any existing phrase
+  (`not logged in`/`authentication_failed`/`unauthorized`/`forbidden`),
+  so a real Gemini auth failure was classified `unknown` instead of
+  `auth` until those two exact, sourced strings were added to the
+  pattern. Gemini's own docs still don't expose a distinct rate-limit/
+  quota/context-length signal beyond a generic API error, so beyond that
+  one verified addition, this project's existing text-pattern approach
+  still ends up doing relatively more work for Gemini than it does for
   Codex/Claude's more structured signals — documented as a known
   imprecision in [docs/research-gemini-cli.md](research-gemini-cli.md)
   "Practical Limitations," not solved with new bespoke logic.

@@ -106,7 +106,20 @@ ERROR_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("rate_limit", re.compile(r"\b(429|rate limit|too many requests|usage limit)\b", re.I)),
     ("quota", re.compile(r"\b(quota|token limit|tokens exhausted|insufficient quota)\b", re.I)),
     ("billing", re.compile(r"\b(billing|payment required|spend limit)\b", re.I)),
-    ("auth", re.compile(r"\b(not logged in|authentication_failed|unauthorized|forbidden)\b", re.I)),
+    (
+        "auth",
+        re.compile(
+            # AuthError/FatalAuthenticationError: Gemini's literal
+            # error.type/exit-code-41 vocabulary (docs/research-gemini-cli.md)
+            # -- added after a review found summarize_gemini()'s error dict
+            # (e.g. {"type": "AuthError", "message": "not authenticated"})
+            # didn't match any existing pattern and fell through to
+            # "unknown" instead of "auth", even though this is a verified,
+            # exact signal, not a guess.
+            r"\b(not logged in|authentication_failed|unauthorized|forbidden|AuthError|FatalAuthenticationError)\b",
+            re.I,
+        ),
+    ),
     ("context_limit", re.compile(r"\b(context window|context length|maximum context|max_output_tokens)\b", re.I)),
     ("overloaded", re.compile(r"\b(overloaded|server overloaded|temporarily unavailable)\b", re.I)),
     (
@@ -465,6 +478,27 @@ def next_provider(current: str, tried: "set[str] | frozenset[str]" = frozenset()
     return current
 
 
+def next_available_provider(current: str, tried: "set[str] | frozenset[str]" = frozenset()) -> str:
+    """next_provider(), but also skips any provider whose CLI isn't
+    installed (shutil.which()).
+
+    Found via review, real gap only reachable once PROVIDERS grew past
+    two entries (Phase 5): both call sites below used to call
+    next_provider() directly, which walks PROVIDERS in order with no
+    regard for whether the candidate is actually installed. With exactly
+    two providers this never mattered -- if "the other one" wasn't
+    installed either, there was no third option being skipped past. With
+    three, a codex failure could land the single-hop auto-fallback on an
+    uninstalled "claude" and never reach an installed "gemini" sitting
+    right after it in PROVIDERS order, even though auto-fallback exists
+    specifically to reach a *working* provider. Still exactly one hop
+    (unchanged token-spend-bounding design, docs/research.md) -- this
+    only changes *which* provider that one hop can land on.
+    """
+    not_installed = {provider for provider in PROVIDERS if not shutil.which(provider)}
+    return next_provider(current, tried=set(tried) | not_installed)
+
+
 def git_snapshot() -> str:
     status = short_run(["git", "status", "--short"])
     diff_stat = short_run(["git", "diff", "--stat"])
@@ -787,7 +821,7 @@ def append_current(record: dict[str, Any]) -> None:
 
 def choose_auto_provider(state: dict[str, Any]) -> str:
     if state.get("status") == "handoff_needed" and state.get("last_provider"):
-        return next_provider(state["last_provider"])
+        return next_available_provider(state["last_provider"])
     primary = state.get("primary_provider") or "codex"
     if shutil.which(primary):
         return primary
@@ -900,7 +934,7 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
     print(f"handoff needed: {handoff_needed} ({handoff_reason})")
 
     if handoff_needed:
-        fallback = next_provider(provider)
+        fallback = next_available_provider(provider)
         # Carry the ORIGINAL user_prompt into the fallback, not a generic
         # placeholder -- the handoff_reason is already conveyed separately
         # via build_prompt()'s reason_block, so replacing the actual

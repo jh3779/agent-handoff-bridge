@@ -46,6 +46,23 @@ class ClassifyHandoffTests(unittest.TestCase):
         self.assertTrue(needed)
         self.assertTrue(reason.startswith("auth:"))
 
+    def test_gemini_autherror_is_classified_as_auth_not_unknown(self):
+        # Regression (found in review): summarize_gemini()'s error dict
+        # for an auth failure looks like {"type": "AuthError", "message":
+        # "not authenticated"} -- neither "AuthError" nor "not
+        # authenticated" matched the old auth pattern
+        # (not logged in|authentication_failed|unauthorized|forbidden),
+        # so this fell all the way through to "unknown" even though
+        # AuthError is a verified, exact Gemini signal
+        # (docs/research-gemini-cli.md), not a guess.
+        parsed = hb.summarize_gemini(
+            json.dumps({"response": "", "error": {"type": "AuthError", "message": "not authenticated"}}),
+            exit_code=41,
+        )
+        needed, reason = hb.classify_handoff(41, "", "", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("auth:"), msg=reason)
+
     def test_tool_failure_signal_by_pattern(self):
         needed, reason = hb.classify_handoff(1, "", "bash: codex: command not found", {})
         self.assertTrue(needed)
@@ -88,9 +105,16 @@ class ClassifyHandoffTests(unittest.TestCase):
 
 
 class ChooseAutoProviderTests(unittest.TestCase):
+    # choose_auto_provider()'s handoff_needed branch now goes through
+    # next_available_provider() (review fix), which calls shutil.which()
+    # for every provider -- these three tests assert a specific *ordering*
+    # outcome that must hold regardless of what's actually installed on
+    # whatever machine runs the suite, so shutil.which() is pinned to
+    # "everything is installed" rather than left to the real environment.
     def test_handoff_needed_switches_to_other_provider(self):
         state = {"status": "handoff_needed", "last_provider": "codex", "primary_provider": "codex"}
-        self.assertEqual(hb.choose_auto_provider(state), "claude")
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"):
+            self.assertEqual(hb.choose_auto_provider(state), "claude")
 
     def test_handoff_needed_from_claude_switches_to_gemini(self):
         # Phase 5: PROVIDERS is now ("codex", "claude", "gemini") -- N-way
@@ -98,11 +122,22 @@ class ChooseAutoProviderTests(unittest.TestCase):
         # the start. "the other one" stopped being well-defined once a
         # third provider existed (docs/provider-extensibility.md).
         state = {"status": "handoff_needed", "last_provider": "claude", "primary_provider": "codex"}
-        self.assertEqual(hb.choose_auto_provider(state), "gemini")
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"):
+            self.assertEqual(hb.choose_auto_provider(state), "gemini")
 
     def test_handoff_needed_from_gemini_wraps_around_to_codex(self):
         state = {"status": "handoff_needed", "last_provider": "gemini", "primary_provider": "codex"}
-        self.assertEqual(hb.choose_auto_provider(state), "codex")
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"):
+            self.assertEqual(hb.choose_auto_provider(state), "codex")
+
+    def test_handoff_needed_skips_an_uninstalled_provider_in_between(self):
+        # The exact scenario a review flagged: codex fails, claude isn't
+        # installed, gemini is -- the single-hop fallback must still reach
+        # the installed gemini instead of naively landing on claude and
+        # stopping there.
+        state = {"status": "handoff_needed", "last_provider": "codex", "primary_provider": "codex"}
+        with mock.patch.object(hb.shutil, "which", side_effect=lambda name: name in ("codex", "gemini") and f"/usr/bin/{name}"):
+            self.assertEqual(hb.choose_auto_provider(state), "gemini")
 
     def test_prefers_primary_when_available(self):
         state = {"status": "ready", "primary_provider": "claude"}
@@ -397,6 +432,34 @@ class NextProviderTests(unittest.TestCase):
         self.assertEqual(hb.next_provider("codex", tried={"claude", "gemini"}), "codex")
 
 
+class NextAvailableProviderTests(unittest.TestCase):
+    """Regression coverage (found in review, real gap only reachable once
+    PROVIDERS grew past two entries in Phase 5): a single-hop auto-fallback
+    used to pick next_provider() blindly, with no regard for whether that
+    candidate's CLI was actually installed -- a codex failure could land on
+    an uninstalled claude and never reach an installed gemini sitting right
+    after it in PROVIDERS order."""
+
+    def test_skips_an_uninstalled_provider_to_reach_an_installed_one(self):
+        # codex fails -> naive next_provider() would say "claude" -- but
+        # only codex and gemini are "installed" here, so this must skip
+        # past claude to gemini instead.
+        with mock.patch.object(hb.shutil, "which", side_effect=lambda name: name in ("codex", "gemini") and f"/usr/bin/{name}"):
+            self.assertEqual(hb.next_available_provider("codex"), "gemini")
+
+    def test_still_respects_tried_on_top_of_availability(self):
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"):  # everything "installed"
+            self.assertEqual(hb.next_available_provider("codex", tried={"claude"}), "gemini")
+
+    def test_falls_back_to_current_when_nothing_else_is_installed(self):
+        with mock.patch.object(hb.shutil, "which", side_effect=lambda name: name == "codex" and "/usr/bin/codex"):
+            self.assertEqual(hb.next_available_provider("codex"), "codex")
+
+    def test_matches_plain_next_provider_when_everything_is_installed(self):
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"):
+            self.assertEqual(hb.next_available_provider("codex"), hb.next_provider("codex"))
+
+
 class ProviderCommandGeminiTests(unittest.TestCase):
     def test_first_call_in_a_workspace_has_no_resume_flag(self):
         state = {"sessions": {"gemini": None}}
@@ -542,6 +605,76 @@ class GeminiIntegrationTests(unittest.TestCase):
             # detection, now saved into state so the *next* gemini call in
             # this workspace resumes instead of starting fresh.
             self.assertEqual(state["sessions"]["gemini"], "latest")
+
+    def test_auto_fallback_skips_an_uninstalled_middle_provider_to_reach_gemini(self):
+        # The exact scenario a review flagged as reachable only once
+        # PROVIDERS grew past two entries: codex fails, claude isn't
+        # installed at all, gemini is -- the single-hop auto-fallback
+        # must still land on gemini, not silently stop after failing to
+        # even start "claude".
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/bin/sh\ncat >/dev/null\necho 'Error: rate limit exceeded (429)'\nexit 1\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(0o755)
+            # Deliberately no fake "claude" script in fake_bin.
+
+            fake_gemini = fake_bin / "gemini"
+            fake_gemini.write_text(
+                "#!/bin/sh\ncat >/dev/null\necho '{\"response\": \"gemini picked up the handoff\"}'\n",
+                encoding="utf-8",
+            )
+            fake_gemini.chmod(0o755)
+
+            prompt_path = workspace / "prompt.txt"
+            prompt_path.write_text("hello", encoding="utf-8")
+
+            # PATH is replaced with a minimal system baseline + fake_bin,
+            # not the real inherited PATH (unlike the other integration
+            # tests in this file) -- a prepend-only change would still let
+            # a real `claude` CLI on this machine's actual PATH answer for
+            # "claude", which would silently defeat the point of this
+            # specific test (proving the skip-when-uninstalled behavior,
+            # not "claude happens to also work here"). A fully-empty PATH
+            # doesn't work either -- the fake scripts' own `cat`/`echo`
+            # need /bin or /usr/bin, and dropping it produced a confusing
+            # "cat: command not found" failure inside the fake scripts
+            # instead of the fallback behavior under test.
+            env = dict(os.environ)
+            env["PATH"] = f"{fake_bin}{os.pathsep}/usr/bin:/bin"
+            bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(bridge_script),
+                    "--workspace",
+                    str(workspace),
+                    "run",
+                    "codex",
+                    "--execute",
+                    "--auto-fallback",
+                    "--prompt-file",
+                    str(prompt_path),
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(state["history"]), 2)
+            self.assertEqual(state["history"][0]["provider"], "codex")
+            self.assertEqual(state["history"][1]["provider"], "gemini")
+            self.assertEqual(state["history"][1]["final_text"], "gemini picked up the handoff")
+            self.assertFalse(state["history"][1]["handoff_needed"])
 
 
 if __name__ == "__main__":

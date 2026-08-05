@@ -608,6 +608,43 @@
       exit-code/JSON-body correlation on failure, a nonzero exit with a
       superficially clean body could have marked a failed run resumable.
       Now requires `exit_code == 0` too.
+  - **Round 2** (real automated review posted on the PR itself, not a
+    pasted transcript this time): 2 real bugs and 1 real doc
+    contradiction found, all fixed:
+    - a Gemini `AuthError`/exit-41 auth failure classified as `unknown`
+      instead of `auth` — `ERROR_PATTERNS`'s auth regex only matched
+      Codex/Claude's own error vocabulary
+      (`not logged in`/`authentication_failed`/`unauthorized`/`forbidden`),
+      none of which Gemini's literal, verified error strings contain.
+      Added `AuthError`/`FatalAuthenticationError` to the pattern —
+      exact, sourced strings from `docs/research-gemini-cli.md`, not a
+      guess at unverified text;
+    - the single-hop auto-fallback could skip past an installed,
+      working provider entirely: `next_provider()` (and
+      `choose_auto_provider()`'s handoff-needed branch) picked the next
+      provider in `PROVIDERS` order with no regard for whether it was
+      actually installed — with exactly two providers this never
+      mattered (no third option to skip past), but with three, a codex
+      failure landing on an uninstalled claude meant gemini was never
+      reached, even though it was right there and working. Added
+      `next_available_provider()`, a `shutil.which()`-aware wrapper used
+      everywhere a fallback target is actually *picked* (not the purely
+      informational message in `init_handoff()`); `handoff_webui.py`'s
+      timeout-guess (fixed in round 1, above) now calls it too, to keep
+      guessing the same thing the real subprocess actually does;
+    - `docs/provider-extensibility.md`'s intro still said "nothing
+      described here is implemented yet" directly above a section titled
+      "...(Resolved In Phase 5)" — reworded to describe both the
+      still-forward-looking parts (a hypothetical fourth provider,
+      API-key-mode extension) and the now-historical Gemini record in
+      the same doc.
+    - 7 more new tests in this round (plus 3 pre-existing
+      `ChooseAutoProviderTests` pinned to a mocked `shutil.which`, since
+      `next_available_provider()` made their outcome depend on what's
+      actually installed on whatever machine runs the suite), including
+      a real-subprocess integration test reproducing the exact
+      skip-uninstalled-provider scenario with fake `codex`/`gemini`
+      binaries and no `claude` on `PATH` at all.
 
 ## v0.1.0 — 2026-08-03
 

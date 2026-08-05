@@ -35,7 +35,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from handoff_bridge import HANDOFF_DIR, PROVIDERS, WriteLock, atomic_write_text, choose_auto_provider, next_provider
+from handoff_bridge import (
+    HANDOFF_DIR,
+    PROVIDERS,
+    WriteLock,
+    atomic_write_text,
+    choose_auto_provider,
+    next_available_provider,
+)
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
@@ -1303,13 +1310,17 @@ def _run_provider_via_bridge_locked(
             # fallback logic in handoff_bridge.py, but this webui-local
             # guess was never updated to match. With PROVIDERS now 3-wide,
             # the recursive fallback call handoff_bridge.py actually made
-            # is next_provider(new_records[-1]["provider"]), not always
-            # "the other of codex/claude" -- e.g. a claude run needing
-            # handoff recurses into gemini, not codex. Reusing the same
-            # function here (rather than reimplementing the guess) is the
-            # only way this stays correct if PROVIDERS' order ever changes
-            # again.
-            timed_out_provider = next_provider(new_records[-1]["provider"])
+            # is next_available_provider(new_records[-1]["provider"]) (a
+            # second review found run_provider() itself needed the
+            # CLI-availability-aware variant, not plain next_provider(),
+            # so this guess has to match exactly that or it can name the
+            # wrong provider whenever the naive next-in-order pick isn't
+            # installed) -- e.g. a claude run needing handoff recurses
+            # into gemini, not codex, and skips further if gemini isn't
+            # installed either. Reusing the same function here (rather
+            # than reimplementing the guess) is the only way this stays
+            # correct if PROVIDERS' order or installed set ever changes.
+            timed_out_provider = next_available_provider(new_records[-1]["provider"])
             new_records.append(
                 {
                     "provider": timed_out_provider,
