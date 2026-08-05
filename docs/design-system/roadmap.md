@@ -431,7 +431,7 @@ List에서 제거됨.
 ## Phase 7 — 프레임워크 전환 (DEC-01, 최종 목표)
 
 **목표**: `handoff_webui.py` + `webui/`(stdlib + 선택적 pywebview)를
-DEC-01이 가리키는 실제 프로덕션 스택(Tauri/Electron류)으로 이관.
+DEC-01이 가리키는 실제 프로덕션 스택으로 이관.
 
 **왜 마지막인가**: Phase 1–6에서 기능·UX가 계속 바뀐다. 그 상태에서
 무거운 프레임워크 전환부터 하면 같은 화면을 두 번 만드는 셈이 된다.
@@ -441,7 +441,51 @@ DEC-01이 가리키는 실제 프로덕션 스택(Tauri/Electron류)으로 이�
 **해소하는 항목**: [CFL-06](flutter-mapping.html#s1b)(선택 완료, 실행만
 남음), [CFL-09](flutter-mapping.html#s2)(배포 파이프라인 재설계 —
 "zip 하나로 git 없이 실행" 모델이 여기서 끝나므로
-[release-process.md](../release-process.md)도 이 단계에서 다시 써야 함).
+[release-process.md](../release-process.md)도 이 단계에서 다시 써야 함),
+[CFL-14](flutter-mapping.html#s1c) 해소(MVP를 계속 확장할지/재작성할지
+질문 — 재작성 쪽으로 확정, 단 백엔드는 그대로 옮김).
+
+**착수 전 조사** ([docs/research-phase7-framework.md](../research-phase7-framework.md)):
+Tauri·Electron 둘 다 공식 문서상 이 프로젝트의 Python 백엔드를 다시 쓰지
+않고 sidecar(외부 바이너리)로 그대로 유지할 수 있고, 둘 다 바닐라
+JS/CSS/HTML 프론트엔드도 그대로 유지할 수 있다 — 실제 갈림길은 (1) Tauri의
+공식 sidecar 지원(PyInstaller로 빌드한 Python API 서버를 문서에서 직접
+예시로 듦)이 Electron의 서드파티 조합(electron-builder)보다 이 프로젝트
+모양에 훨씬 잘 맞는다는 점, (2) 반대로 private repo 자동 업데이트는
+Electron 쪽(electron-updater, 문서화는 됐지만 "매우 특수한 경우에만"
+경고)이 Tauri(문서화된 경로 자체가 없음)보다 낫다는 점.
+
+**설계 확정** (2026-08-05, 조사 결과를 바탕으로 킥오프 질문 4건 →
+[flutter-mapping.html DEC-22](flutter-mapping.html#s1c)):
+- 프레임워크 = **Tauri**(Electron 기각). sidecar 우위가 이 프로젝트
+  실제 모양에 더 결정적이고, Electron의 유일한 우위(자동 업데이트)는
+  아래 결정으로 애초에 필요 없어짐.
+- 백엔드 = **`handoff_webui.py`를 PyInstaller sidecar로 그대로 유지**,
+  Rust 재작성 안 함. 검증된 353개 테스트 커버 로직을 버릴 이유 없음.
+- 자동 업데이트 = **기존 `check_for_update()`(DEC-19, `gh` CLI 재사용)
+  그대로 유지**, Tauri 공식 updater 채택 안 함 — 어느 프레임워크의
+  공식 updater도 private repo를 깔끔히 지원하지 않음.
+- 프론트엔드 = **이번 phase는 기존 바닐라 JS `webui/`를 근접 그대로
+  이식**. DEC-01의 원래 동기(네이티브 애니메이션)를 위한 프론트엔드
+  프레임워크 도입은 의도적으로 후속 sub-phase로 연기.
+- 코드 서명(macOS 공증·Windows 서명)은 이번 인터뷰 범위 밖 — 별도
+  결정 필요, 미서명 상태로 우선 진행 가능.
+
+**Sub-phase 분해** (하나의 거대한 PR 대신 이전 phase들과 같은 크기
+규율 적용):
+- **7a — Tauri 셸 + Python sidecar (기능적 동등성만, 비주얼 다듬기 없음)**:
+  Tauri v2 프로젝트 스캐폴딩(바닐라 JS 템플릿), `handoff_webui.py`를
+  PyInstaller로 빌드해 sidecar로 등록, 기존 `webui/`를 sidecar의 로컬
+  HTTP 서버에 그대로 연결. 최소 한 OS(개발 머신)에서 엔드투엔드 동작
+  확인이 목표 — 배포 파이프라인·서명·크로스플랫폼 빌드는 범위 밖.
+- **7b — 크로스플랫폼 빌드 + 패키징**: Windows/Linux PyInstaller 빌드,
+  Tauri 번들 설정(설치형 산출물), `scripts/package_platforms.py`의 zip
+  방식 대체, `release-process.md` 재작성(CFL-09 해소).
+- **7c — 코드 서명**: macOS 공증 + Windows 서명. 비용/계정 준비가
+  필요해 별도 결정 게이트.
+- **7d (별도 논의, 이번 범위 밖)** — 프론트엔드 프레임워크 도입(DEC-01의
+  네이티브 애니메이션 목표를 실제로 달성하려면 필요할 가능성이 높지만,
+  기술적으로는 독립된 결정).
 
 ---
 
@@ -456,7 +500,7 @@ DEC-01이 가리키는 실제 프로덕션 스택(Tauri/Electron류)으로 이�
 | 4 — API 키 모드 | ✅ 완료 | CFL-12 해소, DEC-13~16 적용 (CFL-17 후속 발견 → DEC-21로 별도 해소) |
 | 5 — Gemini + provider 확장성 | ✅ 완료 | CFL-13 해소, DEC-17/18 적용 |
 | 6 — 자동 업데이트 확인 | ✅ 완료 | CFL-11 해소, DEC-19 적용 (CFL-18 후속 발견 → DEC-20으로 별도 해소) |
-| 7 — 프레임워크 전환 | 미착수 | CFL-06(실행), CFL-09 |
+| 7 — 프레임워크 전환 | 🚧 진행 중 (설계 확정, 7a 착수) | CFL-06(실행), CFL-09, CFL-14 해소·DEC-22 적용 |
 
 이 표가 정본은 아니다 — 각 phase가 끝나면 여기 상태만 갱신하고, 실제
 해소 근거는 [flutter-mapping.html Conflict List](flutter-mapping.html#s2)

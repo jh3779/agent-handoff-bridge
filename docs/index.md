@@ -54,6 +54,9 @@ context.
 - [Research: Gemini CLI](research-gemini-cli.md): Phase 5's
   pre-implementation research into Gemini CLI's non-interactive mode,
   JSON output, session resume, auth, and hooks.
+- [Research: Framework Migration](research-phase7-framework.md): Phase 7's
+  pre-implementation research into Tauri vs Electron, Python-backend
+  sidecar support, auto-update against a private repo, and code signing.
 
 ## Templates And Machine Contracts
 
