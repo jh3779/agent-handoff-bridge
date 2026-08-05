@@ -40,6 +40,7 @@ from handoff_bridge import (
     PROVIDERS,
     WriteLock,
     atomic_write_text,
+    check_for_update,
     choose_auto_provider,
     next_available_provider,
 )
@@ -1471,6 +1472,45 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         }
                     )
                 self._send_json(200, {"providers": providers})
+            elif parsed.path == "/api/update-check":
+                # Phase 6 (SCR-07): reads the cached result of the
+                # background check main() kicked off at startup -- never
+                # runs `gh` itself on this request path, so this is
+                # always a fast, synchronous read regardless of network
+                # conditions.
+                #
+                # `checked` (review fix: a real race, not a nitpick) lets
+                # the frontend tell "still checking" (poll again shortly)
+                # apart from "checked, no update" (stop asking) -- the
+                # real `gh` call is network I/O and can easily still be
+                # in flight by the time the page's first request for this
+                # arrives, especially right after server startup.
+                #
+                # Read `checked` BEFORE `info`, opposite of the write
+                # order in _check_for_update_in_background() (info then
+                # checked) -- a second review found this matters: if the
+                # background thread's two writes land in the gap between
+                # this handler's own two reads, reading `info` first
+                # could observe the pre-write `None` alongside a
+                # freshly-written `checked = True`, reporting "checked,
+                # no update" for a request that actually raced a real
+                # update being found. Reading `checked` first instead
+                # means the only possible stale read is `checked = False`
+                # paired with a not-yet-visible `info` -- which just tells
+                # the polling client to ask again, the safe direction to
+                # be wrong in (under-reporting readiness self-corrects on
+                # the next poll; over-reporting readiness with stale data
+                # does not, since the client stops polling on `checked:
+                # true`).
+                checked = state.update_checked
+                # Only look at `info` at all once `checked` was observed
+                # True -- if the writer hasn't gotten there yet, `info`
+                # isn't meaningful regardless of what value happens to be
+                # sitting in it, so this never spreads a value the
+                # `checked: false` response shouldn't be making claims
+                # about either way.
+                info = state.update_info if checked else None
+                self._send_json(200, {"checked": checked, "update_available": info is not None, **(info or {})})
             else:
                 self.send_error(404, "not found")
 
@@ -1645,6 +1685,27 @@ class AppState:
 
     def __init__(self, workspace: Path | None):
         self.workspace = workspace
+        # Phase 6 (SCR-07): written once by a background thread started in
+        # main() shortly after startup, read by GET /api/update-check.
+        # Plain attributes, not behind a lock: single write-once-then-
+        # read-many values, and CPython attribute assignment is already
+        # atomic with respect to concurrent reads from other request
+        # threads.
+        #
+        # update_checked distinguishes "the background check hasn't
+        # finished yet" from "it finished and found nothing newer" --
+        # both used to collapse into the same `update_info is None`,
+        # which a review correctly flagged as a real race: the real `gh`
+        # subprocess call is network I/O (can easily take a few seconds),
+        # while the page load + its first GET /api/update-check can
+        # finish well before that -- webui/app.js used to check exactly
+        # once at boot, so a frontend that happened to ask before the
+        # background check finished would permanently treat "still
+        # checking" as "no update," even once the real answer arrived
+        # moments later. app.js now polls while `checked` is false
+        # instead of asking only once.
+        self.update_checked = False
+        self.update_info: dict | None = None
 
 
 class Api:
@@ -1713,6 +1774,23 @@ def is_loopback_host(host: str) -> bool:
     return host in LOOPBACK_HOSTS
 
 
+def _check_for_update_in_background(state: "AppState") -> None:
+    """Runs check_for_update() (a real `gh` subprocess call -- network
+    I/O, can take a few seconds) off the startup path so server boot and
+    the browser/native window opening aren't delayed by it. Matches
+    docs/design-system/wireframes.html SCR-07's "앱 시작 시 백그라운드로
+    최신 릴리즈 확인" -- once at startup, not on every request.
+    check_for_update() itself never raises (gh missing/unauthenticated/
+    offline all just resolve to None), so nothing here needs its own
+    try/except.
+
+    Sets `update_info` before `update_checked` -- a reader that observes
+    `update_checked is True` must never see a stale/uninitialized
+    `update_info` alongside it."""
+    state.update_info = check_for_update()
+    state.update_checked = True
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not is_loopback_host(args.host):
@@ -1729,6 +1807,8 @@ def main(argv: list[str] | None = None) -> int:
         ensure_chat_gitignore(state.workspace)
         archive_old_months(state.workspace, utc_now())
         touch_registry(state.workspace, utc_now())  # DEC-10: CLI startup counts too
+
+    threading.Thread(target=_check_for_update_in_background, args=(state,), daemon=True).start()
 
     handler = build_handler(state)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)

@@ -677,6 +677,113 @@
       corrected to say what's actually true of each (`classify_handoff()`
       itself: no changes; `ERROR_PATTERNS`: one addition).
 
+- Web UI Phase 6 (automatic update check, SCR-07): resolves CFL-11. This
+  repo is private, so an anonymous request can't list its GitHub
+  Releases — resolved (DEC-19) by shelling out to the user's own local
+  `gh` CLI auth rather than standing up new public infrastructure, the
+  same tool `docs/release-process.md` already assumes for cutting
+  releases:
+  - `handoff_bridge.py`: `GITHUB_REPO` constant, `parse_version_tuple()`
+    (`"v0.2.0"` → `(0, 2, 0)`, `None` on anything unparseable),
+    `check_for_update()` — runs `gh release view --repo <repo> --json
+    tagName,url` via the existing `short_run()` helper (which already
+    turns a missing/timed-out `gh` into a clean exit code rather than an
+    exception), compares against `BRIDGE_VERSION`, returns
+    `{latest_version, current_version, url}` only when a genuinely newer
+    release exists — never raises, same fail-silent posture as
+    `touch_registry()` elsewhere in this project, since this is a
+    background convenience check nobody explicitly asked to run;
+  - `handoff_webui.py`: `AppState.update_info` (a plain attribute, not
+    behind a lock — write-once-then-read-many from a single background
+    thread, not a contended read-modify-write like credentials/registry
+    are). `main()` starts `_check_for_update_in_background()` as a daemon
+    thread right after constructing `AppState`, so the real `gh`
+    subprocess call (network I/O, can take a few seconds) never delays
+    server startup or the browser/native window opening. `GET
+    /api/update-check` only ever reads the cached result, so it's always
+    fast regardless of network conditions;
+  - `webui/index.html`/`app.css`/`app.js`: a titlebar "업데이트" button
+    (always visible, matching components.html §15's "평소엔 아이콘만")
+    with a small dot badge that only appears when an update is
+    available, opening a popover with the version and a
+    "릴리즈 노트 보기" link on click. The wireframe only mocked the
+    "update available" state — clicking the button when already current
+    (or when the check failed/never ran) reuses the existing toast
+    mechanism ("최신 버전을 사용 중입니다") instead of inventing a second
+    popover layout for a state nothing designed;
+  - 17 new tests: `parse_version_tuple()` (v-prefix, unparseable input,
+    differing-length version comparison), `check_for_update()` (newer
+    release detected, same/older version not reported as an update, `gh`
+    missing/erroring/returning malformed JSON all resolve to `None`, the
+    call pins `--repo` rather than relying on `cwd`), the background
+    check populating `AppState.update_info`, and `GET /api/update-check`
+    reflecting both the empty and populated cache states over a real HTTP
+    server. Exact count via `python3 -m unittest discover -s tests -v`.
+  - **Round 2** (real automated review, one genuine correctness bug
+    found): `state.update_info is None` used to mean both "the
+    background check hasn't finished yet" and "it finished and found
+    nothing newer" — collapsed into the same
+    `{"update_available": false}` response. The real `gh` subprocess
+    call is network I/O and can easily still be running when the page's
+    first `GET /api/update-check` arrives, especially right after server
+    startup, and `webui/app.js` only asked once at boot with no retry —
+    so a normal server start could silently and permanently miss
+    showing the badge even when an update genuinely existed, not a rare
+    edge case. Added `AppState.update_checked` to tell "pending" apart
+    from "checked, nothing found," and the frontend now polls (1.5s
+    interval, up to 10 times — comfortably past `short_run()`'s 10s
+    default timeout) while `checked` is false instead of asking exactly
+    once. New and updated tests cover the pending-vs-checked distinction
+    specifically — exact count via `python3 -m unittest discover -s tests -v`,
+    per this file's usual anti-drift practice (an exact figure here was
+    corrected once already after a review found it didn't match the real
+    diff).
+  - **Round 3** (follow-up review confirming round 2's fix, then one
+    more low-severity, non-blocking finding): clicking the update button
+    during the ~15s polling window (round 2's fix) showed the same
+    "최신 버전을 사용 중입니다" toast as a genuinely confirmed up-to-date
+    result, even though nothing had actually been confirmed yet — a
+    minor false reassurance if an update actually existed and just
+    hadn't been polled-in yet. Added a frontend `updateCheckPending`
+    flag (starts `true`, flips to `false` only once a response actually
+    reports `checked: true`) so the button shows "업데이트 확인
+    중입니다…" during that window instead.
+  - **Round 4** (independent self-review, requested explicitly before
+    merge rather than waiting further on external review): traced the
+    actual bytecode-level read/write ordering rather than trusting the
+    round-2 fix's own comments, and found a real (if narrow) reader-side
+    counterpart to the exact race round 2 fixed:
+    - `GET /api/update-check`'s handler read `update_info` *before*
+      `update_checked` — the opposite order from how the background
+      thread writes them (`update_info` then `update_checked`, so a
+      reader checking `update_checked` second always sees it True only
+      after `update_info` is really populated). If the two writes landed
+      in the gap between the handler's own two reads, it could observe a
+      stale (pre-write) `info` alongside a fresh `checked = True`,
+      reporting "checked, no update" for a request that actually raced a
+      real update being found — silently reproducing round 2's bug from
+      the other side. Fixed by reading `checked` first: the only
+      possible stale read becomes `checked = False`, which just makes
+      the polling client ask again (safe direction to be wrong in) —
+      the value in `update_info` is no longer even consulted unless
+      `checked` was already observed `True`;
+    - `webui/app.js`'s polling `catch` block gave up permanently on any
+      single fetch exception, not just after retries were exhausted —
+      undermining the round-2 fix's entire premise (retrying) if even
+      one transient blip happened (e.g. the server not yet accepting
+      connections in the instant right after startup). Now retried the
+      same bounded way as an unfinished check;
+    - an off-by-one let 11 fetches through a "`UPDATE_CHECK_MAX_POLLS =
+      10`" bound (`attempt < 10` with a 0-indexed `attempt` allows
+      attempts 0 through 10); fixed to `attempt + 1 < 10`;
+    - added a live-server test exercising the actual pending → checked
+      *transition* (a genuine background thread gated by a
+      `threading.Event`, not just the two static end-states the earlier
+      tests asserted directly via `state.*` assignment) — the gap for
+      this existed even though the test class already had the
+      `ThreadingHTTPServer` machinery to close it cheaply;
+    - corrected an inflated test count from round 2's own entry above.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

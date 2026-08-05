@@ -35,6 +35,13 @@
   const providerPanelOverlay = document.getElementById("provider-panel-overlay");
   const providerPanelList = document.getElementById("provider-panel-list");
   const providerPanelClose = document.getElementById("provider-panel-close");
+  const updateBtn = document.getElementById("update-btn");
+  const updateDot = document.getElementById("update-dot");
+  const updatePopover = document.getElementById("update-popover");
+  const updatePopoverVersion = document.getElementById("update-popover-version");
+  const updatePopoverNote = document.getElementById("update-popover-note");
+  const updateLaterBtn = document.getElementById("update-later-btn");
+  const updateReleaseNotesBtn = document.getElementById("update-release-notes-btn");
 
   /** @type {{name: string, path: string|null, content: string|null, truncated: boolean}[]} */
   let attachments = [];
@@ -784,9 +791,118 @@
     }
   }
 
+  // ---------- update check (Phase 6, SCR-07/components.html §15) ----------
+
+  let latestUpdateInfo = null;
+  // Starts true, flips to false only once a GET /api/update-check
+  // response actually reports checked: true (see checkForUpdate() below).
+  // Review fix: without this, clicking the button during the polling
+  // window (checked still false, so latestUpdateInfo is still null too)
+  // showed the same "최신 버전을 사용 중입니다" toast as a real confirmed
+  // up-to-date result -- a false reassurance if an update actually
+  // existed and just hadn't been confirmed yet.
+  let updateCheckPending = true;
+
+  function openUpdatePopover() {
+    if (updateCheckPending) {
+      showToast("업데이트 확인 중입니다…");
+      return;
+    }
+    if (!latestUpdateInfo) {
+      // components.html §15: the button/icon is always visible ("평소엔
+      // 아이콘만"), only the dot is conditional -- reuse the existing
+      // toast mechanism for the "you're already current" case instead of
+      // inventing a second popover layout the wireframe never mocked.
+      showToast("최신 버전을 사용 중입니다.");
+      return;
+    }
+    updatePopoverVersion.textContent = `v${latestUpdateInfo.latest_version} 사용 가능`;
+    updatePopoverNote.textContent = `현재 v${latestUpdateInfo.current_version} 사용 중. 릴리즈 노트를 확인하고 업데이트하세요.`;
+    updatePopover.classList.add("show");
+  }
+
+  function closeUpdatePopover() {
+    updatePopover.classList.remove("show");
+  }
+
+  // The real `gh` call server-side is network I/O (handoff_bridge.py's
+  // short_run() gives it up to 10s before giving up) -- the page's first
+  // GET /api/update-check can easily arrive before that background check
+  // finishes, especially right after server startup. Poll while
+  // `checked` is false instead of asking exactly once (review fix: a
+  // real race, not a hypothetical -- a single-shot check would silently
+  // and permanently miss the badge whenever the page loaded faster than
+  // the network call). Bounded so a hung/never-finishing check (gh
+  // installed but stuck, unusual network conditions) doesn't poll
+  // forever -- comfortably past the 10s worst case, then give up
+  // quietly like every other failure mode this feature already treats
+  // as "can't tell right now."
+  const UPDATE_CHECK_POLL_INTERVAL_MS = 1500;
+  const UPDATE_CHECK_MAX_POLLS = 10;
+
+  function scheduleUpdateCheckRetry(attempt) {
+    // attempt is 0-indexed (the first fetch already happened before this
+    // is ever called), so this caps the total fetch count at
+    // UPDATE_CHECK_MAX_POLLS, not UPDATE_CHECK_MAX_POLLS + 1 -- a review
+    // found the original `attempt < UPDATE_CHECK_MAX_POLLS` check let one
+    // extra fetch through (attempts 0..10 = 11 calls for a "10" bound).
+    if (attempt + 1 < UPDATE_CHECK_MAX_POLLS) {
+      window.setTimeout(() => checkForUpdate(attempt + 1), UPDATE_CHECK_POLL_INTERVAL_MS);
+    }
+    // Otherwise: polling exhausted with no confirmed answer --
+    // updateCheckPending deliberately stays true rather than falling
+    // through to "up to date," since that was never actually confirmed.
+  }
+
+  async function checkForUpdate(attempt = 0) {
+    let data;
+    try {
+      data = await fetchJSON("/api/update-check");
+    } catch {
+      // A transient fetch failure (e.g. the server briefly not accepting
+      // connections in the instant right after startup) must not
+      // permanently give up on the whole check -- that would undermine
+      // the entire point of polling (review fix: the original version
+      // only retried on "not checked yet" and treated any fetch
+      // exception as final, even a one-off blip on the very first
+      // attempt). Retried the same bounded way as an unfinished check.
+      scheduleUpdateCheckRetry(attempt);
+      return;
+    }
+    if (!data.checked) {
+      scheduleUpdateCheckRetry(attempt);
+      return;
+    }
+    updateCheckPending = false;
+    if (data.update_available) {
+      latestUpdateInfo = data;
+      updateDot.classList.add("show");
+    }
+  }
+
+  updateBtn.addEventListener("click", openUpdatePopover);
+  updateLaterBtn.addEventListener("click", closeUpdatePopover);
+  updateReleaseNotesBtn.addEventListener("click", () => {
+    if (latestUpdateInfo && latestUpdateInfo.url) window.open(latestUpdateInfo.url, "_blank", "noopener");
+    closeUpdatePopover();
+  });
+  document.addEventListener("click", (event) => {
+    if (updatePopover.classList.contains("show") && !updatePopover.contains(event.target) && event.target !== updateBtn && !updateBtn.contains(event.target)) {
+      closeUpdatePopover();
+    }
+  });
+
   // ---------- boot ----------
 
   async function boot() {
+    // Fire-and-forget, not awaited: the update check is independent of
+    // workspace state (SCR-07 runs it "앱 시작 시" regardless of whether a
+    // workspace is even open yet) and must never delay the rest of boot
+    // on a slow/offline `gh` call -- though in practice the server-side
+    // check already ran in main()'s background thread before this page
+    // even loaded, so this fetch is normally near-instant either way.
+    checkForUpdate();
+
     let info;
     try {
       info = await refreshWorkspaceLabel();

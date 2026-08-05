@@ -2513,5 +2513,122 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         self.assertIn("error", data)
 
 
+class CheckForUpdateInBackgroundTests(unittest.TestCase):
+    def test_a_fresh_appstate_has_not_been_checked_yet(self):
+        # Regression guard for the race a review found: before this
+        # function ever runs, update_checked must read as False, not be
+        # indistinguishable from "checked, nothing found".
+        state = webui.AppState(None)
+        self.assertFalse(state.update_checked)
+        self.assertIsNone(state.update_info)
+
+    def test_sets_state_update_info_from_check_for_update(self):
+        state = webui.AppState(None)
+        with mock.patch(
+            "handoff_webui.check_for_update",
+            return_value={"latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"},
+        ):
+            webui._check_for_update_in_background(state)
+        self.assertEqual(state.update_info["latest_version"], "0.2.0")
+        self.assertTrue(state.update_checked)
+
+    def test_none_result_leaves_update_info_none_but_still_marks_checked(self):
+        # The critical distinction the race fix depends on: a completed
+        # check that found nothing must be told apart from a check that
+        # simply hasn't run yet -- both leave update_info as None, but
+        # only a real completion sets update_checked.
+        state = webui.AppState(None)
+        with mock.patch("handoff_webui.check_for_update", return_value=None):
+            webui._check_for_update_in_background(state)
+        self.assertIsNone(state.update_info)
+        self.assertTrue(state.update_checked)
+
+
+class UpdateCheckLiveServerTests(unittest.TestCase):
+    """GET /api/update-check over a real HTTP server -- same pattern as
+    ProviderApiLiveServerTests."""
+
+    def setUp(self):
+        self.state = webui.AppState(None)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def _get(self, path: str) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def test_before_the_background_check_finishes_checked_is_false(self):
+        # Regression coverage for the race a review found: this must be
+        # distinguishable from "checked, no update" (below) -- a
+        # single-shot frontend fetch that landed in this window used to
+        # permanently (and silently) miss a real update found moments
+        # later, since both cases used to collapse into the same
+        # {"update_available": False} response.
+        status, data = self._get("/api/update-check")
+        self.assertEqual(status, 200)
+        self.assertEqual(data, {"checked": False, "update_available": False})
+
+    def test_checked_with_no_update_found_is_distinguishable_from_pending(self):
+        self.state.update_checked = True
+        status, data = self._get("/api/update-check")
+        self.assertEqual(status, 200)
+        self.assertEqual(data, {"checked": True, "update_available": False})
+
+    def test_populated_update_info_is_reflected(self):
+        self.state.update_checked = True
+        self.state.update_info = {"latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"}
+        status, data = self._get("/api/update-check")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["checked"])
+        self.assertTrue(data["update_available"])
+        self.assertEqual(data["latest_version"], "0.2.0")
+        self.assertEqual(data["url"], "https://example.invalid")
+
+    def test_sequential_requests_observe_the_real_pending_to_checked_transition(self):
+        # A review pointed out the other tests here only ever assert the
+        # two static end-states by setting state.* directly -- this one
+        # exercises the actual transition a real page load experiences,
+        # over the real live server, with a genuine background thread
+        # (gated by an Event instead of a real multi-second `gh` call).
+        release = threading.Event()
+
+        def _delayed_check():
+            release.wait(timeout=5)
+            return {"latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"}
+
+        with mock.patch("handoff_webui.check_for_update", side_effect=_delayed_check):
+            bg_thread = threading.Thread(
+                target=webui._check_for_update_in_background, args=(self.state,), daemon=True
+            )
+            bg_thread.start()
+            try:
+                # The background thread is parked on `release` -- a
+                # request arriving now must observe the pending state,
+                # never a stale/incorrect "checked" answer for it.
+                status, data = self._get("/api/update-check")
+                self.assertEqual(status, 200)
+                self.assertEqual(data, {"checked": False, "update_available": False})
+            finally:
+                release.set()
+                bg_thread.join(timeout=5)
+            # Once the background thread has actually finished, the same
+            # endpoint must reflect the real result on the next request.
+            status, data = self._get("/api/update-check")
+            self.assertEqual(status, 200)
+            self.assertTrue(data["checked"])
+            self.assertTrue(data["update_available"])
+            self.assertEqual(data["latest_version"], "0.2.0")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -313,6 +313,28 @@ body {
 }
 .toast.show { display: block; }
 
+/* Phase 6: SCR-07 / components.html §15 update badge + popover
+   (DEC-19, docs/design-system/flutter-mapping.html#s1c). */
+.update-btn { position: relative; border-color: var(--primary); color: var(--primary); }
+.update-dot {
+  position: absolute; top: -3px; right: -3px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--primary); display: none;
+}
+.update-dot.show { display: block; }
+.update-popover {
+  position: fixed; top: 44px; right: 14px; z-index: 25;
+  background: var(--surface); border: 1px solid var(--outline); border-radius: 12px;
+  padding: 12px 14px; width: 260px; box-shadow: 0 4px 18px rgba(0,0,0,.25);
+  display: none;
+}
+.update-popover.show { display: block; }
+.update-popover .pp-title { font-weight: 700; font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
+.update-popover button {
+  border-radius: 8px; border: 1px solid var(--outline); background: var(--surface);
+  padding: 5px 10px; font-size: 10.5px; cursor: pointer; font-family: var(--font);
+}
+.update-popover button.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }
+
 /* Phase 3: SCR-03 multi-project history drawer
    (DEC-08~12, docs/design-system/flutter-mapping.html#s1c). */
 .scrim {

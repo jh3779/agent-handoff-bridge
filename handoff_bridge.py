@@ -20,6 +20,14 @@ from typing import Any
 
 BRIDGE_VERSION = "0.1.0"
 
+# Phase 6 (docs/design-system/roadmap.md, SCR-07, resolves CFL-11): this
+# repo is private (docs/security-model.md), so an anonymous request can't
+# list its GitHub Releases. check_for_update() below shells out to the
+# user's own local `gh` CLI auth instead of standing up new public
+# infrastructure -- the same tool docs/release-process.md already assumes
+# for cutting releases, just reused for reading them too.
+GITHUB_REPO = "jh3779/agent-handoff-bridge"
+
 BRIDGE_ROOT = Path(__file__).resolve().parent
 HANDOFF_DIR = Path(".handoff")
 RUNS_DIR = HANDOFF_DIR / "runs"
@@ -266,6 +274,54 @@ def short_run(args: list[str], timeout: int = 10) -> tuple[int, str, str]:
     except subprocess.TimeoutExpired as exc:
         return 124, decode_timeout_output(exc.stdout), decode_timeout_output(exc.stderr) or "timed out"
     return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def parse_version_tuple(version_str: str) -> "tuple[int, ...] | None":
+    """"v0.2.0" or "0.2.0" -> (0, 2, 0). None if unparseable -- a
+    malformed or unexpected tag (release process typo, a non-version tag
+    someone pushed) must never crash the update check, just make it
+    unable to compare, which check_for_update() treats as "no update"."""
+    cleaned = version_str.strip().lstrip("vV")
+    if not cleaned:
+        return None
+    parts = cleaned.split(".")
+    try:
+        return tuple(int(part) for part in parts)
+    except ValueError:
+        return None
+
+
+def check_for_update() -> "dict[str, str] | None":
+    """Returns {"latest_version", "current_version", "url"} if a newer
+    release exists on GitHub, else None. Never raises -- `gh` missing,
+    unauthenticated, offline, rate-limited, or returning something
+    unparseable all just mean "can't tell right now," the same
+    fail-silent posture as touch_registry() elsewhere in this project:
+    this is a background convenience check
+    (docs/design-system/wireframes.html SCR-07 -- "앱 시작 시 백그라운드로
+    최신 릴리즈 확인"), not something that should ever surface an error to
+    a user who didn't ask for one.
+    """
+    exit_code, stdout, _stderr = short_run(
+        ["gh", "release", "view", "--repo", GITHUB_REPO, "--json", "tagName,url"]
+    )
+    if exit_code != 0:
+        return None
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    tag = data.get("tagName")
+    url = data.get("url")
+    if not isinstance(tag, str) or not isinstance(url, str):
+        return None
+    latest = parse_version_tuple(tag)
+    current = parse_version_tuple(BRIDGE_VERSION)
+    if latest is None or current is None or latest <= current:
+        return None
+    return {"latest_version": tag.lstrip("vV"), "current_version": BRIDGE_VERSION, "url": url}
 
 
 def resolve_workspace(path: str, create: bool = False) -> Path:

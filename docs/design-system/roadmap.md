@@ -341,16 +341,60 @@ gemini 분기, `summarize_gemini()`(성공·에러·malformed 입력), 가짜 `g
 `python3 -m unittest discover -s tests -v`로 확인(고정 숫자를 여기 적지
 않는 이유는 이전 phase들과 동일 — 드리프트하기 쉬움).
 
-## Phase 6 — 자동 업데이트 확인
+## Phase 6 — 자동 업데이트 확인 ✅ 완료
 
 **목표**: [SCR-07](wireframes.html#s9)을 실제로 동작시킨다.
 
-**막힌 지점**: [CFL-11](flutter-mapping.html#s2) — 이 저장소가 private라
-익명으로 GitHub Releases를 못 읽는다. 둘 중 하나 결정 필요:
+**막혔던 지점** ([CFL-11](flutter-mapping.html#s2)): 이 저장소가 private라
+익명으로 GitHub Releases를 못 읽는다. 둘 중 하나 결정 필요했다:
 사용자의 로컬 `gh` 인증을 재사용하거나, 버전 번호만 공개로 노출하는
-별도 정적 엔드포인트를 둔다. 다른 단계와 독립적이라 언제 해도 되지만,
-"릴리즈"라는 개념 자체가 의미 있어지는 시점(= 실제로 배포가 반복되기
-시작하는 시점) 근처가 자연스러워 마지막 쪽에 뒀다.
+별도 정적 엔드포인트를 둔다.
+
+**설계 확정** (2026-08-05, 사전 인터뷰 1건 →
+[flutter-mapping.html DEC-19](flutter-mapping.html#s1c)): **로컬 `gh` CLI
+인증 재사용**. `docs/release-process.md`가 이미 릴리즈를 만들 때 `gh`를
+전제하므로, 읽을 때도 같은 도구를 재사용하는 편이 새 호스팅/배포 단계를
+만드는 것보다 이 프로젝트의 최소-의존성 원칙에 맞는다. 트레이드오프를
+의식적으로 수용: `gh`가 없거나 인증 안 된 환경(예: zip으로 받은 일반
+사용자)에서는 업데이트 확인이 조용히 실패한다 — 지금은 실사용자가
+운영자 자신뿐인 단계라는 전제로 받아들임.
+
+**해소하는 항목**: [CFL-11](flutter-mapping.html#s2) 완전 해소 — Conflict
+List에서 제거됨.
+
+**실제로 한 것**:
+- `handoff_bridge.py`: `GITHUB_REPO` 상수, `parse_version_tuple()`("v0.2.0"
+  → `(0, 2, 0)`, 파싱 실패 시 `None`), `check_for_update()` 신설 —
+  `gh release view --repo <repo> --json tagName,url`을 `short_run()`으로
+  호출(10초 타임아웃, `gh` 미설치/미인증/타임아웃 전부 이미 처리됨),
+  `BRIDGE_VERSION`과 비교해 더 새 릴리즈가 있을 때만
+  `{latest_version, current_version, url}` 반환, 그 외엔 전부 `None` —
+  실패를 사용자에게 노출하지 않는 `touch_registry()`와 같은 원칙.
+- `handoff_webui.py`: `AppState.update_info`(기본 `None`) +
+  `update_checked`(기본 `False`) 추가. `main()`이 서버 시작 직후
+  `_check_for_update_in_background()`를 데몬 스레드로 실행 — 실제 네트워크
+  I/O(`gh` 호출)가 서버 부팅/창 띄우기를 지연시키지 않도록.
+  `GET /api/update-check`는 이 캐시된 값을 읽기만 하므로 항상 즉시 응답.
+- `webui/index.html`/`app.css`/`app.js`: 타이틀바 "업데이트" 버튼(항상
+  표시) + 점(dot) 배지(업데이트 있을 때만 표시) + 팝오버(버전 정보,
+  "나중에"/"릴리즈 노트 보기"). 와이어프레임이 "업데이트 있음" 상태만
+  목업했으므로, 업데이트가 없을 때 버튼을 눌러도 새 팝오버 레이아웃을
+  발명하지 않고 기존 토스트("최신 버전을 사용 중입니다")를 재사용.
+- **PR 리뷰에서 발견된 실제 레이스 수정**: 처음엔 `update_info is None`을
+  "아직 확인 안 됨"과 "확인했지만 없음" 둘 다로 취급했는데, 실제 `gh`
+  네트워크 호출이 페이지 로드+첫 조회보다 오래 걸리는 경우(서버 시작
+  직후 거의 항상 그렇다)가 실제로 재현 가능해 배지가 조용히 영구
+  누락될 수 있었다. `update_checked` 플래그를 추가해 두 상태를 구분하고,
+  `webui/app.js`가 `checked: false`인 동안 짧게(1.5초 간격, 최대 10회 =
+  15초, `gh` 기본 타임아웃 10초를 넉넉히 넘김) 재조회하도록 수정.
+
+**검증**: `parse_version_tuple()`(v-prefix, 파싱 실패, 길이 다른 버전
+비교), `check_for_update()`(신규 릴리즈 감지·동일 버전·과거 버전·
+`gh` 미설치/에러/malformed JSON 전부 `None`, `--repo` 플래그로 cwd에
+의존하지 않음 확인), `GET /api/update-check`(미확인/확인+없음/확인+있음
+세 상태 구분), 백그라운드 체크가 `state.update_info`/`update_checked`를
+올바르게 세팅하는지. 정확한
+개수는 `python3 -m unittest discover -s tests -v`로 확인.
 
 ## Phase 7 — 프레임워크 전환 (DEC-01, 최종 목표)
 
