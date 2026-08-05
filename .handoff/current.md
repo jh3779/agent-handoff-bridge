@@ -64,10 +64,68 @@ create a task-specific packet.
   (an `"auto"` literal that could leak into a persisted chat-log
   `provider` field, an uncaught `json.JSONDecodeError` on a malformed
   200 response, one docs overclaim) and re-verified.
-- **Remaining**: PR #7 needs review/merge. After that, roadmap has Phase 5
-  (Gemini CLI + provider-extensibility refactor), Phase 6 (auto-update
-  check), Phase 7 (framework migration, DEC-01) still unstarted. CFL-17
-  (full agentic parity for API-key mode) has no design yet, deliberately.
+- **Remaining (superseded, see 2026-08-05 Phase 5 entry below)**: PR #7
+  merged.
+
+### 2026-08-05 — Phase 5: Gemini CLI as a third provider + fallback target selection
+
+- **Target**: Claude Code CLI, bridge core + web UI work
+  (`handoff_bridge.py`, `handoff_webui.py`, `webui/*`), branch
+  `feature/gemini-cli-phase-5`, PR #8
+  (https://github.com/jh3779/agent-handoff-bridge/pull/8), **merged**.
+- **Changed**: Added Gemini CLI as a third provider. `PROVIDERS` extended
+  to `("codex", "claude", "gemini")`. `other_provider()`'s hardcoded
+  binary toggle replaced with `next_provider()`/`next_available_provider()`
+  (the latter skips uninstalled CLIs) — generalizes which provider a
+  fallback hop lands on; auto-fallback itself stayed exactly one hop by
+  design (unchanged token-spend-bounding decision from `docs/research.md`,
+  not full N-way retry-until-exhausted chaining — the PR title/docs were
+  corrected mid-review after initially overselling this as "N-way
+  fallback"). `summarize_gemini()` added (Gemini's `--output-format json`
+  returns one JSON object per run, not a JSONL stream). Gemini's
+  `session_id` is always the literal sentinel `"latest"` (no real session
+  ID exists in its output), set only when `exit_code == 0` with no
+  `error` field — DEC-17 (`--resume latest`, after confirming Gemini
+  sessions are scoped per workspace directory, not global). DEC-18:
+  `diagnose()` does not probe Gemini's auth status (no free command
+  exists; a real probe would cost a token every run) — shows "gemini
+  auth: not checked". `handoff_webui.py` got `API_KEY_MODE_PROVIDERS =
+  ("codex", "claude")`, deliberately separate from the now-3-wide
+  `PROVIDERS` import, so Gemini doesn't silently inherit Phase 4's
+  API-key mode. Resolves CFL-13. New research doc:
+  `docs/research-gemini-cli.md`.
+- **Verified**: `python3 -m unittest discover -s tests -v` — 290 tests
+  passing. `python3 handoff_bridge.py check` passes.
+  `python3 scripts/scan_secrets.py` clean. Three review rounds on the PR
+  (one self-review before opening, two real automated reviews posted
+  directly on GitHub) found and fixed real issues: a stale hardcoded
+  binary guess in `handoff_webui.py`'s timeout handler the refactor
+  missed; `summarize_gemini()` marking the resume sentinel without
+  checking `exit_code`; a Gemini `AuthError`/exit-41 auth failure
+  misclassifying as `unknown` instead of `auth`
+  (`ERROR_PATTERNS` needed one addition); the single-hop fallback
+  skipping past an installed, working provider when the naive
+  next-in-order pick wasn't installed; a real CI failure (a test passed
+  locally on a dev machine with real `codex`/`claude` installed but
+  failed in CI's clean environment) fixed by pinning `shutil.which` in
+  that test; a docs contradiction about whether `ERROR_PATTERNS`
+  changed; the "N-way fallback" naming overclaim; and a verified-but-
+  undocumented fact (bare piped stdin with no `-p` flag also triggers
+  Gemini's non-interactive mode) that was found during research but
+  never made it into the written doc, closing an apparent mismatch
+  between documented research and the actual implementation. One
+  recurring review claim (`docs/local-data-model.md`/`docs/adr/0010-*`
+  etc. needing updates) was verified and rejected as false across
+  multiple rounds — neither has ever existed in this repo's history
+  (`git log --all` confirms), and this same claim was already raised and
+  resolved once before on an earlier PR (commit `e6c74c1`).
+- **Remaining**: Phase 6 (auto-update check) and Phase 7 (framework
+  migration, DEC-01) still unstarted. CFL-17 (full agentic parity for
+  API-key mode) and the deferred full-agent-fallback-chaining question
+  (session resume for Gemini stays best-effort via the `"latest"`
+  sentinel) have no design yet, deliberately.
 - **Blocked**: none.
-- **Next**: review/merge PR #7, then continue with whichever phase the
-  user directs next.
+- **Next**: Phase 6 — SCR-07's auto-update-check UI. Needs CFL-11
+  resolved first (this repo is private, so an anonymous GitHub Releases
+  API query can't list releases — reuse the user's `gh` auth, or build a
+  separate public version-check endpoint).
