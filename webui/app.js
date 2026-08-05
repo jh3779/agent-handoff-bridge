@@ -31,6 +31,10 @@
   const historyScrim = document.getElementById("history-scrim");
   const historyCloseBtn = document.getElementById("history-close-btn");
   const historyList = document.getElementById("history-list");
+  const diagnoseBtn = document.getElementById("diagnose-btn");
+  const providerPanelOverlay = document.getElementById("provider-panel-overlay");
+  const providerPanelList = document.getElementById("provider-panel-list");
+  const providerPanelClose = document.getElementById("provider-panel-close");
 
   /** @type {{name: string, path: string|null, content: string|null, truncated: boolean}[]} */
   let attachments = [];
@@ -264,6 +268,87 @@
   historyBtn.addEventListener("click", openHistoryDrawer);
   historyCloseBtn.addEventListener("click", closeHistoryDrawer);
   historyScrim.addEventListener("click", closeHistoryDrawer);
+
+  // ---------- provider connection panel (Phase 4, SCR-06/components.html §14) ----------
+
+  const PROVIDER_LABEL = { codex: "Codex", claude: "Claude Code" };
+
+  function renderProviderRow(info) {
+    const row = el("div", { class: "pp-row" }, []);
+    const badge = info.cli_detected
+      ? el("span", { class: "status-badge status-success", text: "CLI 감지됨" }, [])
+      : el("span", { class: "status-badge status-fail", text: "CLI 없음" }, []);
+    row.appendChild(
+      el("div", { class: "pp-top" }, [
+        el("span", { class: "pp-name", text: PROVIDER_LABEL[info.provider] || info.provider }, []),
+        badge,
+      ])
+    );
+    if (info.cli_detected) {
+      return row; // SCR-06: API 키 입력은 "CLI 없음" 상태에서만 노출
+    }
+    if (info.api_key_configured) {
+      row.appendChild(
+        el(
+          "div",
+          { class: "pp-note", text: `API 키로 연결됨 (model: ${info.model || "설정 필요"})` },
+          []
+        )
+      );
+    } else {
+      row.appendChild(
+        el("div", { class: "pp-note", text: "로컬에 CLI가 설치되어 있지 않습니다. API 키로 연결할까요?" }, [])
+      );
+    }
+    const keyInput = el("input", { type: "password", placeholder: "API 키", "data-field": "key" }, []);
+    const modelInput = el("input", {
+      type: "text",
+      placeholder: "model",
+      "data-field": "model",
+      value: info.model || "",
+    }, []);
+    const saveBtn = el("button", { type: "button", class: "primary", text: "저장" }, []);
+    saveBtn.addEventListener("click", async () => {
+      const key = keyInput.value.trim();
+      const model = modelInput.value.trim();
+      try {
+        await postJSON("/api/provider-key", { provider: info.provider, key, model });
+        showToast(key ? `${PROVIDER_LABEL[info.provider]} API 키가 저장되었습니다.` : `${PROVIDER_LABEL[info.provider]} API 키가 삭제되었습니다.`);
+        await refreshProviderPanel();
+      } catch (err) {
+        showToast(`저장 실패: ${err.message}`);
+      }
+    });
+    row.appendChild(el("div", { class: "pp-key-row" }, [keyInput, modelInput, saveBtn]));
+    return row;
+  }
+
+  async function refreshProviderPanel() {
+    providerPanelList.innerHTML = "";
+    try {
+      const data = await fetchJSON("/api/providers");
+      for (const info of data.providers) {
+        providerPanelList.appendChild(renderProviderRow(info));
+      }
+    } catch (err) {
+      providerPanelList.appendChild(el("div", { class: "hd-empty", text: `불러올 수 없음: ${err.message}` }, []));
+    }
+  }
+
+  function openProviderPanel() {
+    providerPanelOverlay.classList.add("show");
+    refreshProviderPanel();
+  }
+
+  function closeProviderPanel() {
+    providerPanelOverlay.classList.remove("show");
+  }
+
+  diagnoseBtn.addEventListener("click", openProviderPanel);
+  providerPanelClose.addEventListener("click", closeProviderPanel);
+  providerPanelOverlay.addEventListener("click", (event) => {
+    if (event.target === providerPanelOverlay) closeProviderPanel();
+  });
 
   // ---------- file tree ----------
 

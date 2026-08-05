@@ -396,6 +396,53 @@
     bytecode instructions, down from the *entire* run's duration before
     this round) was judged not worth either tradeoff.
 
+- Web UI Phase 4 (API-key mode for CLI-less users, SCR-06): resolves
+  CFL-12. Chat-only scope, decided with the user after
+  `docs/research-api-key-mode.md` found neither Anthropic's Messages API
+  nor OpenAI's Responses API exposes session resume/file-edit/shell-exec
+  behind a plain API-key call the way the CLI path does — full agentic
+  parity is deliberately deferred to a future phase (new CFL-17), not
+  attempted here:
+  - added a per-provider connection panel (**Diagnose** titlebar button,
+    `webui/index.html`/`app.js`/`app.css`, matching
+    `docs/design-system/components.html` §14/wireframes.html SCR-06)
+    showing CLI-detected/CLI-missing status, with a masked key (+ optional
+    model) field exposed only when a provider's CLI isn't detected;
+  - added `GET /api/providers` and `POST /api/provider-key` (empty key =
+    remove);
+  - added `~/Documents/Agent Handoff Bridge/credentials.json`
+    (`0600` permissions, same base directory Phase 2/3 already established
+    as "the app owns this") — `read_credentials()`/`save_credential()`
+    follow the same failure-isolation pattern as `read_registry()`/
+    `touch_registry()`;
+  - `_run_provider_via_bridge_locked()` now only diverts to the new
+    `run_provider_via_api_key()` path when a provider's CLI is genuinely
+    absent (`shutil.which()`) *and* a key is saved for it — every
+    previously-existing case (CLI available, or CLI absent with no key)
+    is unchanged, verified by the full pre-existing test suite passing
+    with no modifications;
+  - `call_anthropic_messages_api()`/`call_openai_responses_api()` use only
+    `urllib` (no new dependency), through a small `_http_post_json()` seam
+    so tests substitute a fake transport instead of making real network
+    calls — the same posture the CLI path already has via fake
+    `codex`/`claude` scripts;
+  - `build_api_message_history()` replays the current month's chat log as
+    alternating turns on every call (capped to the most recent 20
+    entries) since neither vendor's API is session-based — stands in for
+    `codex exec resume`/`claude --resume`;
+  - API-key-mode replies reuse the exact same chat-log record shape the
+    CLI path produces (so `classify_run_status()`/`append_chat_message()`
+    need no changes), with `session_id`/`run_dir` always `null` and
+    `.handoff/state.json`/`current.md` deliberately untouched — those stay
+    the CLI-handoff-specific durable state files;
+  - the saved API key is never interpolated into any error message/chat-log
+    text/toast — every error string is built only from the HTTP response
+    body or exception text, verified by tests;
+  - Anthropic gets a documented default model (`claude-sonnet-5`); OpenAI/
+    Codex API-key mode deliberately has **no** built-in default (no
+    equally-confident current model ID exists) and returns a clear error
+    asking for one to be set via the connection panel instead of guessing.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

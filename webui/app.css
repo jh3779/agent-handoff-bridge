@@ -364,3 +364,26 @@ body {
   overflow: hidden; text-overflow: ellipsis; display: -webkit-box;
   -webkit-line-clamp: 2; -webkit-box-orient: vertical;
 }
+
+/* Phase 4: SCR-06/components.html §14 provider connection panel
+   (DEC-13~16, docs/design-system/flutter-mapping.html#s1c). */
+.pp-row { padding: 9px 0; border-bottom: 1px solid var(--outline); }
+.pp-row:last-child { border-bottom: none; }
+.pp-top { display: flex; align-items: center; justify-content: space-between; }
+.pp-name { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; }
+.pp-note { margin-top: 6px; font-size: 10.5px; color: var(--muted); line-height: 1.5; }
+.pp-key-row {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+  padding: 8px; background: var(--surface-low); border-radius: 8px;
+}
+.pp-key-row input {
+  flex: 1; min-width: 0; box-sizing: border-box; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--outline); background: var(--bg); color: var(--on-bg);
+  font-family: var(--mono); font-size: 11px;
+}
+.pp-key-row input[data-field="model"] { flex: 0 0 120px; letter-spacing: normal; }
+.pp-key-row button {
+  border-radius: 8px; border: 1px solid var(--outline); background: var(--surface);
+  padding: 5px 10px; font-size: 10.5px; cursor: pointer; font-family: var(--font); flex: none;
+}
+.pp-key-row button.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }

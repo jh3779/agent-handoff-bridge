@@ -1856,5 +1856,409 @@ class HistoryDrawerLiveServerTests(unittest.TestCase):
         self.assertTrue(data["groups"][0]["current"])
 
 
+class CredentialsTests(unittest.TestCase):
+    """AUTO_WORKSPACE_BASE_DIR patched to a tempdir -- same reasoning as
+    RegistryTests: credentials_path() is a function, not a module-level
+    constant, precisely so this patch is actually honored (never touch the
+    real ~/Documents/Agent Handoff Bridge/credentials.json)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_read_credentials_missing_file_returns_empty_dict(self):
+        self.assertEqual(webui.read_credentials(), {})
+
+    def test_read_credentials_malformed_json_returns_empty_dict(self):
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "credentials.json").write_text("not json", encoding="utf-8")
+        self.assertEqual(webui.read_credentials(), {})
+
+    def test_read_credentials_non_dict_json_returns_empty_dict(self):
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "credentials.json").write_text("[1, 2, 3]", encoding="utf-8")
+        self.assertEqual(webui.read_credentials(), {})
+
+    def test_read_credentials_filters_unknown_provider(self):
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "credentials.json").write_text(
+            json.dumps({"claude": {"key": "sk-1"}, "gemini": {"key": "sk-2"}}), encoding="utf-8"
+        )
+        self.assertEqual(list(webui.read_credentials()), ["claude"])
+
+    def test_read_credentials_filters_entry_with_no_key(self):
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "credentials.json").write_text(
+            json.dumps({"claude": {"model": "claude-sonnet-5"}}), encoding="utf-8"
+        )
+        self.assertEqual(webui.read_credentials(), {})
+
+    def test_save_then_read_round_trips_key_and_model(self):
+        webui.save_credential("claude", "sk-ant-test", "claude-sonnet-5")
+        creds = webui.read_credentials()
+        self.assertEqual(creds["claude"], {"key": "sk-ant-test", "model": "claude-sonnet-5"})
+
+    def test_save_with_no_model_stores_none(self):
+        webui.save_credential("codex", "sk-test", None)
+        self.assertIsNone(webui.read_credentials()["codex"]["model"])
+
+    def test_save_with_empty_key_removes_the_entry(self):
+        webui.save_credential("claude", "sk-ant-test", None)
+        webui.save_credential("claude", "", None)
+        self.assertNotIn("claude", webui.read_credentials())
+
+    def test_saved_file_has_owner_only_permissions(self):
+        if os.name != "posix":
+            self.skipTest("POSIX file permissions not applicable")
+        webui.save_credential("claude", "sk-ant-test", None)
+        mode = webui.credentials_path().stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+    def test_saving_one_provider_does_not_clobber_another(self):
+        webui.save_credential("claude", "sk-claude", None)
+        webui.save_credential("codex", "sk-codex", None)
+        creds = webui.read_credentials()
+        self.assertEqual(creds["claude"]["key"], "sk-claude")
+        self.assertEqual(creds["codex"]["key"], "sk-codex")
+
+
+class BuildApiMessageHistoryTests(unittest.TestCase):
+    def test_empty_log_produces_just_the_current_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = webui.utc_now()
+            messages = webui.build_api_message_history(root, "hello", now)
+            self.assertEqual(messages, [{"role": "user", "content": "hello"}])
+
+    def test_prior_turns_are_replayed_as_alternating_roles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = webui.utc_now()
+            webui.append_chat_message(root, "user", "first question", [], now)
+            webui.append_chat_message(root, "agent", "first answer", [], now, provider="claude", status="success", reason="none")
+            webui.append_chat_message(root, "user", "second question (bare, no attachments)", [], now)
+            messages = webui.build_api_message_history(root, "second question WITH attachment text", now)
+            # The bare current-turn "user" log entry is dropped in favor of
+            # the caller-supplied `prompt` (which carries attachment
+            # content the bare log entry never does) -- so it must appear
+            # exactly once, as the final message, not duplicated.
+            self.assertEqual(
+                messages,
+                [
+                    {"role": "user", "content": "first question"},
+                    {"role": "assistant", "content": "first answer"},
+                    {"role": "user", "content": "second question WITH attachment text"},
+                ],
+            )
+
+    def test_system_role_messages_are_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = webui.utc_now()
+            webui.append_chat_message(root, "system", "auto-created workspace", [], now)
+            webui.append_chat_message(root, "user", "hi", [], now)
+            messages = webui.build_api_message_history(root, "hi again", now)
+            # The system message is filtered out entirely, and the trailing
+            # bare "user" log entry is dropped in favor of `prompt` (same
+            # rule as the prior-turns test) -- leaving just one message.
+            self.assertEqual(messages, [{"role": "user", "content": "hi again"}])
+
+    def test_history_is_capped_to_the_max_message_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = webui.utc_now()
+            for i in range(webui.API_KEY_MODE_MAX_HISTORY_MESSAGES + 10):
+                webui.append_chat_message(root, "user" if i % 2 == 0 else "agent", f"turn {i}", [], now)
+            messages = webui.build_api_message_history(root, "final prompt", now)
+            self.assertEqual(len(messages), webui.API_KEY_MODE_MAX_HISTORY_MESSAGES + 1)  # +1 for the final prompt
+            self.assertEqual(messages[-1], {"role": "user", "content": "final prompt"})
+
+
+class CallProviderApiTests(unittest.TestCase):
+    def test_anthropic_success_extracts_text(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(200, {"content": [{"type": "text", "text": "hi there"}]}),
+        ):
+            result = webui.call_anthropic_messages_api("sk-secret", "claude-sonnet-5", [{"role": "user", "content": "hi"}])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "hi there")
+
+    def test_anthropic_error_response_is_reported_and_never_echoes_the_key(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(401, {"error": {"type": "authentication_error", "message": "invalid x-api-key"}}),
+        ):
+            result = webui.call_anthropic_messages_api("sk-super-secret-value", "claude-sonnet-5", [])
+        self.assertFalse(result["ok"])
+        self.assertIn("authentication_error", result["message"])
+        self.assertNotIn("sk-super-secret-value", result["message"])
+
+    def test_anthropic_network_error_does_not_raise(self):
+        with mock.patch("handoff_webui._http_post_json", side_effect=urllib.error.URLError("boom")):
+            result = webui.call_anthropic_messages_api("sk-secret", "claude-sonnet-5", [])
+        self.assertFalse(result["ok"])
+        self.assertIn("network error", result["message"])
+        self.assertNotIn("sk-secret", result["message"])
+
+    def test_openai_success_extracts_text_from_output_items(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(
+                200,
+                {"output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hi from openai"}]}]},
+            ),
+        ):
+            result = webui.call_openai_responses_api("sk-secret", "gpt-5.1-codex", [{"role": "user", "content": "hi"}])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "hi from openai")
+
+    def test_openai_error_response_is_reported_and_never_echoes_the_key(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(429, {"error": {"type": "rate_limit_error", "message": "too many requests"}}),
+        ):
+            result = webui.call_openai_responses_api("sk-super-secret-value", "gpt-5.1-codex", [])
+        self.assertFalse(result["ok"])
+        self.assertIn("rate_limit_error", result["message"])
+        self.assertNotIn("sk-super-secret-value", result["message"])
+
+
+class RunProviderViaApiKeyTests(unittest.TestCase):
+    def test_success_produces_a_record_with_no_session_or_run_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("handoff_webui.call_anthropic_messages_api", return_value={"ok": True, "text": "hello back"}):
+                records = webui.run_provider_via_api_key(
+                    root, "claude", "hello", {"key": "sk-x", "model": None}, "continue"
+                )
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["final_text"], "hello back")
+        self.assertFalse(record["handoff_needed"])
+        self.assertEqual(record["reason"], "none")
+        self.assertIsNone(record["session_id"])
+        self.assertIsNone(record["run_dir"])
+        self.assertEqual(record["model"], webui.API_KEY_MODE_DEFAULT_MODELS["claude"])
+
+    def test_failure_produces_a_tool_failure_reason_classified_as_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch(
+                "handoff_webui.call_anthropic_messages_api", return_value={"ok": False, "message": "401 authentication_error"}
+            ):
+                records = webui.run_provider_via_api_key(
+                    root, "claude", "hello", {"key": "sk-x", "model": None}, "continue"
+                )
+        record = records[0]
+        self.assertTrue(record["reason"].startswith("tool_failure"))
+        self.assertEqual(
+            webui.classify_run_status(record["handoff_needed"], record["reason"]), "fail"
+        )
+
+    def test_codex_with_no_model_configured_and_no_default_errors_without_calling_the_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("handoff_webui.call_openai_responses_api") as spy:
+                records = webui.run_provider_via_api_key(root, "codex", "hello", {"key": "sk-x", "model": None}, "continue")
+        spy.assert_not_called()
+        self.assertTrue(records[0]["reason"].startswith("tool_failure"))
+        self.assertIn("model", records[0]["final_text"])
+
+    def test_codex_with_a_saved_model_calls_the_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("handoff_webui.call_openai_responses_api", return_value={"ok": True, "text": "ok"}) as spy:
+                records = webui.run_provider_via_api_key(
+                    root, "codex", "hello", {"key": "sk-x", "model": "gpt-5.1-codex"}, "continue"
+                )
+        spy.assert_called_once()
+        self.assertEqual(records[0]["model"], "gpt-5.1-codex")
+
+    def test_model_override_takes_priority_over_the_saved_credential_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("handoff_webui.call_anthropic_messages_api", return_value={"ok": True, "text": "ok"}) as spy:
+                records = webui.run_provider_via_api_key(
+                    root, "claude", "hello", {"key": "sk-x", "model": "claude-old"}, "continue", model_override="claude-new"
+                )
+        self.assertEqual(records[0]["model"], "claude-new")
+        self.assertEqual(spy.call_args.args[1], "claude-new")
+
+
+class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
+    """Covers _run_provider_via_bridge_locked()'s Phase 4 branch -- the
+    part of the dispatch logic RunProviderViaBridgeTests (which always has
+    a fake CLI on PATH) can't exercise: a provider whose CLI is genuinely
+    absent."""
+
+    def setUp(self):
+        self.setUpFakeProviders()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+        self.workspace = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.workspace, ignore_errors=True)
+
+    def test_cli_available_provider_uses_subprocess_even_if_a_key_is_also_saved(self):
+        # A saved key must never override an available CLI -- DEC-16.
+        _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+        webui.save_credential("codex", "sk-should-be-unused", None)
+        with mock.patch("handoff_webui.call_openai_responses_api") as spy:
+            records = webui.run_provider_via_bridge(self.workspace, "codex", "hello", None, "continue")
+        spy.assert_not_called()
+        self.assertEqual(records[0]["session_id"], "fake-codex-session")
+
+    def test_cli_missing_provider_with_a_saved_key_uses_the_api_path(self):
+        webui.save_credential("claude", "sk-x", "claude-sonnet-5")
+        with mock.patch("handoff_webui.shutil.which", return_value=None), mock.patch(
+            "handoff_webui.call_anthropic_messages_api", return_value={"ok": True, "text": "api reply"}
+        ) as spy:
+            records = webui.run_provider_via_bridge(self.workspace, "claude", "hello", None, "continue")
+        spy.assert_called_once()
+        self.assertEqual(records[0]["final_text"], "api reply")
+        self.assertIsNone(records[0]["run_dir"])
+
+    def test_cli_missing_provider_with_no_saved_key_behaves_exactly_as_before_this_phase(self):
+        # No fake binary for "claude" and no credential saved -- this falls
+        # through to the pre-existing subprocess path unchanged, which
+        # spawns a real handoff_bridge.py child process. That child inherits
+        # this process's PATH, so mock.patch("handoff_webui.shutil.which")
+        # alone would NOT be enough here (it only affects this parent
+        # process's own dispatch check) -- if a real `claude` CLI happens to
+        # be installed on this machine's PATH, the child could actually
+        # invoke it. PATH is replaced outright (not just prepended, like
+        # setUpFakeProviders() does) so the child genuinely cannot find one
+        # either, and handoff_bridge.py's own FileNotFoundError -> exit_code
+        # 127 handling is what's actually being exercised here.
+        with mock.patch.dict(os.environ, {"PATH": str(self.fake_bin)}):
+            records = webui.run_provider_via_bridge(self.workspace, "claude", "hello", None, "continue")
+        self.assertEqual(records[0]["exit_code"], 127)
+
+    def test_auto_with_no_cli_at_all_falls_back_to_a_provider_with_a_saved_key(self):
+        webui.save_credential("claude", "sk-x", "claude-sonnet-5")
+        with mock.patch("handoff_webui.shutil.which", return_value=None), mock.patch(
+            "handoff_webui.call_anthropic_messages_api", return_value={"ok": True, "text": "api reply"}
+        ):
+            records = webui.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+        self.assertEqual(records[0]["provider"], "claude")
+        self.assertEqual(records[0]["final_text"], "api reply")
+
+    def test_auto_with_no_cli_and_no_saved_key_returns_a_clear_error_not_a_crash(self):
+        with mock.patch("handoff_webui.shutil.which", return_value=None):
+            records = webui.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["reason"].startswith("tool_failure"))
+        # Same invariant RunProviderViaBridgeTests::
+        # test_synthetic_record_resolves_auto_never_persists_auto_literal
+        # already enforces for the CLI-side synthetic-record path: the
+        # /api/run handler persists record["provider"] verbatim into the
+        # chat log (append_chat_message(provider=record["provider"])), so
+        # the literal string "auto" must never reach it here either.
+        self.assertNotEqual(records[0]["provider"], "auto")
+        self.assertIn(records[0]["provider"], webui.PROVIDERS)
+
+    def test_auto_with_at_least_one_cli_ignores_saved_keys_and_uses_the_existing_subprocess_path(self):
+        # DEC-16: `auto` only considers API-key mode when NO CLI exists at
+        # all -- one CLI being available must keep the existing
+        # choose_auto_provider()/--auto-fallback behavior completely
+        # unchanged, even if a key happens to be saved for the other one.
+        _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+        webui.save_credential("claude", "sk-should-be-unused", "claude-sonnet-5")
+        with mock.patch("handoff_webui.call_anthropic_messages_api") as spy:
+            records = webui.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+        spy.assert_not_called()
+        self.assertEqual(records[0]["provider"], "codex")
+
+
+class ProviderApiLiveServerTests(unittest.TestCase):
+    """GET /api/providers and POST /api/provider-key over a real HTTP
+    server -- same pattern as HistoryDrawerLiveServerTests."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+        self.state = webui.AppState(None)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def _get(self, path: str) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def _post(self, path: str, payload: dict) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def test_providers_list_reflects_cli_detection_and_key_state(self):
+        status, data = self._get("/api/providers")
+        self.assertEqual(status, 200)
+        by_name = {p["provider"]: p for p in data["providers"]}
+        self.assertEqual(set(by_name), {"codex", "claude"})
+        for info in by_name.values():
+            self.assertIn("cli_detected", info)
+            self.assertFalse(info["api_key_configured"])
+
+    def test_saving_a_key_never_echoes_it_back(self):
+        status, data = self._post("/api/provider-key", {"provider": "claude", "key": "sk-secret-value", "model": "claude-sonnet-5"})
+        self.assertEqual(status, 200)
+        self.assertNotIn("key", data)
+        self.assertEqual(data, {"provider": "claude", "api_key_configured": True, "model": "claude-sonnet-5"})
+
+    def test_saved_key_is_reflected_in_the_providers_list(self):
+        self._post("/api/provider-key", {"provider": "claude", "key": "sk-secret-value", "model": "claude-sonnet-5"})
+        _, data = self._get("/api/providers")
+        claude = next(p for p in data["providers"] if p["provider"] == "claude")
+        self.assertTrue(claude["api_key_configured"])
+        self.assertEqual(claude["model"], "claude-sonnet-5")
+
+    def test_empty_key_removes_a_previously_saved_one(self):
+        self._post("/api/provider-key", {"provider": "claude", "key": "sk-secret-value"})
+        status, data = self._post("/api/provider-key", {"provider": "claude", "key": ""})
+        self.assertEqual(status, 200)
+        self.assertFalse(data["api_key_configured"])
+        _, providers = self._get("/api/providers")
+        claude = next(p for p in providers["providers"] if p["provider"] == "claude")
+        self.assertFalse(claude["api_key_configured"])
+
+    def test_invalid_provider_is_rejected_with_400(self):
+        status, data = self._post("/api/provider-key", {"provider": "gemini", "key": "sk-x"})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+
 if __name__ == "__main__":
     unittest.main()

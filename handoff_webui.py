@@ -25,6 +25,8 @@ import subprocess
 import sys
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 import uuid
 import webbrowser
 from datetime import datetime, timezone
@@ -32,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from handoff_bridge import HANDOFF_DIR, WriteLock, atomic_write_text, choose_auto_provider
+from handoff_bridge import HANDOFF_DIR, PROVIDERS, WriteLock, atomic_write_text, choose_auto_provider
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
@@ -657,6 +659,290 @@ def build_history_drawer(current_workspace: Path | None) -> list[dict]:
 # reason (see run_bridge() there).
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# API-key mode (Phase 4, docs/design-system/roadmap.md, SCR-06/components.html
+# §14, resolves CFL-12). Scope decided with the user up front and recorded as
+# DEC-13 in flutter-mapping.html: chat-only for this phase -- a provider with
+# no local CLI can be reached over its vendor HTTP API directly instead, but
+# it only exchanges text. It does not read/write workspace files or run
+# shell commands the way `codex exec`/`claude -p` do; docs/research-api-key-
+# mode.md found neither vendor exposes that behind a plain API-key call
+# without this project building its own tool-use loop, which is deliberately
+# deferred (CFL-17) rather than attempted here.
+#
+# Credentials live in AUTO_WORKSPACE_BASE_DIR/credentials.json (DEC-14) --
+# the same "the app owns this" location Phase 3 established for
+# registry.json, not an OS keychain (would need three different code paths,
+# one of them -- Linux secret-tool -- not reliably present) and not the
+# third-party `keyring` package (a new dependency this project has
+# consistently avoided). File mode is restricted to 0600 on write. This file
+# is never inside a git-tracked workspace, so scripts/scan_secrets.py's
+# git-diff-based commit scan never sees it either way.
+# ---------------------------------------------------------------------------
+
+_CREDENTIALS_LOCK = threading.Lock()
+
+# DEC-15: both existing providers get API-key mode symmetrically, same as
+# every other provider-facing feature in this project (Gemini is CFL-13,
+# unrelated/unimplemented).
+API_KEY_MODE_DEFAULT_MODELS = {
+    # Anthropic model IDs are stable, documented identifiers this session's
+    # own environment confirms are current -- safe to default.
+    "claude": "claude-sonnet-5",
+    # No equally-confident current default exists for the OpenAI/Codex side
+    # (see docs/research-api-key-mode.md) -- guessing a model ID wrong would
+    # fail with a confusing 404 instead of a clear message, so this
+    # deliberately has no entry; codex API-key mode requires an explicit
+    # model to be saved via POST /api/provider-key.
+}
+
+ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_API_VERSION = "2023-06-01"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+API_KEY_MODE_TIMEOUT_SECONDS = 120
+API_KEY_MODE_MAX_HISTORY_MESSAGES = 20
+API_KEY_MODE_MAX_TOKENS = 4096
+
+
+def credentials_path() -> Path:
+    # A function, not a module-level constant -- same reasoning as
+    # registry_path(): tests patch AUTO_WORKSPACE_BASE_DIR to a tempdir, and
+    # a constant computed at import time wouldn't see that patch.
+    return AUTO_WORKSPACE_BASE_DIR / "credentials.json"
+
+
+def read_credentials() -> dict:
+    """Provider name -> {"key": str, "model": str|None}. Never raises -- a
+    missing, corrupt, or unreadable (permissions) credentials file just
+    means no providers are configured yet, same posture as read_registry()."""
+    path = credentials_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    result = {}
+    for provider, entry in data.items():
+        if provider not in PROVIDERS or not isinstance(entry, dict):
+            continue
+        key = entry.get("key")
+        if not isinstance(key, str) or not key:
+            continue
+        model = entry.get("model")
+        result[provider] = {"key": key, "model": model if isinstance(model, str) and model else None}
+    return result
+
+
+def save_credential(provider: str, key: str, model: str | None) -> None:
+    """Store (or, with an empty `key`, remove) one provider's API key.
+
+    Locked and read-modify-write, like touch_registry() -- this file can be
+    written from multiple request threads (two browser tabs opening the
+    connection panel at once)."""
+    with _CREDENTIALS_LOCK:
+        path = credentials_path()
+        data = {}
+        if path.exists():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        if key:
+            data[provider] = {"key": key, "model": model or None}
+        else:
+            data.pop(provider, None)
+        atomic_write_text(path, json.dumps(data, ensure_ascii=False, indent=2))
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass  # best-effort on platforms/filesystems that don't support chmod
+
+
+def cli_available(provider: str) -> bool:
+    return shutil.which(provider) is not None
+
+
+def build_api_message_history(workspace: Path, prompt: str, now: datetime) -> list[dict]:
+    """Anthropic's Messages API and OpenAI's Responses API are both
+    stateless per call (docs/research-api-key-mode.md) -- there is no
+    `codex exec resume`/`claude --resume` equivalent, so conversation
+    continuity has to come from resending prior turns ourselves.
+
+    Reads the current month's already-persisted chat log (the user's
+    current-turn message is already in it -- POST /api/chat always runs
+    before POST /api/run) and replays it as alternating user/assistant
+    turns, dropping the bare current-turn entry in favor of `prompt`
+    (build_run_prompt()'s text+attachments string, which the bare log entry
+    doesn't carry). Capped to the most recent
+    API_KEY_MODE_MAX_HISTORY_MESSAGES entries to bound request size --
+    unlike the CLI path there's no session file doing this trimming for us.
+    """
+    turns = [m for m in read_month_messages(workspace, month_key(now)) if m.get("role") in ("user", "agent")]
+    if turns and turns[-1].get("role") == "user":
+        turns = turns[:-1]
+    recent = turns[-API_KEY_MODE_MAX_HISTORY_MESSAGES:]
+    messages = [
+        {"role": "user" if turn["role"] == "user" else "assistant", "content": turn.get("text") or ""}
+        for turn in recent
+    ]
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
+
+def _http_post_json(url: str, headers: dict, body: dict, timeout: int) -> tuple[int, dict]:
+    """Thin seam around urllib so tests can substitute a fake transport
+    instead of making a real network call -- the same reason
+    _run_provider_via_bridge_locked() shells out to a fake `codex`/`claude`
+    script in tests rather than calling a real provider."""
+    encoded = json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(url, data=encoded, method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (fixed https:// constants above)
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        payload = exc.read().decode("utf-8", errors="replace")
+        try:
+            return exc.code, json.loads(payload)
+        except json.JSONDecodeError:
+            return exc.code, {"error": {"type": "api_error", "message": payload or exc.reason}}
+
+
+def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict]) -> dict:
+    """Returns {"ok": True, "text": str} or {"ok": False, "message": str} --
+    `message` is built only from the response body/exception text, never
+    from `api_key`, so a saved key can never leak into a chat log entry via
+    an error message."""
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": ANTHROPIC_API_VERSION,
+        "content-type": "application/json",
+    }
+    body = {"model": model, "max_tokens": API_KEY_MODE_MAX_TOKENS, "messages": messages}
+    try:
+        status, data = _http_post_json(ANTHROPIC_MESSAGES_URL, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        return {"ok": False, "message": f"network error calling Anthropic Messages API: {exc}"}
+    except json.JSONDecodeError as exc:
+        # _http_post_json() only guards its own HTTPError branch against a
+        # non-JSON body -- a 200 response with an unparseable body (e.g. a
+        # proxy in front of the real API) would otherwise raise here
+        # uncaught and crash this request's thread instead of producing the
+        # clean chat-log error record every other failure path does.
+        return {"ok": False, "message": f"Anthropic API returned a non-JSON response: {exc}"}
+    if status != 200:
+        error = data.get("error") if isinstance(data, dict) else None
+        error_type = (error or {}).get("type", "api_error")
+        error_message = (error or {}).get("message", json.dumps(data, ensure_ascii=False))
+        return {"ok": False, "message": f"Anthropic API error ({status} {error_type}): {error_message}"}
+    text = "".join(
+        block.get("text", "") for block in data.get("content", []) if isinstance(block, dict) and block.get("type") == "text"
+    )
+    return {"ok": True, "text": text}
+
+
+def call_openai_responses_api(api_key: str, model: str, messages: list[dict]) -> dict:
+    """Same contract as call_anthropic_messages_api(). Responses API input
+    items use OpenAI's {role, content} shape too, so `messages` (already
+    built for the Anthropic call) is reused as-is."""
+    headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
+    body = {"model": model, "input": messages}
+    try:
+        status, data = _http_post_json(OPENAI_RESPONSES_URL, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        return {"ok": False, "message": f"network error calling OpenAI Responses API: {exc}"}
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "message": f"OpenAI API returned a non-JSON response: {exc}"}
+    if status != 200:
+        error = data.get("error") if isinstance(data, dict) else None
+        error_type = (error or {}).get("type", "api_error") if isinstance(error, dict) else "api_error"
+        error_message = (error or {}).get("message", json.dumps(data, ensure_ascii=False)) if isinstance(error, dict) else json.dumps(data, ensure_ascii=False)
+        return {"ok": False, "message": f"OpenAI API error ({status} {error_type}): {error_message}"}
+    text_parts = []
+    for item in data.get("output", []) if isinstance(data, dict) else []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for block in item.get("content", []):
+            if isinstance(block, dict) and block.get("type") in ("output_text", "text"):
+                text_parts.append(block.get("text", ""))
+    return {"ok": True, "text": "".join(text_parts)}
+
+
+def run_provider_via_api_key(
+    workspace: Path,
+    provider: str,
+    prompt: str,
+    credential: dict,
+    instruction_type: str,
+    model_override: str | None = None,
+) -> list[dict]:
+    """API-key-mode equivalent of _run_provider_via_bridge_locked() -- same
+    return shape (one record, same keys) so it flows unchanged into
+    classify_run_status()/append_chat_message(). `session_id` and `run_dir`
+    are always None: there is no provider-managed session and no local run
+    directory in this mode.
+
+    Deliberately does not touch .handoff/state.json/current.md -- those are
+    the CLI-handoff-specific durable state files (docs/architecture.md's
+    "State Boundaries"), and API-key mode has no CLI session or auto-
+    fallback-to-the-other-provider concept this phase (chat-only scope,
+    DEC-13) for them to record.
+
+    `model_override` mirrors CLI mode's per-call --model: takes priority
+    over the model saved alongside the credential when the caller supplies
+    one (not reachable through the shipped composer UI today, same as CLI
+    mode's `model` parameter -- see run_provider_via_bridge()'s docstring).
+    """
+    model = model_override or credential.get("model") or API_KEY_MODE_DEFAULT_MODELS.get(provider)
+    if not model:
+        return [
+            _api_key_mode_error_record(
+                provider,
+                None,
+                instruction_type,
+                f"{provider} API-key mode has no model configured -- set one when saving the API key "
+                "(no built-in default exists for this provider; see docs/research-api-key-mode.md)",
+            )
+        ]
+    messages = build_api_message_history(workspace, prompt, utc_now())
+    caller = call_anthropic_messages_api if provider == "claude" else call_openai_responses_api
+    result = caller(credential["key"], model, messages)
+    if not result["ok"]:
+        return [_api_key_mode_error_record(provider, model, instruction_type, result["message"])]
+    return [
+        {
+            "provider": provider,
+            "model": model,
+            "instruction_type": instruction_type,
+            "exit_code": 0,
+            "session_id": None,
+            "final_text": result["text"] or "(empty response)",
+            "handoff_needed": False,
+            "reason": "none",
+            "run_dir": None,
+        }
+    ]
+
+
+def _api_key_mode_error_record(provider: str, model: str | None, instruction_type: str, message: str) -> dict:
+    return {
+        "provider": provider,
+        "model": model or "app-selected default",
+        "instruction_type": instruction_type,
+        "exit_code": 1,
+        "session_id": None,
+        "final_text": message,
+        "handoff_needed": True,
+        "reason": f"tool_failure: api_key_mode: {message}",
+        "run_dir": None,
+    }
+
+
 PROVIDER_RUN_TIMEOUT_SECONDS = 600
 
 # run_provider_via_bridge() reads .handoff/state.json's history length
@@ -780,7 +1066,47 @@ def _run_provider_via_bridge_locked(
     no history record exists to read back -- synthesize one so callers
     always get at least one result to show and persist, instead of silently
     returning nothing.
+
+    Phase 4 (DEC-13/16): before shelling out, check whether this call
+    should go over a provider's HTTP API instead -- only when its CLI is
+    genuinely absent and a key is saved for it, so every previously-existing
+    behavior (a CLI-available provider, or a CLI-missing one with no key
+    saved) is completely unchanged by this branch.
     """
+    credentials = read_credentials()
+    if provider == "auto":
+        if not any(cli_available(p) for p in PROVIDERS):
+            api_key_provider = next((p for p in PROVIDERS if p in credentials), None)
+            if api_key_provider is None:
+                return [
+                    _api_key_mode_error_record(
+                        # PROVIDERS[0], not the literal "auto" -- the /api/run
+                        # handler persists this into the chat log's `provider`
+                        # field verbatim (append_chat_message(provider=record
+                        # ["provider"])), and "auto" must never end up stored
+                        # there (the same invariant the CLI-side synthetic-
+                        # record path already enforces for the same reason;
+                        # see its own comment a few lines below).
+                        PROVIDERS[0],
+                        None,
+                        instruction_type,
+                        "no provider CLI is installed and no API key is configured for any provider -- "
+                        "install codex or claude, or open the connection panel to add an API key",
+                    )
+                ]
+            return run_provider_via_api_key(
+                workspace, api_key_provider, prompt, credentials[api_key_provider], instruction_type, model
+            )
+        # At least one CLI exists -- fall through to the existing subprocess
+        # path, which already does its own choose_auto_provider() and
+        # --auto-fallback among CLI-available providers.
+    elif not cli_available(provider) and provider in credentials:
+        return run_provider_via_api_key(workspace, provider, prompt, credentials[provider], instruction_type, model)
+        # else (a specific provider with no CLI and no saved key): fall
+        # through unchanged -- the subprocess call below fails with
+        # FileNotFoundError -> exit_code 127, exactly as it did before this
+        # phase existed.
+
     before = len(read_state_history(workspace))
 
     # The prompt travels via --prompt-file, not as a trailing argv
@@ -984,6 +1310,22 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     )
             elif parsed.path == "/api/history":
                 self._send_json(200, {"groups": build_history_drawer(workspace)})
+            elif parsed.path == "/api/providers":
+                # Backs SCR-06/components.html §14's connection panel. Never
+                # includes the raw key -- only whether one is configured.
+                credentials = read_credentials()
+                providers = []
+                for provider in PROVIDERS:
+                    entry = credentials.get(provider)
+                    providers.append(
+                        {
+                            "provider": provider,
+                            "cli_detected": cli_available(provider),
+                            "api_key_configured": entry is not None,
+                            "model": (entry or {}).get("model") if entry else None,
+                        }
+                    )
+                self._send_json(200, {"providers": providers})
             else:
                 self.send_error(404, "not found")
 
@@ -1106,8 +1448,26 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     self._send_json(409, {"error": str(exc)})
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
+            elif parsed.path == "/api/provider-key":
+                try:
+                    body = self._read_json_body()
+                    provider = str(body.get("provider") or "")
+                    if provider not in PROVIDERS:
+                        raise WorkspaceError(f"invalid provider: {provider}")
+                    key = str(body.get("key") or "").strip()
+                    model = str(body.get("model") or "").strip() or None
+                    # An empty key removes the credential (save_credential()'s
+                    # contract) -- lets the connection panel's same "저장"
+                    # action double as "disconnect API key mode".
+                    save_credential(provider, key, model)
+                    resolved_model = model or API_KEY_MODE_DEFAULT_MODELS.get(provider)
+                    self._send_json(
+                        200,
+                        {"provider": provider, "api_key_configured": bool(key), "model": resolved_model if key else None},
+                    )
+                except WorkspaceError as exc:
+                    self._send_json(400, {"error": str(exc)})
             else:
-                # No other write/execute endpoints in this MVP by design.
                 self.send_error(405, "unsupported POST endpoint")
 
     return Handler
