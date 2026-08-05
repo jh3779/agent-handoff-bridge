@@ -1135,6 +1135,15 @@ def _tool_run_shell(workspace: Path, tool_input: dict) -> str:
     command = tool_input.get("command")
     if not isinstance(command, str) or not command:
         return "error: 'command' is required"
+    # A review round noted this timeout only guarantees killing the
+    # immediate subprocess (Python's own TimeoutExpired handling), not a
+    # whole process tree -- a command that backgrounds work or forks
+    # descendants could leave some of them running past
+    # TOOL_EXEC_TIMEOUT_SECONDS. Cross-platform process-group cleanup
+    # (os.killpg on POSIX, a job object on Windows) is a real, larger
+    # change than this fix round's scope; documented here as a known,
+    # accepted gap rather than silently left unstated -- same posture
+    # DEC-21 already takes toward run_shell having no command allowlist.
     try:
         result = subprocess.run(
             command,

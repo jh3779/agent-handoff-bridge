@@ -926,6 +926,19 @@
     (`handoff_webui.py`, this file, `webui-chat-storage.md`,
     `flutter-mapping.html`'s DEC-21) to say so explicitly rather than
     implying more than DEC-21 actually decided.
+  - **Round 4** (fresh review on the Round 3 fix commit — "no
+    merge-blocking items" again, two more low-severity optional items):
+    `subprocess.run(..., timeout=...)`'s `TimeoutExpired` handling only
+    guarantees killing the immediate subprocess, not a whole process
+    tree a backgrounded/forked command might spawn — real, but
+    cross-platform process-group cleanup (`os.killpg` on POSIX, a job
+    object on Windows) is meaningfully more code than this round's
+    scope, so it's documented as a known, accepted gap
+    (`handoff_webui.py`, `webui-chat-storage.md`) rather than
+    implemented, the same posture DEC-21 already takes toward
+    `run_shell` having no command allowlist. The PR description itself
+    still said "cwd-confined" even after Round 3 fixed every persisted
+    doc/comment — corrected there too.
 
 ## v0.1.0 — 2026-08-03
 

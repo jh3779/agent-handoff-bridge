@@ -343,7 +343,10 @@ absolute path or `..` reaches anywhere the OS user account can, same as
 a real terminal or CLI mode's own `codex`/`claude` subprocess) and no
 other restriction -- DEC-21's interview chose this over a narrower/
 more-restricted first pass, treating it as the same trust level CLI
-mode already has, not a new tier. `MAX_TOOL_ITERATIONS = 15` bounds a single turn so a
+mode already has, not a new tier. `TOOL_EXEC_TIMEOUT_SECONDS` only
+guarantees killing the immediate subprocess, not a whole process tree a
+backgrounded/forked command might spawn -- a known, accepted gap, not a
+guaranteed sandbox. `MAX_TOOL_ITERATIONS = 15` bounds a single turn so a
 confused model can't loop indefinitely. Tool-call activity (what ran,
 with what arguments, what it returned) is folded into `final_text` as a
 fenced code block -- DEC-03's existing code-block rendering, not a new
