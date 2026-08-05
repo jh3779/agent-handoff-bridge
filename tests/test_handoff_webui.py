@@ -1273,7 +1273,17 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         # own record already made it to state.json, but the recursive claude
         # call hangs. Without the timeout branch, the caller would silently
         # see only the codex record and have no idea a fallback ever started.
-        with tempfile.TemporaryDirectory() as tmp:
+        #
+        # The "claude hangs" premise only makes sense if claude's CLI was
+        # actually launchable in the first place -- if it weren't installed,
+        # the real recursive call would fail near-instantly (FileNotFoundError
+        # -> exit 127), not hang until the outer timeout. handoff_webui's
+        # timed-out-provider guess now uses next_available_provider() (review
+        # fix: the naive next-in-PROVIDERS-order guess could name an
+        # uninstalled provider), so shutil.which() is pinned here to make
+        # that premise concrete and this test deterministic regardless of
+        # what's actually installed on whatever machine runs the suite.
+        with mock.patch("handoff_bridge.shutil.which", side_effect=lambda name: name in ("codex", "claude") and f"/usr/bin/{name}"), tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             state_path = root / ".handoff" / "state.json"
             state_path.parent.mkdir(parents=True)
