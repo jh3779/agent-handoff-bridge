@@ -11,6 +11,7 @@ python3 -m unittest discover -s tests -v
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -2046,6 +2047,25 @@ class BuildApiMessageHistoryTests(unittest.TestCase):
             )
 
 
+def _fake_response(status: int, body_dict: dict) -> mock.MagicMock:
+    """A fake urllib.request.urlopen() return value: usable as a context
+    manager (`with urlopen(...) as response:`), with .status/.read()."""
+    response = mock.MagicMock()
+    response.__enter__.return_value = response
+    response.status = status
+    response.read.return_value = json.dumps(body_dict).encode("utf-8")
+    return response
+
+
+def _fake_http_error(code: int, body_dict: dict, retry_after: str | None = None) -> urllib.error.HTTPError:
+    """A real urllib.error.HTTPError instance (not a MagicMock) -- exercises
+    _http_post_json()'s actual exc.read()/exc.headers.get() calls instead
+    of a mock standing in for them."""
+    fp = io.BytesIO(json.dumps(body_dict).encode("utf-8"))
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+    return urllib.error.HTTPError("https://example.invalid", code, "err", headers, fp)
+
+
 class HttpPostJsonTests(unittest.TestCase):
     def test_a_header_validation_valueerror_is_converted_to_an_error_tuple_not_raised(self):
         # http.client raises a bare ValueError (not HTTPError/URLError) for
@@ -2069,6 +2089,75 @@ class HttpPostJsonTests(unittest.TestCase):
         # unlike every other exception type this function handles.
         self.assertNotIn("sk-super-secret", message)
         self.assertNotIn(raw_exception_text, message)
+
+    def test_success_path_still_works_unchanged(self):
+        with mock.patch("handoff_webui.urllib.request.urlopen", return_value=_fake_response(200, {"ok": True})):
+            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+        self.assertEqual((status, data), (200, {"ok": True}))
+
+    def test_a_malformed_200_body_is_a_clean_error_not_a_raise_and_not_mislabeled_as_a_header_problem(self):
+        # Regression: an earlier version of the header-rejection ValueError
+        # catch (added in a prior round) was broad enough to also swallow
+        # json.JSONDecodeError raised from parsing a malformed *success*
+        # body -- JSONDecodeError is itself a ValueError subclass -- which
+        # would have mislabeled this as "headers were rejected" instead of
+        # what actually happened.
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = fake
+        fake.status = 200
+        fake.read.return_value = b"not json"
+        with mock.patch("handoff_webui.urllib.request.urlopen", return_value=fake):
+            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+        self.assertNotEqual(status, 200)
+        message = json.dumps(data)
+        self.assertNotIn("header", message.lower())
+
+    def test_a_429_is_retried_and_a_later_success_is_returned(self):
+        rate_limited = _fake_http_error(429, {"error": {"type": "rate_limit_error", "message": "slow down"}})
+        succeeded = _fake_response(200, {"ok": True})
+        with mock.patch("handoff_webui.urllib.request.urlopen", side_effect=[rate_limited, succeeded]), mock.patch(
+            "handoff_webui._sleep"
+        ) as sleep_spy:
+            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+        self.assertEqual((status, data), (200, {"ok": True}))
+        sleep_spy.assert_called_once()
+
+    def test_retries_are_bounded_then_the_final_error_is_returned(self):
+        always_500 = [_fake_http_error(500, {"error": {"type": "api_error", "message": "down"}}) for _ in range(10)]
+        with mock.patch("handoff_webui.urllib.request.urlopen", side_effect=always_500), mock.patch(
+            "handoff_webui._sleep"
+        ) as sleep_spy:
+            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+        self.assertEqual(status, 500)
+        self.assertEqual(sleep_spy.call_count, webui.API_KEY_MODE_MAX_RETRIES)
+
+    def test_a_non_retryable_error_is_returned_immediately_without_sleeping(self):
+        auth_error = _fake_http_error(401, {"error": {"type": "authentication_error", "message": "bad key"}})
+        with mock.patch("handoff_webui.urllib.request.urlopen", side_effect=[auth_error, auth_error]), mock.patch(
+            "handoff_webui._sleep"
+        ) as sleep_spy:
+            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+        self.assertEqual(status, 401)
+        sleep_spy.assert_not_called()
+
+    def test_retry_delay_honors_a_numeric_retry_after_header(self):
+        rate_limited = _fake_http_error(
+            429, {"error": {"type": "rate_limit_error", "message": "slow down"}}, retry_after="7"
+        )
+        succeeded = _fake_response(200, {"ok": True})
+        with mock.patch("handoff_webui.urllib.request.urlopen", side_effect=[rate_limited, succeeded]), mock.patch(
+            "handoff_webui._sleep"
+        ) as sleep_spy:
+            webui._http_post_json("https://example.invalid", {}, {}, 5)
+        sleep_spy.assert_called_once_with(7.0)
+
+    def test_a_network_error_is_retried_the_same_as_a_5xx(self):
+        with mock.patch(
+            "handoff_webui.urllib.request.urlopen", side_effect=[urllib.error.URLError("connection reset"), _fake_response(200, {"ok": True})]
+        ), mock.patch("handoff_webui._sleep") as sleep_spy:
+            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+        self.assertEqual((status, data), (200, {"ok": True}))
+        sleep_spy.assert_called_once()
 
 
 class CallProviderApiTests(unittest.TestCase):
@@ -2141,7 +2230,7 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
             root = Path(tmp)
             with mock.patch("handoff_webui.call_anthropic_messages_api", return_value={"ok": True, "text": "hello back"}):
                 records = webui.run_provider_via_api_key(
-                    root, "claude", "hello", {"key": "sk-x", "model": None}, "continue"
+                    root, "claude", "hello", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue"
                 )
         self.assertEqual(len(records), 1)
         record = records[0]
@@ -2150,22 +2239,36 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
         self.assertEqual(record["reason"], "none")
         self.assertIsNone(record["session_id"])
         self.assertIsNone(record["run_dir"])
-        self.assertEqual(record["model"], webui.API_KEY_MODE_DEFAULT_MODELS["claude"])
+        self.assertEqual(record["model"], "claude-sonnet-5")
 
     def test_failure_produces_a_tool_failure_reason_classified_as_fail(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with mock.patch(
                 "handoff_webui.call_anthropic_messages_api", return_value={"ok": False, "message": "401 authentication_error"}
-            ):
+            ) as spy:
                 records = webui.run_provider_via_api_key(
-                    root, "claude", "hello", {"key": "sk-x", "model": None}, "continue"
+                    root, "claude", "hello", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue"
                 )
+        spy.assert_called_once()  # confirms this exercised the real API-failure path, not the no-model-configured one
         record = records[0]
         self.assertTrue(record["reason"].startswith("tool_failure"))
         self.assertEqual(
             webui.classify_run_status(record["handoff_needed"], record["reason"]), "fail"
         )
+
+    def test_claude_with_no_model_configured_and_no_default_errors_without_calling_the_api(self):
+        # Neither provider has a built-in default model (see
+        # API_KEY_MODE_DEFAULT_MODELS' own comment on why Claude's was
+        # deliberately removed) -- this mirrors the codex test below for
+        # symmetry.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("handoff_webui.call_anthropic_messages_api") as spy:
+                records = webui.run_provider_via_api_key(root, "claude", "hello", {"key": "sk-x", "model": None}, "continue")
+        spy.assert_not_called()
+        self.assertTrue(records[0]["reason"].startswith("tool_failure"))
+        self.assertIn("model", records[0]["final_text"])
 
     def test_codex_with_no_model_configured_and_no_default_errors_without_calling_the_api(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2363,6 +2466,20 @@ class ProviderApiLiveServerTests(unittest.TestCase):
 
     def test_invalid_provider_is_rejected_with_400(self):
         status, data = self._post("/api/provider-key", {"provider": "gemini", "key": "sk-x"})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_a_write_failure_is_a_clean_400_not_a_crashed_request(self):
+        # save_credential() doesn't catch OSError itself -- unlike
+        # touch_registry() (best-effort, logged not raised), the write
+        # here IS the point of the request, so a failure (simulated the
+        # same way RegistryTests does: the base dir exists as a file, not
+        # a directory) must surface as an ordinary error response instead
+        # of an uncaught exception killing this request's thread with no
+        # JSON reply at all.
+        self.base_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.base_dir.write_text("a file, not a directory", encoding="utf-8")
+        status, data = self._post("/api/provider-key", {"provider": "claude", "key": "sk-x"})
         self.assertEqual(status, 400)
         self.assertIn("error", data)
 

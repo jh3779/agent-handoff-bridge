@@ -249,7 +249,7 @@ one set of saved keys applies regardless of which workspace is open:
 | Field | Type | Notes |
 |---|---|---|
 | `key` | string | the raw API key, as pasted into the connection panel (SCR-06/`components.html` §14) |
-| `model` | string \| null | optional; falls back to `API_KEY_MODE_DEFAULT_MODELS[provider]` if unset — which only has an entry for `claude` (see `handoff_webui.py`, and [DEC-13](design-system/flutter-mapping.html#s1c)) |
+| `model` | string \| null | **required** in practice — `API_KEY_MODE_DEFAULT_MODELS` (`handoff_webui.py`) is deliberately empty for both providers (a hardcoded Claude default existed briefly but was removed: no externally-citable, dated source could back a specific model ID, and a wrong one would silently break every CLI-less Claude user). Without a saved `model`, `run_provider_via_api_key()` returns a clear "model not configured" chat-log error instead of guessing (see [DEC-13](design-system/flutter-mapping.html#s1c)) |
 
 **Never in git**: same posture as the chat log, but stronger — this file
 lives entirely outside any workspace, so it is never even reachable by

@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -686,16 +687,18 @@ _CREDENTIALS_LOCK = threading.Lock()
 # DEC-15: both existing providers get API-key mode symmetrically, same as
 # every other provider-facing feature in this project (Gemini is CFL-13,
 # unrelated/unimplemented).
-API_KEY_MODE_DEFAULT_MODELS = {
-    # Anthropic model IDs are stable, documented identifiers this session's
-    # own environment confirms are current -- safe to default.
-    "claude": "claude-sonnet-5",
-    # No equally-confident current default exists for the OpenAI/Codex side
-    # (see docs/research-api-key-mode.md) -- guessing a model ID wrong would
-    # fail with a confusing 404 instead of a clear message, so this
-    # deliberately has no entry; codex API-key mode requires an explicit
-    # model to be saved via POST /api/provider-key.
-}
+#
+# Deliberately empty for *both* providers, not just OpenAI/Codex: an
+# earlier version hardcoded a Claude default on the reasoning that model
+# IDs from this session's own environment context were "safe to default
+# to" -- a real review round pointed out that's an internal, undated
+# assumption, not a citable, externally-verifiable source the way
+# docs/research.md/docs/research-api-key-mode.md's other claims are, and
+# a wrong/deprecated default would silently break every CLI-less Claude
+# user with no clear model config error to point at. Requiring an
+# explicit model from both providers (via POST /api/provider-key) is the
+# more honest, defensible choice than guessing one that can't be sourced.
+API_KEY_MODE_DEFAULT_MODELS: dict[str, str] = {}
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_VERSION = "2023-06-01"
@@ -823,37 +826,99 @@ def build_api_message_history(workspace: Path, prompt: str, now: datetime) -> li
     return messages
 
 
+# docs/research-api-key-mode.md notes that the official SDKs auto-retry
+# transient failures (connection errors, rate limits, 5xx) with backoff,
+# honoring `retry-after` -- a hand-rolled urllib client doesn't get that
+# for free, so a small bounded retry is applied here rather than surfacing
+# every transient blip as a user-visible chat failure the CLI path
+# wouldn't have.
+API_KEY_MODE_MAX_RETRIES = 2  # total attempts = 1 + this
+API_KEY_MODE_RETRY_STATUS_CODES = {429, 500, 502, 503, 504, 529}
+API_KEY_MODE_RETRY_BASE_DELAY_SECONDS = 1.0
+
+
+def _sleep(seconds: float) -> None:
+    """Seam so tests can avoid real delays -- same reasoning as
+    _http_post_json()'s seam over urllib."""
+    time.sleep(seconds)
+
+
+def _retry_delay_seconds(exc: BaseException, attempt: int) -> float:
+    retry_after = getattr(exc, "headers", None) and exc.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            pass  # not a plain seconds value (e.g. an HTTP-date) -- fall through to the default backoff
+    return API_KEY_MODE_RETRY_BASE_DELAY_SECONDS * attempt
+
+
 def _http_post_json(url: str, headers: dict, body: dict, timeout: int) -> tuple[int, dict]:
     """Thin seam around urllib so tests can substitute a fake transport
     instead of making a real network call -- the same reason
     _run_provider_via_bridge_locked() shells out to a fake `codex`/`claude`
-    script in tests rather than calling a real provider."""
+    script in tests rather than calling a real provider.
+
+    Retries a rate-limited/server-error/network-transient failure up to
+    API_KEY_MODE_MAX_RETRIES times before giving up -- everything else
+    (auth errors, bad request, header rejection, a malformed response
+    body) returns immediately since retrying wouldn't change the outcome.
+    """
     encoded = json.dumps(body).encode("utf-8")
-    request = urllib.request.Request(url, data=encoded, method="POST", headers=headers)
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (fixed https:// constants above)
-            return response.status, json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        payload = exc.read().decode("utf-8", errors="replace")
+    attempt = 0
+    while True:
+        request = urllib.request.Request(url, data=encoded, method="POST", headers=headers)
         try:
-            return exc.code, json.loads(payload)
-        except json.JSONDecodeError:
-            return exc.code, {"error": {"type": "api_error", "message": payload or exc.reason}}
-    except ValueError:
-        # http.client raises a bare ValueError (not HTTPError/URLError) for
-        # a header value containing forbidden characters -- e.g. a saved
-        # API key with an embedded CR/LF makes it straight into the
-        # `x-api-key`/`Authorization` header unescaped. httplib's own
-        # exception text embeds the offending header VALUE verbatim (the
-        # key itself, here), so unlike every other branch in this
-        # function -- which forwards the vendor's real response/exception
-        # text -- that text must never be returned as-is.
-        return 0, {
-            "error": {
-                "type": "invalid_request",
-                "message": "request headers were rejected -- the API key or model contains characters not allowed in an HTTP header value",
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (fixed https:// constants above)
+                raw = response.read().decode("utf-8")
+                try:
+                    return response.status, json.loads(raw)
+                except json.JSONDecodeError:
+                    # A 200 with an unparseable body (e.g. a proxy sitting
+                    # in front of the real API) -- status 0 (never a real
+                    # HTTP status) so callers' `if status != 200` branch
+                    # still treats this as a failure instead of silently
+                    # reading an empty reply out of the malformed body.
+                    return 0, {"error": {"type": "api_error", "message": f"non-JSON response body: {raw[:500]}"}}
+        except urllib.error.HTTPError as exc:
+            if exc.code in API_KEY_MODE_RETRY_STATUS_CODES and attempt < API_KEY_MODE_MAX_RETRIES:
+                attempt += 1
+                _sleep(_retry_delay_seconds(exc, attempt))
+                continue
+            payload = exc.read().decode("utf-8", errors="replace")
+            try:
+                return exc.code, json.loads(payload)
+            except json.JSONDecodeError:
+                return exc.code, {"error": {"type": "api_error", "message": payload or exc.reason}}
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            # ValueError (below) is deliberately NOT included here even
+            # though json.JSONDecodeError (handled above, inside the try
+            # block) is technically a ValueError subclass -- ordering
+            # matters: that inner try/except already claims it before
+            # execution would ever reach this or the next clause.
+            if attempt < API_KEY_MODE_MAX_RETRIES:
+                attempt += 1
+                _sleep(_retry_delay_seconds(exc, attempt))
+                continue
+            raise
+        except ValueError:
+            # http.client raises a bare ValueError (not HTTPError/URLError)
+            # for a header value containing forbidden characters -- e.g. a
+            # saved API key with an embedded CR/LF makes it straight into
+            # the `x-api-key`/`Authorization` header unescaped. httplib's
+            # own exception text embeds the offending header VALUE
+            # verbatim (the key itself, here), so unlike every other
+            # branch in this function -- which forwards the vendor's real
+            # response/exception text -- that text must never be returned
+            # as-is. Retrying wouldn't help (the key is still malformed),
+            # so this returns immediately rather than going through the
+            # retry loop above.
+            return 0, {
+                "error": {
+                    "type": "invalid_request",
+                    "message": "request headers were rejected -- the API key or model contains characters not allowed in an HTTP header value",
+                }
             }
-        }
 
 
 def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict]) -> dict:
@@ -870,14 +935,9 @@ def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict]) 
     try:
         status, data = _http_post_json(ANTHROPIC_MESSAGES_URL, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        # _http_post_json() already retried transient failures
+        # (API_KEY_MODE_MAX_RETRIES times) before re-raising this.
         return {"ok": False, "message": f"network error calling Anthropic Messages API: {exc}"}
-    except json.JSONDecodeError as exc:
-        # _http_post_json() only guards its own HTTPError branch against a
-        # non-JSON body -- a 200 response with an unparseable body (e.g. a
-        # proxy in front of the real API) would otherwise raise here
-        # uncaught and crash this request's thread instead of producing the
-        # clean chat-log error record every other failure path does.
-        return {"ok": False, "message": f"Anthropic API returned a non-JSON response: {exc}"}
     if status != 200:
         error = data.get("error") if isinstance(data, dict) else None
         error_type = (error or {}).get("type", "api_error")
@@ -1502,7 +1562,23 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     # An empty key removes the credential (save_credential()'s
                     # contract) -- lets the connection panel's same "저장"
                     # action double as "disconnect API key mode".
-                    save_credential(provider, key, model)
+                    #
+                    # Unlike touch_registry() (best-effort, failure only
+                    # logged -- always called *after* a real state change it
+                    # shouldn't be allowed to desync from), this write IS the
+                    # entire point of the request: the user is actively
+                    # trying to save/remove a key, so a write failure
+                    # (permissions, full disk, base dir exists as a file)
+                    # must reach them as a real error, not disappear.
+                    # save_credential() doesn't wrap OSError itself; do it
+                    # here so it becomes a normal WorkspaceError -> 400 like
+                    # every other failure this endpoint (and this whole
+                    # feature) produces, instead of an uncaught exception
+                    # crashing this request's thread with no JSON response.
+                    try:
+                        save_credential(provider, key, model)
+                    except OSError as exc:
+                        raise WorkspaceError(f"failed to save API key: {exc}") from exc
                     resolved_model = model or API_KEY_MODE_DEFAULT_MODELS.get(provider)
                     self._send_json(
                         200,

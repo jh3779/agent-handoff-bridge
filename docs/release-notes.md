@@ -438,10 +438,11 @@
   - the saved API key is never interpolated into any error message/chat-log
     text/toast — every error string is built only from the HTTP response
     body or exception text, verified by tests;
-  - Anthropic gets a documented default model (`claude-sonnet-5`); OpenAI/
-    Codex API-key mode deliberately has **no** built-in default (no
-    equally-confident current model ID exists) and returns a clear error
-    asking for one to be set via the connection panel instead of guessing.
+  - Neither provider ships a built-in default model (a Claude default was
+    briefly considered/added, then removed in round 3 below once it was
+    flagged as an internal, undated assumption rather than a citable
+    source) — both return a clear error asking for one to be set via the
+    connection panel instead of guessing.
   - **Round 2** (independent second-opinion review, before merge): fixed
     a real gap the first review round didn't cover —
     `build_api_message_history()` mapped the chat log to alternating
@@ -470,6 +471,67 @@
     on top of a newer one's. 5 new regression tests (exact count/names via
     `python3 -m unittest discover -s tests -v`, per this file's usual
     anti-drift practice).
+  - **Round 3** (two more pasted review passes, before merge): one real
+    ordering bug introduced by round 2 itself, one real cross-doc
+    consistency gap, one legitimate hardening request, one credential-
+    write gap found while writing docs (not by either pasted review), and
+    one recurring claim verified and rejected as false:
+    - fixed a self-inflicted bug: round 2's `except ValueError:` guard
+      around the header-injection case in `_http_post_json()` was broad
+      enough to also swallow `json.JSONDecodeError` (a `ValueError`
+      subclass) from a malformed-but-200 response body, mislabeling that
+      case as "headers were rejected" and making the caller-side
+      `except json.JSONDecodeError` handling added earlier in round 2
+      unreachable dead code. Restructured so the malformed-body case is
+      caught inside the success path specifically, before the broader
+      header-rejection handler ever gets a chance to misclassify it;
+    - added a small bounded retry (`API_KEY_MODE_MAX_RETRIES = 2`) for
+      429/5xx/network-transient failures in `_http_post_json()`, honoring
+      a numeric `Retry-After` header when present — `docs/research-api-
+      key-mode.md` already noted the official SDKs do this and a
+      hand-rolled `urllib` client doesn't get it for free; a review
+      correctly flagged the gap between that research finding and what
+      had actually been implemented;
+    - removed the hardcoded Claude default model
+      (`API_KEY_MODE_DEFAULT_MODELS` is now empty for both providers) — a
+      review correctly pointed out the only justification for it was this
+      session's own internal environment context, not an externally
+      citable, dated source the way this project's other model/API claims
+      are sourced; both providers now require an explicit model with no
+      guessing;
+    - found (while updating docs to describe the credential store, not by
+      either pasted review) that `save_credential()`'s write failure
+      wasn't caught anywhere — unlike `touch_registry()`'s deliberate
+      best-effort/log-only posture, a save is the entire point of
+      `POST /api/provider-key`, so its failure now surfaces as an ordinary
+      `WorkspaceError` → `400` instead of an uncaught exception killing
+      that request's thread with no response at all;
+    - extended `docs/security-model.md` § Credential Boundaries and
+      `docs/architecture.md` § State Boundaries to describe the API-key
+      mode exception explicitly (plaintext-at-rest tradeoff, storage
+      location, dispatch priority) — both previously only described the
+      CLI-only `handoff_bridge.py` posture, which Phase 4 doesn't
+      contradict but does add a real, documented exception next to;
+    - **verified and rejected**: both review passes also asked for
+      `docs/local-data-model.md` and `docs/adr/0010-*`/`0014-*`/`0015-*`
+      to be reconciled with this change. Checked `git log --all` across
+      every branch — neither has ever existed in this repository at any
+      point, and this exact same claim was already raised and resolved
+      once before, on an earlier PR (commit `e6c74c1`, "the review's
+      suggestion assumed a convention this project doesn't use" —
+      `docs/webui-chat-storage.md`'s own opening paragraph documents the
+      decision not to use an ADR directory). No ADR system or
+      `local-data-model.md` was invented to satisfy a convention this
+      project has twice now deliberately not adopted;
+    - **considered, not changed**: `.handoff/current.md`'s Phase 4 entry
+      names this PR's number and says "not yet merged" — accurate as of
+      when it was written, and it'll read as stale after merge the way
+      any last-updated packet does until the next session updates it
+      again (this repo's own `CLAUDE.md` protocol: "update before
+      stopping," not "keep evergreen"). Left as-is rather than rewritten
+      to avoid a specific PR number, since that would just trade one
+      snapshot-in-time framing for a vaguer one with no real gain.
+    - 9 more new regression tests in this round.
 
 ## v0.1.0 — 2026-08-03
 

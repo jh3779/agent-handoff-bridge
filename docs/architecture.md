@@ -82,9 +82,14 @@ passed to CLI `--model`. Exact model strings are passed through.
 
 ## State Boundaries
 
-The bridge does not copy credentials, auth files, provider transcripts, or
-hidden app state. Each provider continues from files on disk and the current git
-state.
+The bridge (`handoff_bridge.py`) does not copy credentials, auth files,
+provider transcripts, or hidden app state. Each provider continues from
+files on disk and the current git state. This remains true of the bridge
+itself — the one deliberate exception lives one layer up, in the Web UI's
+Phase 4 API-key mode (`handoff_webui.py`), which stores a provider
+credential for CLI-less use. See
+[Security Model § Credential Boundaries](security-model.md#credential-boundaries)
+for what that exception actually stores, where, and why.
 
 `.handoff/state.json` and `.handoff/current.md` are written through
 `atomic_write_text()` under a cross-process `WriteLock` so a torn write can't
