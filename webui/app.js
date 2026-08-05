@@ -793,22 +793,30 @@
 
   // ---------- update check (Phase 6, SCR-07/components.html §15) ----------
 
-  let latestUpdateInfo = null;
-  // Starts true, flips to false only once a GET /api/update-check
-  // response actually reports checked: true (see checkForUpdate() below).
-  // Review fix: without this, clicking the button during the polling
-  // window (checked still false, so latestUpdateInfo is still null too)
-  // showed the same "최신 버전을 사용 중입니다" toast as a real confirmed
-  // up-to-date result -- a false reassurance if an update actually
-  // existed and just hadn't been confirmed yet.
-  let updateCheckPending = true;
+  // "pending" | "available" | "current" | "unavailable" -- "pending" is
+  // local to this file (GET /api/update-check hasn't reported checked:
+  // true yet); the other three mirror check_for_update()'s `status`
+  // field (handoff_bridge.py, CFL-18) once it has. Starts "pending", set
+  // from a real GET /api/update-check response only once one actually
+  // reports checked: true (see checkForUpdate() below). CFL-18:
+  // "current" (genuinely checked, nothing newer) and
+  // "unavailable" (couldn't check at all -- gh missing/unauthenticated/
+  // offline, real DEC-19-documented failure paths) used to be
+  // indistinguishable and both showed "최신 버전을 사용 중입니다," which
+  // is simply false for the "unavailable" case.
+  let latestUpdateStatus = "pending";
+  let latestUpdateInfo = null; // only meaningful when status === "available"
 
   function openUpdatePopover() {
-    if (updateCheckPending) {
+    if (latestUpdateStatus === "pending") {
       showToast("업데이트 확인 중입니다…");
       return;
     }
-    if (!latestUpdateInfo) {
+    if (latestUpdateStatus === "unavailable") {
+      showToast("업데이트를 확인할 수 없습니다.");
+      return;
+    }
+    if (latestUpdateStatus === "current") {
       // components.html §15: the button/icon is always visible ("평소엔
       // 아이콘만"), only the dot is conditional -- reuse the existing
       // toast mechanism for the "you're already current" case instead of
@@ -816,6 +824,7 @@
       showToast("최신 버전을 사용 중입니다.");
       return;
     }
+    // "available"
     updatePopoverVersion.textContent = `v${latestUpdateInfo.latest_version} 사용 가능`;
     updatePopoverNote.textContent = `현재 v${latestUpdateInfo.current_version} 사용 중. 릴리즈 노트를 확인하고 업데이트하세요.`;
     updatePopover.classList.add("show");
@@ -850,8 +859,9 @@
       window.setTimeout(() => checkForUpdate(attempt + 1), UPDATE_CHECK_POLL_INTERVAL_MS);
     }
     // Otherwise: polling exhausted with no confirmed answer --
-    // updateCheckPending deliberately stays true rather than falling
-    // through to "up to date," since that was never actually confirmed.
+    // latestUpdateStatus deliberately stays "pending" rather than
+    // falling through to "current" or "unavailable," since neither was
+    // actually confirmed.
   }
 
   async function checkForUpdate(attempt = 0) {
@@ -873,8 +883,8 @@
       scheduleUpdateCheckRetry(attempt);
       return;
     }
-    updateCheckPending = false;
-    if (data.update_available) {
+    latestUpdateStatus = data.status;
+    if (data.status === "available") {
       latestUpdateInfo = data;
       updateDot.classList.add("show");
     }

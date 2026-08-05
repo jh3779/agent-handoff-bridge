@@ -698,47 +698,68 @@ class ParseVersionTupleTests(unittest.TestCase):
 
 
 class CheckForUpdateTests(unittest.TestCase):
+    """CFL-18, resolved as DEC-20 (docs/design-system/flutter-mapping.html#s1c): check_for_update()
+    always returns a dict with a `status` field -- "available"/"current"/
+    "unavailable" -- never `None`, specifically so "genuinely current"
+    and "couldn't check at all" (gh missing/unauthenticated/offline, all
+    real DEC-19-documented failure paths) stay distinguishable instead of
+    both collapsing into the same falsy value."""
+
     def test_a_newer_release_is_reported(self):
         with mock.patch.object(
             hb, "short_run", return_value=(0, json.dumps({"tagName": "v0.2.0", "url": "https://example.invalid/v0.2.0"}), "")
         ):
             result = hb.check_for_update()
         self.assertEqual(
-            result, {"latest_version": "0.2.0", "current_version": hb.BRIDGE_VERSION, "url": "https://example.invalid/v0.2.0"}
+            result,
+            {
+                "status": "available",
+                "latest_version": "0.2.0",
+                "current_version": hb.BRIDGE_VERSION,
+                "url": "https://example.invalid/v0.2.0",
+            },
         )
 
-    def test_same_version_is_not_reported_as_an_update(self):
+    def test_same_version_is_reported_as_current_not_available(self):
         with mock.patch.object(
             hb, "short_run", return_value=(0, json.dumps({"tagName": f"v{hb.BRIDGE_VERSION}", "url": "https://example.invalid"}), "")
         ):
-            self.assertIsNone(hb.check_for_update())
+            result = hb.check_for_update()
+        self.assertEqual(result, {"status": "current", "current_version": hb.BRIDGE_VERSION})
 
-    def test_an_older_tag_is_not_reported_as_an_update(self):
+    def test_an_older_tag_is_reported_as_current_not_available(self):
         # Shouldn't normally happen (releases only move forward), but a
         # stale/mistagged release must never be offered as an "update".
         with mock.patch.object(
             hb, "short_run", return_value=(0, json.dumps({"tagName": "v0.0.1", "url": "https://example.invalid"}), "")
         ):
-            self.assertIsNone(hb.check_for_update())
+            result = hb.check_for_update()
+        self.assertEqual(result["status"], "current")
 
-    def test_gh_not_installed_returns_none_not_raise(self):
+    def test_gh_not_installed_is_unavailable_not_current(self):
         # short_run() itself already turns FileNotFoundError into exit
         # code 127 -- this just confirms check_for_update() treats any
-        # nonzero exit as "can't check", not just a specific one.
+        # nonzero exit as "can't check" (status "unavailable"), not just
+        # a specific one, and critically not "current" either -- we
+        # genuinely don't know.
         with mock.patch.object(hb, "short_run", return_value=(127, "", "gh not found")):
-            self.assertIsNone(hb.check_for_update())
+            result = hb.check_for_update()
+        self.assertEqual(result, {"status": "unavailable", "current_version": hb.BRIDGE_VERSION})
 
-    def test_gh_error_exit_returns_none_not_raise(self):
+    def test_gh_error_exit_is_unavailable(self):
         with mock.patch.object(hb, "short_run", return_value=(1, "", "gh: authentication required")):
-            self.assertIsNone(hb.check_for_update())
+            result = hb.check_for_update()
+        self.assertEqual(result["status"], "unavailable")
 
-    def test_malformed_json_returns_none_not_raise(self):
+    def test_malformed_json_is_unavailable(self):
         with mock.patch.object(hb, "short_run", return_value=(0, "not json", "")):
-            self.assertIsNone(hb.check_for_update())
+            result = hb.check_for_update()
+        self.assertEqual(result["status"], "unavailable")
 
-    def test_missing_expected_fields_returns_none_not_raise(self):
+    def test_missing_expected_fields_is_unavailable(self):
         with mock.patch.object(hb, "short_run", return_value=(0, json.dumps({"somethingElse": True}), "")):
-            self.assertIsNone(hb.check_for_update())
+            result = hb.check_for_update()
+        self.assertEqual(result["status"], "unavailable")
 
     def test_calls_gh_with_the_repo_pinned_not_relying_on_cwd(self):
         # handoff_webui.py can run with --workspace pointing at any
