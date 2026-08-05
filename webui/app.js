@@ -793,11 +793,13 @@
 
   // ---------- update check (Phase 6, SCR-07/components.html §15) ----------
 
-  // "pending" | "available" | "current" | "unavailable" -- mirrors
-  // check_for_update()'s `status` field (handoff_bridge.py, CFL-18).
-  // Starts "pending", set from a real GET /api/update-check response
-  // only once one actually reports checked: true (see checkForUpdate()
-  // below). CFL-18: "current" (genuinely checked, nothing newer) and
+  // "pending" | "available" | "current" | "unavailable" -- "pending" is
+  // local to this file (GET /api/update-check hasn't reported checked:
+  // true yet); the other three mirror check_for_update()'s `status`
+  // field (handoff_bridge.py, CFL-18) once it has. Starts "pending", set
+  // from a real GET /api/update-check response only once one actually
+  // reports checked: true (see checkForUpdate() below). CFL-18:
+  // "current" (genuinely checked, nothing newer) and
   // "unavailable" (couldn't check at all -- gh missing/unauthenticated/
   // offline, real DEC-19-documented failure paths) used to be
   // indistinguishable and both showed "최신 버전을 사용 중입니다," which

@@ -309,13 +309,17 @@ HTTP server. What it does:
   page load, and a single-shot check could silently and permanently miss
   showing the badge. Clicking the button opens a popover with the
   version and a release-notes link if an update was found; otherwise a
-  toast reflecting one of four distinct states (`check_for_update()`'s
-  `status` field, never conflated): "업데이트 확인 중입니다" while still
-  polling (`pending`), "최신 버전을 사용 중입니다" once confirmed current
-  (`current`), or "업데이트를 확인할 수 없습니다" if `gh` isn't installed/
-  authenticated, the network call failed, or the response couldn't be
-  parsed (`unavailable`) — this last case used to render identically to
-  "current", which falsely told users they were up to date when the
+  toast reflecting one of four distinct states, never conflated: the
+  frontend's own "not checked yet" state before the poll resolves shows
+  "업데이트 확인 중입니다" (`pending` — this one is local to
+  `webui/app.js`, not something `check_for_update()` itself returns);
+  once `GET /api/update-check` reports `checked: true`, its `status`
+  field (from `check_for_update()`, `handoff_bridge.py`) is one of
+  `current` ("최신 버전을 사용 중입니다"), `available` (the popover
+  above), or `unavailable` ("업데이트를 확인할 수 없습니다" — `gh` isn't
+  installed/authenticated, the network call failed, or the response
+  couldn't be parsed). `unavailable` used to render identically to
+  `current`, which falsely told users they were up to date when the
   check had actually failed. No forced update; "나중에" always dismisses.
 
 **Why a subprocess, not an in-process function call**: `handoff_bridge.py`'s
