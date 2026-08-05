@@ -180,10 +180,14 @@ Per `docs/design-system/roadmap.md`'s Phase 5 plan, in order:
    `classify_handoff()`'s Gemini branch, and whether missing a real
    session ID blocks resume-based fallback chaining for Gemini or just
    means "always resume latest."
-2. Refactor `handoff_bridge.py`'s `other_provider()` (binary toggle)
-   into N-way fallback — already documented as a known gap in
+2. Refactor `handoff_bridge.py`'s `other_provider()` (binary toggle) so
+   picking a fallback *target* generalizes to N providers, not just
+   two — already documented as a known gap in
    `docs/provider-extensibility.md`'s "The Current Code Assumes Exactly
-   Two Providers."
+   Two Providers." (Ended up as `next_provider()`/
+   `next_available_provider()`; auto-fallback itself stayed exactly one
+   hop, unchanged from the original 2-provider design — see
+   `docs/provider-extensibility.md` for why.)
 3. Extend `PROVIDERS`, add `provider_command()` branch,
    `summarize_gemini()` (parsing the JSON-mode response shape
    documented above), and `classify_handoff()` signal matching for
@@ -193,7 +197,8 @@ Per `docs/design-system/roadmap.md`'s Phase 5 plan, in order:
 5. Tests: fake `gemini` binary script (mirroring `FAKE_CODEX_SUCCESS`/
    `FAKE_CLAUDE_SUCCESS` in `tests/test_handoff_webui.py` and the
    bridge's own provider tests), covering success, the chosen
-   auth-failure signal, and N-way fallback chaining.
+   auth-failure signal, and fallback-target selection reaching an
+   installed provider even when one in between isn't.
 
 ## Sources
 

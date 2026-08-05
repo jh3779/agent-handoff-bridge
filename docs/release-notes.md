@@ -533,8 +533,12 @@
       snapshot-in-time framing for a vaguer one with no real gain.
     - 9 more new regression tests in this round.
 
-- Web UI Phase 5 (Gemini CLI as a third provider + N-way fallback
-  refactor): resolves CFL-13. `docs/research-gemini-cli.md` written first
+- Web UI Phase 5 (Gemini CLI as a third provider + generalized fallback
+  **target selection**, not full N-way retry-until-exhausted chaining —
+  auto-fallback is still exactly one hop, unchanged from the original
+  2-provider design; see the round-2 entry below for why "N-way
+  fallback" needed this clarification): resolves CFL-13.
+  `docs/research-gemini-cli.md` written first
   (same discipline as `docs/research.md` for Codex/Claude) — found Gemini
   fits the existing subprocess architecture but has no free auth-status
   command, no session ID in its JSON output, and returns one JSON object
@@ -580,8 +584,9 @@
     the key/model inputs;
   - `docs/provider-extensibility.md`'s "The Current Code Assumes Exactly
     Two Providers" section rewritten from a plan into a record of what
-    actually changed (and, per its own prediction, what didn't —
-    `classify_handoff()`/`ERROR_PATTERNS` needed no changes);
+    actually changed (`classify_handoff()` itself needed no changes, as
+    predicted; `ERROR_PATTERNS` needed one small addition, corrected in
+    round 2 below);
   - 17 new/updated tests in `tests/test_handoff_bridge.py` (`next_provider()`
     ordering/wraparound/skip-tried, `provider_command()`'s gemini branch,
     `summarize_gemini()` success/error/malformed input, a real-subprocess
@@ -645,6 +650,32 @@
       a real-subprocess integration test reproducing the exact
       skip-uninstalled-provider scenario with fake `codex`/`gemini`
       binaries and no `claude` on `PATH` at all.
+  - **Round 3** (same PR, follow-up automated review confirming round 2's
+    fixes landed, then raising two more points):
+    - a real CI failure this round's own testing didn't catch locally:
+      `tests/test_handoff_webui.py`'s outer-timeout guess test never
+      mocked `shutil.which`, so it passed on a dev machine with real
+      `codex`/`claude` installed but failed in CI's clean environment
+      (nothing installed) — `next_available_provider()`'s guess correctly
+      fell through to `"codex"` there, since the test's "claude timed
+      out" premise implicitly requires claude to have been launchable at
+      all. Pinned `shutil.which` in that test to make the premise
+      concrete instead of depending on the host's real installed set;
+    - **naming precision, not a behavior change**: pointed out that
+      "N-way fallback" oversold what actually shipped — auto-fallback
+      remained exactly one hop throughout, by design (unchanged from the
+      original 2-provider system, to bound token spend if a fallback
+      also fails late). What Phase 5 actually generalized was *which*
+      provider that one hop can land on. Reworded the headline framing
+      above and in `docs/research-gemini-cli.md`'s implementation plan
+      to say "fallback target selection," not "N-way fallback," since
+      the prose already explaining the one-hop constraint wasn't
+      preventing the section *title* from implying more than it delivered;
+    - this file's own Phase 5 entry said `classify_handoff()`/
+      `ERROR_PATTERNS` "needed no changes" one paragraph above the round-2
+      entry documenting that `ERROR_PATTERNS` *did* need one addition —
+      corrected to say what's actually true of each (`classify_handoff()`
+      itself: no changes; `ERROR_PATTERNS`: one addition).
 
 ## v0.1.0 — 2026-08-03
 
