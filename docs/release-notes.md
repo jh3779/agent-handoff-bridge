@@ -371,7 +371,30 @@
   - more tests for all of the above, including HTTP-level tests proving
     `/api/open-folder` and a second `POST /api/chat` both correctly get
     `409` while a run is in flight, and that a `system`-role message
-    doesn't.
+    doesn't;
+  - fixed a real gap a follow-up review found in the same area:
+    `sendMessage()` only stopped short of calling `POST /api/run` when
+    `POST /api/chat` failed *and* the workspace had just been missing --
+    for an already-existing workspace, a failed or `409`-rejected
+    `/api/chat` (e.g. the new concurrent-run guard above) fell through to
+    `/api/run` anyway, which would itself immediately `409` too (a
+    second, more confusing error stacked on the first) or, worse, let an
+    agent reply render and persist with no corresponding user turn ever
+    saved to back it. Now stops unconditionally on any `/api/chat`
+    failure, not just the auto-create case;
+  - considered, and consciously left as documented/accepted: the
+    `_RUN_LOCK.locked()` checks in `/api/open-folder` and `/api/chat`
+    (above) are a plain check-then-act, not atomic against a `/api/run`
+    that acquires the lock in the gap between the check and the
+    subsequent state change. Closing that fully would mean either
+    `/api/open-folder`/`/api/chat` blocking on the same lock `/api/run`
+    holds (up to `OUTER_SUBPROCESS_TIMEOUT_SECONDS`, ~21 minutes -- this
+    project has deliberately favored fail-fast `409`s over blocking
+    everywhere else `_RUN_LOCK` is involved) or a heavier shared-mutex
+    redesign across all three endpoints. Given this is a single-user,
+    single-process local tool, the residual window (a handful of Python
+    bytecode instructions, down from the *entire* run's duration before
+    this round) was judged not worth either tradeoff.
 
 ## v0.1.0 — 2026-08-03
 

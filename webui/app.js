@@ -602,23 +602,22 @@
     updateSendState();
 
     const workspaceWasMissing = !hasWorkspace;
-    let chatPersisted = true;
     try {
       await postJSON("/api/chat", userMessage);
     } catch (err) {
-      chatPersisted = false;
+      // Stop here unconditionally -- not just for the auto-create case.
+      // Calling /api/run right after a failed/rejected /api/chat means
+      // asking the provider to answer a message that was never actually
+      // recorded: at best it's a wasted round trip (a 409 here means a
+      // run is already in progress, so /api/run would immediately 409
+      // too -- a second, more confusing error on top of this one); at
+      // worst the agent's reply renders and persists with no
+      // corresponding user turn backing it, which pair_messages_into_turns()
+      // (Phase 3) can't attribute to anything in the history drawer.
       showToast(`대화 기록 저장 실패(화면에는 남아있음): ${err.message}`);
+      return;
     }
     if (workspaceWasMissing) {
-      if (!chatPersisted) {
-        // This /api/chat call is what would have auto-created the
-        // workspace server-side (create_workspace_for_first_message()) --
-        // if it failed, there's no workspace yet and hasWorkspace is
-        // still (correctly) false. Don't call /api/run just to have the
-        // server reject it with "no workspace selected", and don't fall
-        // through with a stale hasWorkspace while a run is attempted.
-        return;
-      }
       // SCR-05: bring the titlebar and file tree up to date with the
       // workspace /api/chat just auto-created, before the provider call
       // that's about to follow.
