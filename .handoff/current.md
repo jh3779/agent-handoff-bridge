@@ -119,13 +119,68 @@ create a task-specific packet.
   multiple rounds — neither has ever existed in this repo's history
   (`git log --all` confirms), and this same claim was already raised and
   resolved once before on an earlier PR (commit `e6c74c1`).
-- **Remaining**: Phase 6 (auto-update check) and Phase 7 (framework
-  migration, DEC-01) still unstarted. CFL-17 (full agentic parity for
-  API-key mode) and the deferred full-agent-fallback-chaining question
-  (session resume for Gemini stays best-effort via the `"latest"`
-  sentinel) have no design yet, deliberately.
-- **Blocked**: none.
-- **Next**: Phase 6 — SCR-07's auto-update-check UI. Needs CFL-11
-  resolved first (this repo is private, so an anonymous GitHub Releases
-  API query can't list releases — reuse the user's `gh` auth, or build a
-  separate public version-check endpoint).
+- **Remaining (superseded, see 2026-08-05 Phase 6 entry below)**: PR #8
+  merged.
+
+### 2026-08-05 — Phase 6: automatic update check via local gh CLI auth
+
+- **Target**: Claude Code CLI, bridge core + web UI work
+  (`handoff_bridge.py`, `handoff_webui.py`, `webui/*`), branch
+  `feature/auto-update-check-phase-6`, PR #9
+  (https://github.com/jh3779/agent-handoff-bridge/pull/9), **merged**.
+- **Changed**: Titlebar update-check badge (SCR-07/components.html §15).
+  `handoff_bridge.py`: `GITHUB_REPO`, `parse_version_tuple()`,
+  `check_for_update()` — shells out to local `gh` CLI (`gh release view
+  --repo <repo> --json tagName,url`) rather than building new public
+  infrastructure, since this repo is private (DEC-19, resolves CFL-11).
+  `handoff_webui.py`: `AppState.update_info`/`update_checked`, a
+  background daemon thread started in `main()` so the real network call
+  never delays startup, `GET /api/update-check` reading the cache.
+  Frontend: always-visible titlebar button, dot badge only when an
+  update exists, popover with version + release-notes link, reuses the
+  existing toast for "up to date"/"still checking" states rather than
+  inventing new UI the wireframe never mocked.
+- **Verified**: `python3 -m unittest discover -s tests -v` — 310 tests
+  passing. `python3 handoff_bridge.py check` passes.
+  `python3 scripts/scan_secrets.py` clean. Four review rounds (one
+  self-review before opening, two real automated reviews on GitHub, one
+  more self-review requested explicitly) found and fixed real issues,
+  most notably a **highly-reachable race**: the frontend originally
+  checked `/api/update-check` exactly once at page load with no retry,
+  but the real `gh` subprocess call (network I/O) can easily still be
+  running at that point, especially right after server startup — so a
+  normal server start could silently and permanently miss showing the
+  badge even when an update genuinely existed. Fixed with an
+  `update_checked` pending/done flag and bounded frontend polling
+  (1.5s × 10). A follow-up self-review then found the **reader side of
+  the same race**: the HTTP handler read `update_info` before
+  `update_checked` (the opposite order from how the background thread
+  writes them), so the two writes landing between the handler's two
+  reads could still report a stale "checked, no update" for a request
+  that actually raced a real update being found — fixed by reading
+  `checked` first (the safe-to-be-wrong-in direction). Also fixed in the
+  same round: the frontend's polling `catch` block gave up permanently
+  on any single transient fetch error instead of retrying (undermining
+  the whole point of the polling fix), and an off-by-one that let 11
+  fetches through a nominal 10-fetch bound. One low-severity, explicitly
+  non-blocking finding (`check_for_update()` can't distinguish "genuinely
+  up to date" from "couldn't check at all" — `gh` missing/unauthenticated
+  cases show the same "최신 버전" toast) was recorded as a consciously
+  accepted tradeoff, not fixed — **CFL-18** in
+  `docs/design-system/flutter-mapping.html`.
+- **Remaining**: Phase 7 (framework migration, DEC-01, Tauri/Electron) is
+  the only unstarted item on the original roadmap — and it's explicitly
+  the "최종 목표" (final goal), a full rewrite of the stdlib-http-server
+  MVP onto a real production stack, not an incremental feature addition
+  like Phases 1-6. It also has real unresolved prerequisites of its own
+  (CFL-09: the whole "download a zip, no git required" release/packaging
+  pipeline needs a full redesign once real installable binaries replace
+  it). CFL-17 (full agentic parity for API-key mode) and CFL-18 (above)
+  remain deliberately undesigned/unfixed.
+- **Blocked**: none technically, but Phase 7's scope is large enough
+  (and consequential/hard-to-reverse enough — migrating the actual
+  shipped UI stack) that it's worth confirming with the user whether to
+  actually start it now, versus treating Phases 0-6 (the full v0.2
+  chat-redesign feature set) as a natural stopping point.
+- **Next**: presented Phase 7's scope to the user for a go/no-go/defer
+  decision rather than starting the framework migration unprompted.
