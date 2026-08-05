@@ -257,3 +257,98 @@ create a task-specific packet.
   started opportunistically.
 - **Blocked**: none. No further action pending — awaiting user direction
   on whether/when to pick up CFL-17 or Phase 7.
+
+### 2026-08-05 — CFL-17: full agentic tool parity for API-key mode (DEC-21)
+
+- **Target**: Claude Code CLI, bridge core work (`handoff_webui.py`),
+  branch `feature/api-key-mode-tool-parity`, PR #11
+  (https://github.com/jh3779/agent-handoff-bridge/pull/11), **merged**.
+  User asked to work through the remaining open items smallest-first;
+  after CFL-18 this was the next (and last) one before Phase 7.
+- **Changed**: API-key mode started chat-only (Phase 4, DEC-13),
+  explicitly deferring file-edit/shell-exec parity with CLI mode as
+  CFL-17. This resolves it. A design interview (`AskUserQuestion`)
+  resolved two real forks before any code was written: **scope** = build
+  file tools (`read_file`/`write_file`/`edit_file`) *and* the shell tool
+  (`run_shell`) together in one pass — the larger/riskier option, not
+  the more conservative file-tools-only recommendation; **confirmation
+  UX** = reuse DEC-02 as-is (confirm only the first send per session)
+  for every tool call this adds, rather than a stronger per-call
+  confirmation — extending CLI mode's existing trust level (real
+  `codex`/`claude` subprocesses already have full local shell access) to
+  API-key mode, not a new tier. `call_anthropic_messages_api()`/
+  `call_openai_responses_api()` (previously single stateless calls) now
+  run a full tool-use turn loop in place — same function names/contract,
+  one new `workspace` parameter; a response with no tool call still
+  returns after one HTTP call, so this is a strict superset of the prior
+  behavior. Four tools declared once in `_TOOL_SPECS`, rendered into
+  each vendor's own schema shape via `anthropic_tool_definitions()`/
+  `openai_tool_definitions()` so they can't drift apart. File tools
+  reuse the existing `safe_join()` primitive for workspace confinement.
+  `run_shell` sets `cwd=workspace` as its starting directory — **not a
+  sandbox**: an absolute path or `..` still reaches anywhere the OS user
+  account can, same as a real terminal or CLI mode's own subprocess —
+  with a timeout and output cap, no command allowlist, per the
+  interview's chosen scope. Tool-call activity renders via the existing
+  fenced-code-block convention (DEC-03), no new message schema. Both
+  vendors' tool-use JSON shapes were confirmed against current official
+  docs before implementing, not assumed (cited in each function's
+  docstring and `research-api-key-mode.md`'s Sources list). Resolves
+  CFL-17 as **DEC-21** in `docs/design-system/flutter-mapping.html`
+  (moved from the Conflict List into the Decision Log); matching updates
+  in `docs/cli-reference.md`, `docs/release-notes.md`,
+  `docs/provider-extensibility.md`, `docs/webui-chat-storage.md`,
+  `docs/design-system/{components,roadmap,wireframes}.html`.
+- **Verified**: `python3 -m unittest discover -s tests -v` — 353 tests
+  passing. `python3 handoff_bridge.py check` passes.
+  `python3 scripts/scan_secrets.py` clean. Four review rounds total
+  before merge, given this is a genuinely new shell-exec surface — an
+  independent adversarial self-review before opening the PR, then three
+  real automated GitHub reviews (each on the previous round's fix
+  commit), every one finding real issues and none blocking merge by the
+  end:
+  - **Self-review**: `MAX_TOOL_ITERATIONS` bounded HTTP round trips, not
+    actual tool executions — a single response can carry more than one
+    tool call, so a model batching many into one response could execute
+    well past the intended cap. The Anthropic loop also only executed
+    the first `tool_use` block per response, silently dropping any
+    others if the API ever didn't honor the `disable_parallel_tool_use`
+    hint. Both fixed; both loops now track actual executions and handle
+    every tool-call block defensively.
+  - **Round 2**: a mid-turn API failure could discard the record of a
+    tool that had *already* executed (real side effects, e.g.
+    `write_file`/`run_shell`) — undermining DEC-21's own premise that
+    post-hoc chat-log visibility substitutes for a per-call
+    confirmation. Fixed by prefixing any accumulated transcript onto the
+    failure message (`_error_with_transcript()`). Also found `read_file`
+    bypassed the same output cap `run_shell` already respected (256KB
+    vs. 4000 chars) — fixed. One more finding marked optional by the
+    review itself, fixed anyway: the fenced-code-block transcript could
+    break if tool output/arguments contained their own ` ``` ` —
+    `_escape_fence()` neutralizes embedded backtick runs.
+  - **Round 3**: the transcript's *argument* side (e.g. `write_file`'s
+    `content`) had no length cap even after Round 2 capped the result
+    side — `_truncate_for_transcript()` now bounds both. Also: this
+    project's own wording describing `run_shell` as "cwd-confined"
+    could read as claiming stronger isolation than it actually has —
+    reworded everywhere (code comments, docs, PR description).
+  - **Round 4**: `TOOL_EXEC_TIMEOUT_SECONDS` only guarantees killing the
+    immediate subprocess, not a whole process tree a
+    backgrounded/forked command might spawn — documented as a known,
+    accepted gap rather than adding cross-platform process-group
+    cleanup (meaningfully larger scope than this fix round), the same
+    posture DEC-21 already takes toward `run_shell` having no command
+    allowlist.
+  New regression tests cover every fix directly.
+- **Remaining**: only **Phase 7** (framework migration, DEC-01) is left
+  open — CFL-17 and CFL-18 are both now resolved. Phase 7 remains
+  deliberately deferred per the user's earlier explicit "stop here"
+  decision after Phase 6, and it's the project's stated final goal (a
+  full rewrite of the stdlib-http-server MVP onto a real production
+  stack, with its own unresolved prerequisite: CFL-09, the "download a
+  zip, no git required" release/packaging pipeline needing a full
+  redesign once real installable binaries replace it) — large enough
+  that it should go through the same interview-before-implementing
+  discipline as every prior phase, not be started opportunistically.
+- **Blocked**: none. No further action pending — awaiting user direction
+  on whether/when to start Phase 7.
