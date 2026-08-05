@@ -698,7 +698,7 @@ class ParseVersionTupleTests(unittest.TestCase):
 
 
 class CheckForUpdateTests(unittest.TestCase):
-    """CFL-18 (docs/design-system/flutter-mapping.html#s2): check_for_update()
+    """CFL-18, resolved as DEC-20 (docs/design-system/flutter-mapping.html#s1c): check_for_update()
     always returns a dict with a `status` field -- "available"/"current"/
     "unavailable" -- never `None`, specifically so "genuinely current"
     and "couldn't check at all" (gh missing/unauthenticated/offline, all

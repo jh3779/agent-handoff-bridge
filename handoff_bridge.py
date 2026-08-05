@@ -308,7 +308,7 @@ def check_for_update() -> "dict[str, str]":
       최신 릴리즈 확인"), not something that should surface a detailed
       error to a user who didn't ask for one.
 
-    CFL-18 (docs/design-system/flutter-mapping.html#s2): an earlier
+    CFL-18, resolved as DEC-20 (docs/design-system/flutter-mapping.html#s1c): an earlier
     version returned `None` for *both* "genuinely current" and
     "couldn't check at all," which the caller couldn't tell apart --
     `gh` missing/unauthenticated (real, DEC-19-documented failure paths)
