@@ -813,9 +813,30 @@
     updatePopover.classList.remove("show");
   }
 
-  async function checkForUpdate() {
+  // The real `gh` call server-side is network I/O (handoff_bridge.py's
+  // short_run() gives it up to 10s before giving up) -- the page's first
+  // GET /api/update-check can easily arrive before that background check
+  // finishes, especially right after server startup. Poll while
+  // `checked` is false instead of asking exactly once (review fix: a
+  // real race, not a hypothetical -- a single-shot check would silently
+  // and permanently miss the badge whenever the page loaded faster than
+  // the network call). Bounded so a hung/never-finishing check (gh
+  // installed but stuck, unusual network conditions) doesn't poll
+  // forever -- comfortably past the 10s worst case, then give up
+  // quietly like every other failure mode this feature already treats
+  // as "can't tell right now."
+  const UPDATE_CHECK_POLL_INTERVAL_MS = 1500;
+  const UPDATE_CHECK_MAX_POLLS = 10;
+
+  async function checkForUpdate(attempt = 0) {
     try {
       const data = await fetchJSON("/api/update-check");
+      if (!data.checked) {
+        if (attempt < UPDATE_CHECK_MAX_POLLS) {
+          window.setTimeout(() => checkForUpdate(attempt + 1), UPDATE_CHECK_POLL_INTERVAL_MS);
+        }
+        return;
+      }
       if (data.update_available) {
         latestUpdateInfo = data;
         updateDot.classList.add("show");

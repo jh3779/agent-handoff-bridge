@@ -370,22 +370,30 @@ List에서 제거됨.
   `BRIDGE_VERSION`과 비교해 더 새 릴리즈가 있을 때만
   `{latest_version, current_version, url}` 반환, 그 외엔 전부 `None` —
   실패를 사용자에게 노출하지 않는 `touch_registry()`와 같은 원칙.
-- `handoff_webui.py`: `AppState.update_info`(기본 `None`) 추가.
-  `main()`이 서버 시작 직후 `_check_for_update_in_background()`를 데몬
-  스레드로 실행 — 실제 네트워크 I/O(`gh` 호출)가 서버 부팅/창 띄우기를
-  지연시키지 않도록. `GET /api/update-check`는 이 캐시된 값을 읽기만
-  하므로 항상 즉시 응답.
+- `handoff_webui.py`: `AppState.update_info`(기본 `None`) +
+  `update_checked`(기본 `False`) 추가. `main()`이 서버 시작 직후
+  `_check_for_update_in_background()`를 데몬 스레드로 실행 — 실제 네트워크
+  I/O(`gh` 호출)가 서버 부팅/창 띄우기를 지연시키지 않도록.
+  `GET /api/update-check`는 이 캐시된 값을 읽기만 하므로 항상 즉시 응답.
 - `webui/index.html`/`app.css`/`app.js`: 타이틀바 "업데이트" 버튼(항상
   표시) + 점(dot) 배지(업데이트 있을 때만 표시) + 팝오버(버전 정보,
   "나중에"/"릴리즈 노트 보기"). 와이어프레임이 "업데이트 있음" 상태만
   목업했으므로, 업데이트가 없을 때 버튼을 눌러도 새 팝오버 레이아웃을
   발명하지 않고 기존 토스트("최신 버전을 사용 중입니다")를 재사용.
+- **PR 리뷰에서 발견된 실제 레이스 수정**: 처음엔 `update_info is None`을
+  "아직 확인 안 됨"과 "확인했지만 없음" 둘 다로 취급했는데, 실제 `gh`
+  네트워크 호출이 페이지 로드+첫 조회보다 오래 걸리는 경우(서버 시작
+  직후 거의 항상 그렇다)가 실제로 재현 가능해 배지가 조용히 영구
+  누락될 수 있었다. `update_checked` 플래그를 추가해 두 상태를 구분하고,
+  `webui/app.js`가 `checked: false`인 동안 짧게(1.5초 간격, 최대 10회 =
+  15초, `gh` 기본 타임아웃 10초를 넉넉히 넘김) 재조회하도록 수정.
 
 **검증**: `parse_version_tuple()`(v-prefix, 파싱 실패, 길이 다른 버전
 비교), `check_for_update()`(신규 릴리즈 감지·동일 버전·과거 버전·
 `gh` 미설치/에러/malformed JSON 전부 `None`, `--repo` 플래그로 cwd에
-의존하지 않음 확인), `GET /api/update-check`(캐시 없음/있음 두 상태),
-백그라운드 체크가 `state.update_info`를 올바르게 세팅하는지. 정확한
+의존하지 않음 확인), `GET /api/update-check`(미확인/확인+없음/확인+있음
+세 상태 구분), 백그라운드 체크가 `state.update_info`/`update_checked`를
+올바르게 세팅하는지. 정확한
 개수는 `python3 -m unittest discover -s tests -v`로 확인.
 
 ## Phase 7 — 프레임워크 전환 (DEC-01, 최종 목표)

@@ -1477,13 +1477,18 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 # background check main() kicked off at startup -- never
                 # runs `gh` itself on this request path, so this is
                 # always a fast, synchronous read regardless of network
-                # conditions. state.update_info is None both before the
-                # background check finishes and when it found no newer
-                # release -- the response shape is the same either way,
-                # deliberately: the frontend doesn't need to distinguish
-                # "still checking" from "you're up to date."
+                # conditions.
+                #
+                # `checked` (review fix: a real race, not a nitpick) lets
+                # the frontend tell "still checking" (poll again shortly)
+                # apart from "checked, no update" (stop asking) -- the
+                # real `gh` call is network I/O and can easily still be
+                # in flight by the time the page's first request for this
+                # arrives, especially right after server startup.
                 info = state.update_info
-                self._send_json(200, {"update_available": info is not None, **(info or {})})
+                self._send_json(
+                    200, {"checked": state.update_checked, "update_available": info is not None, **(info or {})}
+                )
             else:
                 self.send_error(404, "not found")
 
@@ -1660,11 +1665,24 @@ class AppState:
         self.workspace = workspace
         # Phase 6 (SCR-07): written once by a background thread started in
         # main() shortly after startup, read by GET /api/update-check.
-        # None until that check finishes (or if it found no newer
-        # release) -- a plain attribute, not behind a lock, is enough
-        # here: it's a single write-once-then-read-many value, and CPython
-        # attribute assignment is already atomic with respect to
-        # concurrent reads from other request threads.
+        # Plain attributes, not behind a lock: single write-once-then-
+        # read-many values, and CPython attribute assignment is already
+        # atomic with respect to concurrent reads from other request
+        # threads.
+        #
+        # update_checked distinguishes "the background check hasn't
+        # finished yet" from "it finished and found nothing newer" --
+        # both used to collapse into the same `update_info is None`,
+        # which a review correctly flagged as a real race: the real `gh`
+        # subprocess call is network I/O (can easily take a few seconds),
+        # while the page load + its first GET /api/update-check can
+        # finish well before that -- webui/app.js used to check exactly
+        # once at boot, so a frontend that happened to ask before the
+        # background check finished would permanently treat "still
+        # checking" as "no update," even once the real answer arrived
+        # moments later. app.js now polls while `checked` is false
+        # instead of asking only once.
+        self.update_checked = False
         self.update_info: dict | None = None
 
 
@@ -1742,8 +1760,13 @@ def _check_for_update_in_background(state: "AppState") -> None:
     최신 릴리즈 확인" -- once at startup, not on every request.
     check_for_update() itself never raises (gh missing/unauthenticated/
     offline all just resolve to None), so nothing here needs its own
-    try/except."""
+    try/except.
+
+    Sets `update_info` before `update_checked` -- a reader that observes
+    `update_checked is True` must never see a stale/uninitialized
+    `update_info` alongside it."""
     state.update_info = check_for_update()
+    state.update_checked = True
 
 
 def main(argv: list[str] | None = None) -> int:

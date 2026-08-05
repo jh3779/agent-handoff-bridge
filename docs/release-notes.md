@@ -719,6 +719,23 @@
     check populating `AppState.update_info`, and `GET /api/update-check`
     reflecting both the empty and populated cache states over a real HTTP
     server. Exact count via `python3 -m unittest discover -s tests -v`.
+  - **Round 2** (real automated review, one genuine correctness bug
+    found): `state.update_info is None` used to mean both "the
+    background check hasn't finished yet" and "it finished and found
+    nothing newer" — collapsed into the same
+    `{"update_available": false}` response. The real `gh` subprocess
+    call is network I/O and can easily still be running when the page's
+    first `GET /api/update-check` arrives, especially right after server
+    startup, and `webui/app.js` only asked once at boot with no retry —
+    so a normal server start could silently and permanently miss
+    showing the badge even when an update genuinely existed, not a rare
+    edge case. Added `AppState.update_checked` to tell "pending" apart
+    from "checked, nothing found," and the frontend now polls (1.5s
+    interval, up to 10 times — comfortably past `short_run()`'s 10s
+    default timeout) while `checked` is false instead of asking exactly
+    once. 4 more new tests (plus 2 existing ones updated to assert on
+    the new field) covering the pending-vs-checked distinction
+    specifically.
 
 ## v0.1.0 — 2026-08-03
 
