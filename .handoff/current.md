@@ -183,4 +183,12 @@ create a task-specific packet.
   actually start it now, versus treating Phases 0-6 (the full v0.2
   chat-redesign feature set) as a natural stopping point.
 - **Next**: presented Phase 7's scope to the user for a go/no-go/defer
-  decision rather than starting the framework migration unprompted.
+  decision rather than starting the framework migration unprompted. User
+  chose to **stop here** — Phases 0-6 (the full v0.2 chat-redesign
+  feature set: provider connection, auto-created workspaces, history
+  drawer, API-key mode, Gemini as a third provider, auto-update check)
+  are the intended resting point. Phase 7 (framework migration, DEC-01)
+  and the deliberately-deferred items (CFL-17: full agentic parity for
+  API-key mode; CFL-18: update-check can't-check-vs-current ambiguity)
+  remain open on the roadmap for whenever this project picks back up,
+  with no further action needed right now.
