@@ -2513,5 +2513,63 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         self.assertIn("error", data)
 
 
+class CheckForUpdateInBackgroundTests(unittest.TestCase):
+    def test_sets_state_update_info_from_check_for_update(self):
+        state = webui.AppState(None)
+        with mock.patch(
+            "handoff_webui.check_for_update",
+            return_value={"latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"},
+        ):
+            webui._check_for_update_in_background(state)
+        self.assertEqual(state.update_info["latest_version"], "0.2.0")
+
+    def test_none_result_leaves_update_info_none(self):
+        state = webui.AppState(None)
+        with mock.patch("handoff_webui.check_for_update", return_value=None):
+            webui._check_for_update_in_background(state)
+        self.assertIsNone(state.update_info)
+
+
+class UpdateCheckLiveServerTests(unittest.TestCase):
+    """GET /api/update-check over a real HTTP server -- same pattern as
+    ProviderApiLiveServerTests."""
+
+    def setUp(self):
+        self.state = webui.AppState(None)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def _get(self, path: str) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def test_no_update_info_yet_reports_unavailable(self):
+        # Covers both "background check hasn't finished" and "checked,
+        # found nothing newer" -- both produce the same response shape on
+        # purpose (see the route's own comment): the frontend has no need
+        # to distinguish "still checking" from "you're up to date".
+        status, data = self._get("/api/update-check")
+        self.assertEqual(status, 200)
+        self.assertEqual(data, {"update_available": False})
+
+    def test_populated_update_info_is_reflected(self):
+        self.state.update_info = {"latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"}
+        status, data = self._get("/api/update-check")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["update_available"])
+        self.assertEqual(data["latest_version"], "0.2.0")
+        self.assertEqual(data["url"], "https://example.invalid")
+
+
 if __name__ == "__main__":
     unittest.main()

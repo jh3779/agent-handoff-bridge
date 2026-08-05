@@ -40,6 +40,7 @@ from handoff_bridge import (
     PROVIDERS,
     WriteLock,
     atomic_write_text,
+    check_for_update,
     choose_auto_provider,
     next_available_provider,
 )
@@ -1471,6 +1472,18 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         }
                     )
                 self._send_json(200, {"providers": providers})
+            elif parsed.path == "/api/update-check":
+                # Phase 6 (SCR-07): reads the cached result of the
+                # background check main() kicked off at startup -- never
+                # runs `gh` itself on this request path, so this is
+                # always a fast, synchronous read regardless of network
+                # conditions. state.update_info is None both before the
+                # background check finishes and when it found no newer
+                # release -- the response shape is the same either way,
+                # deliberately: the frontend doesn't need to distinguish
+                # "still checking" from "you're up to date."
+                info = state.update_info
+                self._send_json(200, {"update_available": info is not None, **(info or {})})
             else:
                 self.send_error(404, "not found")
 
@@ -1645,6 +1658,14 @@ class AppState:
 
     def __init__(self, workspace: Path | None):
         self.workspace = workspace
+        # Phase 6 (SCR-07): written once by a background thread started in
+        # main() shortly after startup, read by GET /api/update-check.
+        # None until that check finishes (or if it found no newer
+        # release) -- a plain attribute, not behind a lock, is enough
+        # here: it's a single write-once-then-read-many value, and CPython
+        # attribute assignment is already atomic with respect to
+        # concurrent reads from other request threads.
+        self.update_info: dict | None = None
 
 
 class Api:
@@ -1713,6 +1734,18 @@ def is_loopback_host(host: str) -> bool:
     return host in LOOPBACK_HOSTS
 
 
+def _check_for_update_in_background(state: "AppState") -> None:
+    """Runs check_for_update() (a real `gh` subprocess call -- network
+    I/O, can take a few seconds) off the startup path so server boot and
+    the browser/native window opening aren't delayed by it. Matches
+    docs/design-system/wireframes.html SCR-07's "앱 시작 시 백그라운드로
+    최신 릴리즈 확인" -- once at startup, not on every request.
+    check_for_update() itself never raises (gh missing/unauthenticated/
+    offline all just resolve to None), so nothing here needs its own
+    try/except."""
+    state.update_info = check_for_update()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if not is_loopback_host(args.host):
@@ -1729,6 +1762,8 @@ def main(argv: list[str] | None = None) -> int:
         ensure_chat_gitignore(state.workspace)
         archive_old_months(state.workspace, utc_now())
         touch_registry(state.workspace, utc_now())  # DEC-10: CLI startup counts too
+
+    threading.Thread(target=_check_for_update_in_background, args=(state,), daemon=True).start()
 
     handler = build_handler(state)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)

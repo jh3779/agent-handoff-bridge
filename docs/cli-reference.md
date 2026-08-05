@@ -191,8 +191,9 @@ Phase 1, this actually calls Codex/Claude; as of Phase 2, `--workspace` is
 optional; as of Phase 3, a history drawer shows recent activity across
 every project you've opened, not just the current one; as of Phase 4, a
 provider with no local CLI can be connected via API key instead (chat-only
-— see below); as of Phase 5, Gemini CLI is a third selectable provider. A
-local stdlib HTTP server. What it does:
+— see below); as of Phase 5, Gemini CLI is a third selectable provider; as
+of Phase 6, a titlebar badge checks for a newer release. A local stdlib
+HTTP server. What it does:
 
 - **`--workspace` is optional.** Omit it and the current directory is used
   automatically *if* it's already an initialized handoff workspace (has a
@@ -298,6 +299,14 @@ local stdlib HTTP server. What it does:
   path is a possible future addition, not something this phase supports.
   Full schema, dispatch priority, and security posture:
   [Web UI Chat Storage § Credentials & API-Key Mode](webui-chat-storage.md#credentials--api-key-mode-phase-4).
+- **Update check** (titlebar button, always visible) checks once in the
+  background at startup (`handoff_bridge.check_for_update()`, shelling
+  out to the local `gh` CLI — this repo is private, so an anonymous
+  request can't list its releases) and shows a small dot badge only if a
+  newer release exists. Clicking it opens a popover with the version and
+  a link to the release notes, or (if already current, or if `gh` isn't
+  installed/authenticated — the check fails silently either way) a toast
+  saying you're up to date. No forced update; "나중에" always dismisses.
 
 **Why a subprocess, not an in-process function call**: `handoff_bridge.py`'s
 state functions resolve paths like `.handoff/state.json` relative to the

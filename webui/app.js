@@ -35,6 +35,13 @@
   const providerPanelOverlay = document.getElementById("provider-panel-overlay");
   const providerPanelList = document.getElementById("provider-panel-list");
   const providerPanelClose = document.getElementById("provider-panel-close");
+  const updateBtn = document.getElementById("update-btn");
+  const updateDot = document.getElementById("update-dot");
+  const updatePopover = document.getElementById("update-popover");
+  const updatePopoverVersion = document.getElementById("update-popover-version");
+  const updatePopoverNote = document.getElementById("update-popover-note");
+  const updateLaterBtn = document.getElementById("update-later-btn");
+  const updateReleaseNotesBtn = document.getElementById("update-release-notes-btn");
 
   /** @type {{name: string, path: string|null, content: string|null, truncated: boolean}[]} */
   let attachments = [];
@@ -784,9 +791,66 @@
     }
   }
 
+  // ---------- update check (Phase 6, SCR-07/components.html §15) ----------
+
+  let latestUpdateInfo = null;
+
+  function openUpdatePopover() {
+    if (!latestUpdateInfo) {
+      // components.html §15: the button/icon is always visible ("평소엔
+      // 아이콘만"), only the dot is conditional -- reuse the existing
+      // toast mechanism for the "you're already current" case instead of
+      // inventing a second popover layout the wireframe never mocked.
+      showToast("최신 버전을 사용 중입니다.");
+      return;
+    }
+    updatePopoverVersion.textContent = `v${latestUpdateInfo.latest_version} 사용 가능`;
+    updatePopoverNote.textContent = `현재 v${latestUpdateInfo.current_version} 사용 중. 릴리즈 노트를 확인하고 업데이트하세요.`;
+    updatePopover.classList.add("show");
+  }
+
+  function closeUpdatePopover() {
+    updatePopover.classList.remove("show");
+  }
+
+  async function checkForUpdate() {
+    try {
+      const data = await fetchJSON("/api/update-check");
+      if (data.update_available) {
+        latestUpdateInfo = data;
+        updateDot.classList.add("show");
+      }
+    } catch {
+      // Silent, deliberately -- docs/research on this feature treats a
+      // failed/unavailable check (gh missing, offline, rate-limited) the
+      // same as "no update," never a user-visible error for a background
+      // convenience check nobody asked to run.
+    }
+  }
+
+  updateBtn.addEventListener("click", openUpdatePopover);
+  updateLaterBtn.addEventListener("click", closeUpdatePopover);
+  updateReleaseNotesBtn.addEventListener("click", () => {
+    if (latestUpdateInfo && latestUpdateInfo.url) window.open(latestUpdateInfo.url, "_blank", "noopener");
+    closeUpdatePopover();
+  });
+  document.addEventListener("click", (event) => {
+    if (updatePopover.classList.contains("show") && !updatePopover.contains(event.target) && event.target !== updateBtn && !updateBtn.contains(event.target)) {
+      closeUpdatePopover();
+    }
+  });
+
   // ---------- boot ----------
 
   async function boot() {
+    // Fire-and-forget, not awaited: the update check is independent of
+    // workspace state (SCR-07 runs it "앱 시작 시" regardless of whether a
+    // workspace is even open yet) and must never delay the rest of boot
+    // on a slow/offline `gh` call -- though in practice the server-side
+    // check already ran in main()'s background thread before this page
+    // even loaded, so this fetch is normally near-instant either way.
+    checkForUpdate();
+
     let info;
     try {
       info = await refreshWorkspaceLabel();

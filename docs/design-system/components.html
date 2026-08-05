@@ -23,7 +23,7 @@
 
   <header class="pagehead">
     <div class="t">컴포넌트 라이브러리</div>
-    <div class="s">§1–5는 v0.1 폼 기반 GUI(<code>handoff_desktop.py</code> 실제 구현) 레거시 참고용. §6 터미널은 <code>handoff_control.py</code>로 이번 재설계와 무관. §8–15는 <a href="wireframes.html#s2">v0.2 채팅형 재설계</a>의 신규 컴포넌트 — Phase 0~4 완료로 <b>§3(상태 배지)·§8(사이드바 트리)·§9(메시지 버블, 코드블록 렌더링 포함)·§10(입력창/Open Folder/Provider 선택)·§11(히스토리 항목)·§13(히스토리 그룹 헤더)·§14(Provider 연결·API 키, 채팅 전용 범위)은 <code>handoff_webui.py</code>에 실제 구현됨</b>. §15(업데이트 확인)만 아직 코드 없음, 요구사항/<a href="roadmap.md">roadmap.md</a>가 정본.</div>
+    <div class="s">§1–5는 v0.1 폼 기반 GUI(<code>handoff_desktop.py</code> 실제 구현) 레거시 참고용. §6 터미널은 <code>handoff_control.py</code>로 이번 재설계와 무관. §8–15는 <a href="wireframes.html#s2">v0.2 채팅형 재설계</a>의 신규 컴포넌트 — Phase 0~6 완료로 <b>§3(상태 배지)·§8(사이드바 트리)·§9(메시지 버블, 코드블록 렌더링 포함)·§10(입력창/Open Folder/Provider 선택)·§11(히스토리 항목)·§13(히스토리 그룹 헤더)·§14(Provider 연결·API 키, 채팅 전용 범위)·§15(업데이트 배지·팝오버)까지 전부 <code>handoff_webui.py</code>에 실제 구현됨</b>. 남은 건 Phase 7(DEC-01 프레임워크 전환)뿐 — <a href="roadmap.md">roadmap.md</a>가 정본.</div>
     <div class="toc">
       <a href="#s1">버튼(legacy)</a><a href="#s2">입력 필드(legacy)</a><a href="#s3">상태 배지</a>
       <a href="#s4">로그 콘솔(legacy)</a><a href="#s5">다이얼로그(legacy)</a><a href="#s6">터미널 메뉴</a>
@@ -251,7 +251,8 @@ handoff needed: True (tool_failure: provider command not found)</div>
       </div>
     </div>
     <div class="note" style="margin-top:10px">새 버전이 있을 때만 타이틀바에 나타나는 점(dot) 배지 — 평소엔 아이콘만. 클릭하면 팝오버로 버전·릴리즈 노트 링크·"나중에" 선택지를 보여준다(강제 업데이트 없음).</div>
-    <div class="tag" style="margin-top:8px">사용처: <a href="wireframes.html#s9">SCR-07</a> · 인증 제약: <a href="flutter-mapping.html#s2">CFL-11</a>(private repo)</div>
+    <div class="note" style="margin-top:6px"><b>Phase 6에서 실제 구현됨</b>(<code>handoff_bridge.py</code>의 <code>check_for_update()</code> — 로컬 <code>gh</code> CLI 인증 재사용, <a href="flutter-mapping.html#s1c">DEC-19</a>; <code>handoff_webui.py</code>의 백그라운드 시작 시 확인 + <code>GET /api/update-check</code>). 배지 아래 하나 다른 점: 업데이트가 없을 때 버튼을 눌러도 팝오버 대신 <b>토스트</b>로 "최신 버전을 사용 중입니다"만 보여준다 — 와이어프레임이 "업데이트 있음" 상태만 목업했기 때문에 새 팝오버 레이아웃을 발명하는 대신 기존 토스트를 재사용.</div>
+    <div class="tag" style="margin-top:8px">사용처: <a href="wireframes.html#s9">SCR-07</a> · 결정 기록: <a href="flutter-mapping.html#s1c">DEC-19</a></div>
   </section>
 
   <section id="s16" class="sec card pad">

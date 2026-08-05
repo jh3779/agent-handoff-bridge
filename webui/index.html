@@ -19,13 +19,17 @@
         <option value="claude">claude</option>
         <option value="gemini">gemini</option>
       </select>
+      <button class="tbtn update-btn" id="update-btn" type="button" title="업데이트 확인">
+        <span>⬇️</span> 업데이트
+        <span class="update-dot" id="update-dot"></span>
+      </button>
       <button class="tbtn" id="history-btn" type="button" title="다른 프로젝트의 최근 대화">
         <span>🕐</span> History
       </button>
       <button class="tbtn" id="diagnose-btn" type="button" title="provider 연결 상태 확인 · API 키 연결">
         <span>🔌</span> Diagnose
       </button>
-      <span class="badge">Phase 4 · API 키 모드(채팅 전용)</span>
+      <span class="badge">Phase 6 · 자동 업데이트 확인</span>
     </div>
     <div class="body">
       <div class="sidebar">
@@ -74,6 +78,15 @@
       <div class="row" style="justify-content:flex-end;margin-top:10px">
         <button type="button" id="provider-panel-close">닫기</button>
       </div>
+    </div>
+  </div>
+
+  <div class="update-popover" id="update-popover">
+    <div class="pp-title"><span>🆕</span> <span id="update-popover-version">v0.0.0 사용 가능</span></div>
+    <div class="note" id="update-popover-note" style="margin-top:6px"></div>
+    <div class="row" style="margin-top:10px;gap:8px;justify-content:flex-end">
+      <button type="button" id="update-later-btn">나중에</button>
+      <button type="button" id="update-release-notes-btn" class="primary">릴리즈 노트 보기</button>
     </div>
   </div>
 

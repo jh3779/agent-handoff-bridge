@@ -677,5 +677,79 @@ class GeminiIntegrationTests(unittest.TestCase):
             self.assertFalse(state["history"][1]["handoff_needed"])
 
 
+class ParseVersionTupleTests(unittest.TestCase):
+    def test_v_prefix_is_stripped(self):
+        self.assertEqual(hb.parse_version_tuple("v0.2.0"), (0, 2, 0))
+
+    def test_no_prefix_still_works(self):
+        self.assertEqual(hb.parse_version_tuple("0.1.0"), (0, 1, 0))
+
+    def test_malformed_returns_none_not_raise(self):
+        self.assertIsNone(hb.parse_version_tuple("not-a-version"))
+
+    def test_empty_string_returns_none(self):
+        self.assertIsNone(hb.parse_version_tuple(""))
+
+    def test_differing_lengths_compare_sensibly(self):
+        # Natural tuple comparison, not string comparison -- "0.2" must
+        # compare greater than "0.1.0" despite being "shorter" as text.
+        self.assertGreater(hb.parse_version_tuple("0.2"), hb.parse_version_tuple("0.1.0"))
+        self.assertLess(hb.parse_version_tuple("0.1"), hb.parse_version_tuple("0.1.1"))
+
+
+class CheckForUpdateTests(unittest.TestCase):
+    def test_a_newer_release_is_reported(self):
+        with mock.patch.object(
+            hb, "short_run", return_value=(0, json.dumps({"tagName": "v0.2.0", "url": "https://example.invalid/v0.2.0"}), "")
+        ):
+            result = hb.check_for_update()
+        self.assertEqual(
+            result, {"latest_version": "0.2.0", "current_version": hb.BRIDGE_VERSION, "url": "https://example.invalid/v0.2.0"}
+        )
+
+    def test_same_version_is_not_reported_as_an_update(self):
+        with mock.patch.object(
+            hb, "short_run", return_value=(0, json.dumps({"tagName": f"v{hb.BRIDGE_VERSION}", "url": "https://example.invalid"}), "")
+        ):
+            self.assertIsNone(hb.check_for_update())
+
+    def test_an_older_tag_is_not_reported_as_an_update(self):
+        # Shouldn't normally happen (releases only move forward), but a
+        # stale/mistagged release must never be offered as an "update".
+        with mock.patch.object(
+            hb, "short_run", return_value=(0, json.dumps({"tagName": "v0.0.1", "url": "https://example.invalid"}), "")
+        ):
+            self.assertIsNone(hb.check_for_update())
+
+    def test_gh_not_installed_returns_none_not_raise(self):
+        # short_run() itself already turns FileNotFoundError into exit
+        # code 127 -- this just confirms check_for_update() treats any
+        # nonzero exit as "can't check", not just a specific one.
+        with mock.patch.object(hb, "short_run", return_value=(127, "", "gh not found")):
+            self.assertIsNone(hb.check_for_update())
+
+    def test_gh_error_exit_returns_none_not_raise(self):
+        with mock.patch.object(hb, "short_run", return_value=(1, "", "gh: authentication required")):
+            self.assertIsNone(hb.check_for_update())
+
+    def test_malformed_json_returns_none_not_raise(self):
+        with mock.patch.object(hb, "short_run", return_value=(0, "not json", "")):
+            self.assertIsNone(hb.check_for_update())
+
+    def test_missing_expected_fields_returns_none_not_raise(self):
+        with mock.patch.object(hb, "short_run", return_value=(0, json.dumps({"somethingElse": True}), "")):
+            self.assertIsNone(hb.check_for_update())
+
+    def test_calls_gh_with_the_repo_pinned_not_relying_on_cwd(self):
+        # handoff_webui.py can run with --workspace pointing at any
+        # directory, not necessarily a checkout of this repo -- the repo
+        # must be explicit, not inferred from cwd's git remote.
+        with mock.patch.object(hb, "short_run", return_value=(0, "{}", "")) as spy:
+            hb.check_for_update()
+        command = spy.call_args.args[0]
+        self.assertIn("--repo", command)
+        self.assertIn(hb.GITHUB_REPO, command)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -677,6 +677,49 @@
       corrected to say what's actually true of each (`classify_handoff()`
       itself: no changes; `ERROR_PATTERNS`: one addition).
 
+- Web UI Phase 6 (automatic update check, SCR-07): resolves CFL-11. This
+  repo is private, so an anonymous request can't list its GitHub
+  Releases — resolved (DEC-19) by shelling out to the user's own local
+  `gh` CLI auth rather than standing up new public infrastructure, the
+  same tool `docs/release-process.md` already assumes for cutting
+  releases:
+  - `handoff_bridge.py`: `GITHUB_REPO` constant, `parse_version_tuple()`
+    (`"v0.2.0"` → `(0, 2, 0)`, `None` on anything unparseable),
+    `check_for_update()` — runs `gh release view --repo <repo> --json
+    tagName,url` via the existing `short_run()` helper (which already
+    turns a missing/timed-out `gh` into a clean exit code rather than an
+    exception), compares against `BRIDGE_VERSION`, returns
+    `{latest_version, current_version, url}` only when a genuinely newer
+    release exists — never raises, same fail-silent posture as
+    `touch_registry()` elsewhere in this project, since this is a
+    background convenience check nobody explicitly asked to run;
+  - `handoff_webui.py`: `AppState.update_info` (a plain attribute, not
+    behind a lock — write-once-then-read-many from a single background
+    thread, not a contended read-modify-write like credentials/registry
+    are). `main()` starts `_check_for_update_in_background()` as a daemon
+    thread right after constructing `AppState`, so the real `gh`
+    subprocess call (network I/O, can take a few seconds) never delays
+    server startup or the browser/native window opening. `GET
+    /api/update-check` only ever reads the cached result, so it's always
+    fast regardless of network conditions;
+  - `webui/index.html`/`app.css`/`app.js`: a titlebar "업데이트" button
+    (always visible, matching components.html §15's "평소엔 아이콘만")
+    with a small dot badge that only appears when an update is
+    available, opening a popover with the version and a
+    "릴리즈 노트 보기" link on click. The wireframe only mocked the
+    "update available" state — clicking the button when already current
+    (or when the check failed/never ran) reuses the existing toast
+    mechanism ("최신 버전을 사용 중입니다") instead of inventing a second
+    popover layout for a state nothing designed;
+  - 17 new tests: `parse_version_tuple()` (v-prefix, unparseable input,
+    differing-length version comparison), `check_for_update()` (newer
+    release detected, same/older version not reported as an update, `gh`
+    missing/erroring/returning malformed JSON all resolve to `None`, the
+    call pins `--repo` rather than relying on `cwd`), the background
+    check populating `AppState.update_info`, and `GET /api/update-check`
+    reflecting both the empty and populated cache states over a real HTTP
+    server. Exact count via `python3 -m unittest discover -s tests -v`.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /
