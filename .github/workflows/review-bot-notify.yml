@@ -1,0 +1,17 @@
+name: review-bot-notify
+# 리뷰봇 즉시 감지용 — PR 푸시 이벤트를 Discord #git-events로 전달 (폴링 대비 ~30초 감지)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify review bot via Discord webhook
+        env:
+          HOOK: ${{ secrets.DISCORD_EVENT_WEBHOOK }}
+          NAME: "${{ github.repository }} ${{ github.event.pull_request.number }} ${{ github.event.pull_request.head.sha }}"
+        run: |
+          [ -n "$HOOK" ] || { echo "DISCORD_EVENT_WEBHOOK 시크릿 없음 — 생략"; exit 0; }
+          curl -sS -X POST "$HOOK" -H "Content-Type: application/json" \
+            -d "$(printf '{"username":"%s","content":"push event"}' "$NAME")"
