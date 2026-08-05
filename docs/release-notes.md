@@ -426,9 +426,9 @@
     so tests substitute a fake transport instead of making real network
     calls — the same posture the CLI path already has via fake
     `codex`/`claude` scripts;
-  - `build_api_message_history()` replays the current month's chat log as
-    alternating turns on every call (capped to the most recent 20
-    entries) since neither vendor's API is session-based — stands in for
+  - `build_api_message_history()` replays the chat log as alternating
+    turns on every call (capped to the most recent 20 entries) since
+    neither vendor's API is session-based — stands in for
     `codex exec resume`/`claude --resume`;
   - API-key-mode replies reuse the exact same chat-log record shape the
     CLI path produces (so `classify_run_status()`/`append_chat_message()`
@@ -442,6 +442,34 @@
     Codex API-key mode deliberately has **no** built-in default (no
     equally-confident current model ID exists) and returns a clear error
     asking for one to be set via the connection panel instead of guessing.
+  - **Round 2** (independent second-opinion review, before merge): fixed
+    a real gap the first review round didn't cover —
+    `build_api_message_history()` mapped the chat log to alternating
+    turns 1:1 with no merging, which breaks the moment a single CLI turn
+    left two consecutive `agent` entries (`--auto-fallback` chaining
+    providers) — Anthropic's Messages API requires strict alternation, so
+    that workspace's next API-key-mode call would 400. Now merges
+    consecutive same-role entries (including against the final prompt).
+    Also fixed: the same function only ever read the *current* month's
+    log, silently dropping all prior context on the first message(s) of a
+    new UTC month — the same class of cross-month bug Phase 3 already had
+    to fix once for `collect_recent_turns()` — now scans months backward
+    the same way that function does. Fixed an uncaught `ValueError`
+    `_http_post_json()` could raise (uncaught anywhere up the stack) if a
+    saved key contained characters `http.client` rejects in a header
+    value (e.g. embedded CR/LF) — now converted to a clean error tuple,
+    taking care not to forward `http.client`'s own exception text, which
+    embeds the offending header *value* (the key) verbatim. Frontend: the
+    connection panel's "저장" button deleted a provider's saved key if
+    the key field was left blank (e.g. reopening the panel just to fix
+    the model) since a saved key is never echoed back into the field —
+    now a no-op instead, with a separate "연결 해제" button as the only
+    way to actually remove a key; also added a request-generation guard
+    on the panel's refresh so an overlapping re-render (a save's own
+    refresh racing a fresh reopen) can't render a stale response's rows
+    on top of a newer one's. 5 new regression tests (exact count/names via
+    `python3 -m unittest discover -s tests -v`, per this file's usual
+    anti-drift practice).
 
 ## v0.1.0 — 2026-08-03
 

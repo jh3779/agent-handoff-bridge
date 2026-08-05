@@ -310,28 +310,70 @@
     const saveBtn = el("button", { type: "button", class: "primary", text: "저장" }, []);
     saveBtn.addEventListener("click", async () => {
       const key = keyInput.value.trim();
+      // A saved key is never echoed back into keyInput (POST
+      // /api/provider-key never returns it), so an empty key here always
+      // means "user left the field blank" -- never "user wants to keep
+      // the existing key". POST-ing an empty key deletes it
+      // (save_credential()'s contract), so treating that as a no-op save
+      // (rather than silently disconnecting) avoids a real footgun: e.g.
+      // reopening the panel just to fix the model field (relevant since
+      // codex has no built-in default and must be set explicitly) without
+      // re-pasting the key would otherwise delete it.
+      if (!key) {
+        showToast("API 키를 입력해야 저장됩니다. 연결을 해제하려면 \"연결 해제\"를 사용하세요.");
+        return;
+      }
       const model = modelInput.value.trim();
       try {
         await postJSON("/api/provider-key", { provider: info.provider, key, model });
-        showToast(key ? `${PROVIDER_LABEL[info.provider]} API 키가 저장되었습니다.` : `${PROVIDER_LABEL[info.provider]} API 키가 삭제되었습니다.`);
+        showToast(`${PROVIDER_LABEL[info.provider]} API 키가 저장되었습니다.`);
         await refreshProviderPanel();
       } catch (err) {
         showToast(`저장 실패: ${err.message}`);
       }
     });
-    row.appendChild(el("div", { class: "pp-key-row" }, [keyInput, modelInput, saveBtn]));
+    const keyRow = el("div", { class: "pp-key-row" }, [keyInput, modelInput, saveBtn]);
+    row.appendChild(keyRow);
+    if (info.api_key_configured) {
+      const removeBtn = el("button", { type: "button", text: "연결 해제" }, []);
+      removeBtn.addEventListener("click", async () => {
+        try {
+          await postJSON("/api/provider-key", { provider: info.provider, key: "" });
+          showToast(`${PROVIDER_LABEL[info.provider]} API 키가 삭제되었습니다.`);
+          await refreshProviderPanel();
+        } catch (err) {
+          showToast(`삭제 실패: ${err.message}`);
+        }
+      });
+      row.appendChild(el("div", { class: "row", style: "justify-content:flex-end;margin-top:4px" }, [removeBtn]));
+    }
     return row;
   }
 
+  // Monotonic token so an overlapping refresh (e.g. a "저장" click's own
+  // await refreshProviderPanel() racing a fresh panel reopen) can't have
+  // an earlier, slower response render its rows on top of a later one's
+  // without re-clearing first -- only the response matching the most
+  // recently issued request is ever allowed to touch the DOM.
+  let providerPanelRequestId = 0;
+
   async function refreshProviderPanel() {
-    providerPanelList.innerHTML = "";
+    const requestId = ++providerPanelRequestId;
+    let data;
+    let error;
     try {
-      const data = await fetchJSON("/api/providers");
-      for (const info of data.providers) {
-        providerPanelList.appendChild(renderProviderRow(info));
-      }
+      data = await fetchJSON("/api/providers");
     } catch (err) {
-      providerPanelList.appendChild(el("div", { class: "hd-empty", text: `불러올 수 없음: ${err.message}` }, []));
+      error = err;
+    }
+    if (requestId !== providerPanelRequestId) return; // superseded by a newer refresh
+    providerPanelList.innerHTML = "";
+    if (error) {
+      providerPanelList.appendChild(el("div", { class: "hd-empty", text: `불러올 수 없음: ${error.message}` }, []));
+      return;
+    }
+    for (const info of data.providers) {
+      providerPanelList.appendChild(renderProviderRow(info));
     }
   }
 

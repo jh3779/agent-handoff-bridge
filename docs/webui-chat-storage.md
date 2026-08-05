@@ -271,6 +271,15 @@ response body or exception text. The key itself is never interpolated into
 anything that could end up in `.handoff/webui/chat/*.jsonl`, the history
 drawer, or a toast.
 
+One exception text is deliberately **not** forwarded: `http.client` raises
+a bare `ValueError` (not `HTTPError`/`URLError`) if a header value
+contains characters it rejects — e.g. a saved key with an embedded CR/LF
+reaching the `x-api-key`/`Authorization` header unescaped — and that
+exception's own message embeds the offending header *value* verbatim,
+which here is the key itself. `_http_post_json()` catches this case
+specifically and returns a fixed, generic message instead of `str(exc)`,
+unlike every other exception type it handles.
+
 **Dispatch**: `_run_provider_via_bridge_locked()` only reaches the
 API-key-mode path (`run_provider_via_api_key()`) when a provider's CLI is
 genuinely absent (`cli_available()` is `shutil.which()`-based) *and* a key
@@ -293,10 +302,28 @@ cross-provider auto-fallback concept for them to record.
 
 **Conversation continuity**: since neither vendor's direct HTTP API is
 session-based (`docs/research-api-key-mode.md`), `build_api_message_history()`
-replays the current month's chat log (capped to the most recent
-`API_KEY_MODE_MAX_HISTORY_MESSAGES` entries) as alternating user/assistant
-turns on every call, standing in for what `codex exec resume`/
-`claude --resume` do for the CLI path.
+replays the chat log as alternating user/assistant turns on every call,
+standing in for what `codex exec resume`/`claude --resume` do for the CLI
+path. Two details a naive "just read this month's file" version got wrong,
+found in a second review round and fixed before merge:
+
+- **Scans months backward** (same pattern `collect_recent_turns()` already
+  established in Phase 3), not just the current month — otherwise the
+  first message(s) of a new UTC month would replay with zero prior
+  context even if the same conversation has weeks of history in the
+  previous month's file. Capped to the most recent
+  `API_KEY_MODE_MAX_HISTORY_MESSAGES` raw messages once enough are
+  collected, so a long-lived project doesn't need every month read.
+- **Merges consecutive same-role entries** instead of mapping the log
+  1:1 to alternating turns. Anthropic's Messages API requires strict
+  user/assistant alternation, but a single CLI turn can leave two
+  consecutive `agent` chat-log entries when `--auto-fallback` chains
+  providers (codex fails, claude succeeds) — replaying those as two
+  separate `assistant` messages would violate alternation and fail every
+  subsequent API-key-mode call in that workspace with a 400. The merge is
+  applied generically (including against the final `prompt`), so it also
+  covers the more obscure case of two consecutive bare `user` entries
+  with no reply in between.
 
 ## Known Open Questions
 

@@ -1977,6 +1977,99 @@ class BuildApiMessageHistoryTests(unittest.TestCase):
             self.assertEqual(len(messages), webui.API_KEY_MODE_MAX_HISTORY_MESSAGES + 1)  # +1 for the final prompt
             self.assertEqual(messages[-1], {"role": "user", "content": "final prompt"})
 
+    def test_two_consecutive_agent_messages_from_auto_fallback_are_merged_not_left_alternating_broken(self):
+        # A single CLI turn can leave two consecutive "agent" chat-log
+        # entries when --auto-fallback chains providers (codex fails ->
+        # claude succeeds) -- POST /api/run appends one per resulting
+        # record. Anthropic's Messages API requires strict user/assistant
+        # alternation, so replaying these as two separate "assistant"
+        # messages would make every subsequent API-key-mode call in this
+        # workspace fail with a 400. They must be merged into one.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = webui.utc_now()
+            webui.append_chat_message(root, "user", "do the thing", [], now)
+            webui.append_chat_message(root, "agent", "codex gave up", [], now, provider="codex", status="handoff", reason="rate_limit: x")
+            webui.append_chat_message(root, "agent", "claude finished it", [], now, provider="claude", status="success", reason="none")
+            webui.append_chat_message(root, "user", "thanks, now do the next thing", [], now)
+            messages = webui.build_api_message_history(root, "thanks, now do the next thing (with attachment)", now)
+            self.assertEqual(
+                messages,
+                [
+                    {"role": "user", "content": "do the thing"},
+                    {"role": "assistant", "content": "codex gave up\n\nclaude finished it"},
+                    {"role": "user", "content": "thanks, now do the next thing (with attachment)"},
+                ],
+            )
+            roles = [m["role"] for m in messages]
+            self.assertEqual(roles, ["user", "assistant", "user"])  # never two of the same role in a row
+
+    def test_consecutive_trailing_user_messages_merge_with_the_final_prompt(self):
+        # Edge case: two "user" chat-log entries back to back with no
+        # intervening "agent" reply (e.g. a second POST /api/chat landed
+        # without a POST /api/run in between). Only the single true
+        # current-turn entry is dropped in favor of `prompt` -- the
+        # remaining bare "user" entry must still end up merged with the
+        # final prompt, not left as its own consecutive "user" message.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = webui.utc_now()
+            webui.append_chat_message(root, "user", "first, unanswered", [], now)
+            webui.append_chat_message(root, "user", "second, also unanswered", [], now)
+            messages = webui.build_api_message_history(root, "second, also unanswered (full prompt)", now)
+            self.assertEqual(
+                messages, [{"role": "user", "content": "first, unanswered\n\nsecond, also unanswered (full prompt)"}]
+            )
+
+    def test_history_spans_a_month_boundary(self):
+        # Phase 3 already had to fix collect_recent_turns() for exactly
+        # this class of bug (silently dropping/misattributing context
+        # split across a UTC month boundary) -- build_api_message_history()
+        # must not regress the same way for the *first* message(s) of a
+        # new month, when the current month's own log has little or no
+        # prior context of its own.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            july = datetime(2026, 7, 31, 23, 0, tzinfo=timezone.utc)
+            august = datetime(2026, 8, 1, 0, 5, tzinfo=timezone.utc)
+            webui.append_chat_message(root, "user", "july question", [], july)
+            webui.append_chat_message(root, "agent", "july answer", [], july, provider="claude", status="success", reason="none")
+            webui.append_chat_message(root, "user", "august question (bare)", [], august)
+            messages = webui.build_api_message_history(root, "august question (full prompt)", august)
+            self.assertEqual(
+                messages,
+                [
+                    {"role": "user", "content": "july question"},
+                    {"role": "assistant", "content": "july answer"},
+                    {"role": "user", "content": "august question (full prompt)"},
+                ],
+            )
+
+
+class HttpPostJsonTests(unittest.TestCase):
+    def test_a_header_validation_valueerror_is_converted_to_an_error_tuple_not_raised(self):
+        # http.client raises a bare ValueError (not HTTPError/URLError) for
+        # a header value containing forbidden characters -- e.g. a saved
+        # API key with an embedded CR/LF reaching the x-api-key/
+        # Authorization header unescaped. Before this fix, that ValueError
+        # propagated straight out of _http_post_json(), uncaught anywhere
+        # up the stack (POST /api/run only catches RunAlreadyInProgressError/
+        # WorkspaceError), crashing that request's thread with no chat-log
+        # record ever written -- unlike every other failure path this
+        # feature classifies cleanly.
+        raw_exception_text = "Invalid header value b'sk-super-secret\\r\\nX-Evil: 1'"
+        with mock.patch("handoff_webui.urllib.request.urlopen", side_effect=ValueError(raw_exception_text)):
+            status, data = webui._http_post_json(
+                "https://example.invalid/v1/messages", {"x-api-key": "sk-super-secret\r\nX-Evil: 1"}, {}, 5
+            )
+        self.assertNotEqual(status, 200)
+        message = json.dumps(data)
+        # httplib's own ValueError text embeds the offending header VALUE
+        # (the key itself) verbatim -- it must never be forwarded as-is,
+        # unlike every other exception type this function handles.
+        self.assertNotIn("sk-super-secret", message)
+        self.assertNotIn(raw_exception_text, message)
+
 
 class CallProviderApiTests(unittest.TestCase):
     def test_anthropic_success_extracts_text(self):
@@ -2004,6 +2097,20 @@ class CallProviderApiTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("network error", result["message"])
         self.assertNotIn("sk-secret", result["message"])
+
+    def test_anthropic_handles_the_invalid_header_error_tuple_without_raising(self):
+        # _http_post_json() converts a header-validation ValueError (see
+        # HttpPostJsonTests below) into a plain (0, {"error": ...}) tuple
+        # rather than letting it propagate -- this confirms the caller
+        # treats that tuple as an ordinary non-200 error, not a crash.
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(0, {"error": {"type": "invalid_request", "message": "request headers were rejected"}}),
+        ):
+            result = webui.call_anthropic_messages_api("sk-secret-with-crlf", "claude-sonnet-5", [])
+        self.assertFalse(result["ok"])
+        self.assertIn("invalid_request", result["message"])
+        self.assertNotIn("sk-secret-with-crlf", result["message"])
 
     def test_openai_success_extracts_text_from_output_items(self):
         with mock.patch(

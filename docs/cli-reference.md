@@ -279,8 +279,12 @@ provider with no local CLI can be connected via API key instead (chat-only
   *is* detected always uses the CLI path, even if a key is also saved for
   it. Keys are stored in
   `~/Documents/Agent Handoff Bridge/credentials.json` (`0600`
-  permissions), never inside a workspace. Full schema, dispatch priority,
-  and security posture:
+  permissions), never inside a workspace. A saved key is never echoed back
+  into the panel, so **"저장" with an empty key field is a no-op**, not a
+  delete — a separate **"연결 해제"** button (shown only once a key is
+  configured) is the only way to actually remove one, so reopening the
+  panel just to change a provider's model doesn't accidentally wipe its
+  key. Full schema, dispatch priority, and security posture:
   [Web UI Chat Storage § Credentials & API-Key Mode](webui-chat-storage.md#credentials--api-key-mode-phase-4).
 
 **Why a subprocess, not an in-process function call**: `handoff_bridge.py`'s

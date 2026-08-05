@@ -774,24 +774,52 @@ def build_api_message_history(workspace: Path, prompt: str, now: datetime) -> li
     `codex exec resume`/`claude --resume` equivalent, so conversation
     continuity has to come from resending prior turns ourselves.
 
-    Reads the current month's already-persisted chat log (the user's
-    current-turn message is already in it -- POST /api/chat always runs
-    before POST /api/run) and replays it as alternating user/assistant
-    turns, dropping the bare current-turn entry in favor of `prompt`
-    (build_run_prompt()'s text+attachments string, which the bare log entry
-    doesn't carry). Capped to the most recent
-    API_KEY_MODE_MAX_HISTORY_MESSAGES entries to bound request size --
-    unlike the CLI path there's no session file doing this trimming for us.
+    Scans months backward (newest first, merged into chronological order),
+    same pattern as collect_recent_turns() -- a bare
+    read_month_messages(workspace, month_key(now)) would silently drop all
+    prior context on the first message(s) of a new UTC month, the same
+    class of bug Phase 3 already had to fix once for that other function.
+    Stops once API_KEY_MODE_MAX_HISTORY_MESSAGES raw messages are
+    collected, to bound how many months a long-lived project ever needs
+    to read.
+
+    Drops the bare current-turn log entry in favor of `prompt`
+    (build_run_prompt()'s text+attachments string, which the bare log
+    entry doesn't carry -- POST /api/chat always runs before POST
+    /api/run, so that entry already exists by the time this is called).
+
+    Anthropic's Messages API requires strict user/assistant alternation.
+    A single CLI turn can produce two consecutive "agent" chat-log entries
+    when --auto-fallback chains providers (_run_provider_via_bridge_locked()'s
+    own docstring documents this, and POST /api/run appends one "agent"
+    message per resulting record) -- if that workspace later loses its
+    CLI(s) and falls into API-key mode within the same history window,
+    replaying those as two separate assistant turns would violate
+    alternation and fail with a 400. Consecutive same-role entries
+    (including the final `prompt` against whatever role ends up last) are
+    merged (text joined) instead of kept separate, so replay can never
+    violate alternation regardless of how the log was produced.
     """
-    turns = [m for m in read_month_messages(workspace, month_key(now)) if m.get("role") in ("user", "agent")]
+    turns: list[dict] = []
+    for month in reversed(list_available_months(workspace)):
+        turns = [m for m in read_month_messages(workspace, month) if m.get("role") in ("user", "agent")] + turns
+        if len(turns) >= API_KEY_MODE_MAX_HISTORY_MESSAGES:
+            break
     if turns and turns[-1].get("role") == "user":
         turns = turns[:-1]
-    recent = turns[-API_KEY_MODE_MAX_HISTORY_MESSAGES:]
-    messages = [
-        {"role": "user" if turn["role"] == "user" else "assistant", "content": turn.get("text") or ""}
-        for turn in recent
-    ]
-    messages.append({"role": "user", "content": prompt})
+    turns = turns[-API_KEY_MODE_MAX_HISTORY_MESSAGES:]
+
+    messages: list[dict] = []
+
+    def _append(role: str, content: str) -> None:
+        if messages and messages[-1]["role"] == role:
+            messages[-1]["content"] = f"{messages[-1]['content']}\n\n{content}".strip()
+        else:
+            messages.append({"role": role, "content": content})
+
+    for turn in turns:
+        _append("user" if turn["role"] == "user" else "assistant", turn.get("text") or "")
+    _append("user", prompt)
     return messages
 
 
@@ -811,6 +839,21 @@ def _http_post_json(url: str, headers: dict, body: dict, timeout: int) -> tuple[
             return exc.code, json.loads(payload)
         except json.JSONDecodeError:
             return exc.code, {"error": {"type": "api_error", "message": payload or exc.reason}}
+    except ValueError:
+        # http.client raises a bare ValueError (not HTTPError/URLError) for
+        # a header value containing forbidden characters -- e.g. a saved
+        # API key with an embedded CR/LF makes it straight into the
+        # `x-api-key`/`Authorization` header unescaped. httplib's own
+        # exception text embeds the offending header VALUE verbatim (the
+        # key itself, here), so unlike every other branch in this
+        # function -- which forwards the vendor's real response/exception
+        # text -- that text must never be returned as-is.
+        return 0, {
+            "error": {
+                "type": "invalid_request",
+                "message": "request headers were rejected -- the API key or model contains characters not allowed in an HTTP header value",
+            }
+        }
 
 
 def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict]) -> dict:
