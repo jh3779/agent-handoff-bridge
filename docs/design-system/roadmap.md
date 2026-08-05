@@ -252,7 +252,16 @@ List에서 제거됨. 새로 발생: [CFL-17](flutter-mapping.html#s2)(전체
 - `_run_provider_via_bridge_locked()`에 분기 추가 — CLI 감지 시/CLI
   없고 키도 없을 시 기존 동작이 완전히 그대로임을 우선 보장.
 - `GET /api/providers`(연결 패널이 읽는 상태), `POST /api/provider-key`
-  (저장/삭제, 빈 키 = 삭제) 신설.
+  신설 — **엔드포인트 자체의 계약**은 빈 키 = 해당 provider의 저장된 키
+  삭제(`save_credential()`의 계약, 지금도 그대로). 다만 **프론트엔드
+  "저장" 버튼**은 이후 리뷰 라운드에서 빈 키를 그대로 이 엔드포인트에
+  보내지 않도록 고쳐졌다 — 저장된 키는 패널에 다시 echo되지 않으므로
+  "저장" 클릭 시 키 필드가 비어 있으면 아무 요청도 보내지 않는 no-op이고
+  (예: model만 고치려다 실수로 키를 지우는 사고 방지), 실제 삭제는 별도
+  "연결 해제" 버튼만 이 엔드포인트에 빈 키를 보낸다. 즉 **엔드포인트
+  계약과 UI 동작은 서로 다른 층**이며 상충하지 않는다 — 전체 경위는
+  `docs/release-notes.md`의 Phase 4 "Round 2" 항목, UI 동작은
+  [CLI Reference § Web UI](../cli-reference.md#web-ui-mvp) 참고.
 - `webui/index.html`/`app.js`/`app.css`: Diagnose 버튼 + 연결 패널
   (components.html §14 그대로) — provider별 CLI 감지됨/없음 배지, CLI
   없을 때만 키+model 입력 노출.
