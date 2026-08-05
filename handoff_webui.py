@@ -813,7 +813,15 @@ def _run_provider_via_bridge_locked(
             str(PROVIDER_RUN_TIMEOUT_SECONDS),
         ]
         if model:
-            command.extend(["--model", model])
+            # "--model=value", not ["--model", value]: with the latter, a
+            # model string that happens to start with "-" would make
+            # argparse treat it as the next flag instead of --model's
+            # value ("argument --model: expected one argument"). Not
+            # reachable through the shipped UI today (it never sends
+            # `model`), but --prompt-file/`init ... -- task` already
+            # closed the same class of gap elsewhere, so closing it here
+            # too rather than leaving it for whenever `model` is wired up.
+            command.append(f"--model={model}")
 
         hit_outer_timeout = False
         try:
@@ -991,6 +999,20 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         # would let a client forge a fake agent reply with no
                         # provider having actually run.
                         raise WorkspaceError(f"role must be one of {CLIENT_WRITABLE_CHAT_ROLES}")
+                    if role == "user" and _RUN_LOCK.locked():
+                        # pair_messages_into_turns() (Phase 3) walks the chat
+                        # log in append order and attaches each agent reply
+                        # to whichever user message it saw most recently --
+                        # a second tab/client posting a new user message
+                        # while another run is still in flight could get
+                        # that in-flight run's eventual reply misattributed
+                        # to the newer message once it lands in the drawer.
+                        # Reject outright rather than let two turns overlap;
+                        # this is a plain (non-atomic) check-then-append, not
+                        # airtight against a run starting in the gap, but it
+                        # closes the realistic window (the run's full
+                        # duration) down to a few instructions.
+                        raise RunAlreadyInProgressError("a provider run is already in progress; wait for it to finish")
                     text = str(body.get("text") or "")
                     attachments = body.get("attachments") or []
                     if not isinstance(attachments, list):
@@ -1016,10 +1038,20 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                                 touch_registry(state.workspace, utc_now())
                     message = append_chat_message(state.workspace, role, text, attachments, utc_now())
                     self._send_json(200, message)
+                except RunAlreadyInProgressError as exc:
+                    self._send_json(409, {"error": str(exc)})
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             elif parsed.path == "/api/open-folder":
                 try:
+                    if _RUN_LOCK.locked():
+                        # A provider run writes into whatever workspace was
+                        # active when it started and persists into that
+                        # workspace's chat log when it finishes -- switching
+                        # state.workspace out from under an in-flight run
+                        # would misdirect where that write (and everything
+                        # the client renders once the run resolves) ends up.
+                        raise RunAlreadyInProgressError("a provider run is already in progress; wait for it to finish")
                     body = self._read_json_body()
                     candidate = validate_workspace_candidate(str(body.get("path") or ""))
                     state.workspace = candidate
@@ -1027,6 +1059,8 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     archive_old_months(candidate, utc_now())
                     touch_registry(candidate, utc_now())
                     self._send_json(200, {"workspace": str(candidate), "name": candidate.name or str(candidate)})
+                except RunAlreadyInProgressError as exc:
+                    self._send_json(409, {"error": str(exc)})
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             elif parsed.path == "/api/run":

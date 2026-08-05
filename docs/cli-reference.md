@@ -227,7 +227,12 @@ server. What it does:
   already in flight gets `409`, not a multi-minute hang or a duplicated
   chat message — the composer also disables itself client-side while a run
   is pending, so this is normally a defense-in-depth backstop, not
-  something a user hits directly.
+  something a user hits directly. The same `409` applies to
+  `POST /api/open-folder` (switching workspace mid-run would misdirect
+  where the run's eventual reply gets persisted/rendered) and a new
+  `"user"`-role `POST /api/chat` (a second tab/client starting a new turn
+  while one is unanswered would confuse the history drawer's turn
+  pairing) — `system`-role messages are unaffected.
 - Every message — yours and the agent's — persists to
   `<workspace>/.handoff/webui/chat/YYYY-MM.jsonl`. History is scoped to the
   folder you have open, the same way `.handoff/current.md` already is, so it
@@ -356,8 +361,8 @@ fake `codex`/`claude` scripts on `PATH` (deterministic, no tokens spent, no
 network). See [Provider Extensibility](provider-extensibility.md) and the
 Conflict List in
 [design-system/flutter-mapping.html](design-system/flutter-mapping.html#s2)
-for what's intentionally still missing (cross-project history browsing,
-API-key auth, Gemini, update checks).
+for what's intentionally still missing (API-key auth, Gemini, update
+checks — cross-project history browsing shipped in Phase 3).
 
 ## Platform Packages
 
