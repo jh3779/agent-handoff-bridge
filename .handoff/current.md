@@ -192,3 +192,68 @@ create a task-specific packet.
   API-key mode; CFL-18: update-check can't-check-vs-current ambiguity)
   remain open on the roadmap for whenever this project picks back up,
   with no further action needed right now.
+
+### 2026-08-05 — CFL-18 fix: update-check status contract (DEC-20)
+
+- **Target**: Claude Code CLI, bridge core + web UI work
+  (`handoff_bridge.py`, `handoff_webui.py`, `webui/app.js`), branch
+  `fix/update-check-status-distinction`, PR #10
+  (https://github.com/jh3779/agent-handoff-bridge/pull/10), **merged**.
+  User asked to work through the remaining open items smallest-first
+  (Phase 7 > CFL-17 > CFL-18); this was the smallest.
+- **Changed**: `check_for_update()` previously returned `None` for two
+  different situations a caller couldn't distinguish — "checked
+  successfully, nothing newer" and "couldn't check at all" (`gh`
+  missing/unauthenticated/offline/unparseable response) — so a user
+  without `gh` set up saw the same "최신 버전을 사용 중입니다" toast as
+  someone genuinely confirmed current. It now always returns a dict
+  (never `None`, never raises) with a `status` field: `"available"`
+  (new release, unchanged extra fields), `"current"` (checked, nothing
+  newer), or `"unavailable"` (every unreadable-response case collapsed
+  together, same fail-silent posture as `touch_registry()`).
+  `GET /api/update-check` drops the old `update_available` boolean and
+  exposes `status` directly. `webui/app.js` tracks a `latestUpdateStatus`
+  string (`"pending"|"available"|"current"|"unavailable"` — `"pending"`
+  is purely local frontend/API state, not something `check_for_update()`
+  itself returns) and shows a fourth distinct toast
+  ("업데이트를 확인할 수 없습니다") for the unavailable case. Resolves
+  CFL-18 as **DEC-20** in `docs/design-system/flutter-mapping.html`
+  (moved from the Conflict List into the Decision Log); matching updates
+  in `docs/cli-reference.md`, `docs/release-notes.md`,
+  `docs/design-system/components.html`, `docs/design-system/roadmap.md`.
+- **Verified**: `python3 -m unittest discover -s tests -v` — 311 tests
+  passing. `python3 handoff_bridge.py check` passes.
+  `python3 scripts/scan_secrets.py` clean. `node --check webui/app.js`
+  passes. Independent adversarial self-review (background agent) before
+  opening the PR found one real gap (`docs/design-system/roadmap.md`
+  still described the old None-returning behavior and only three
+  `/api/update-check` states) — fixed before the PR was opened. Two
+  rounds of real automated review on GitHub: round 1 found one genuine
+  doc/comment inaccuracy (`docs/cli-reference.md` and an `app.js`
+  comment both attributed the `"pending"` state to `check_for_update()`'s
+  return contract, when `"pending"` is purely local frontend/API state
+  before `check_for_update()` is ever consulted) — fixed. Round 2 found
+  no blocking issues and confirmed the round-1 fix, plus one more real
+  catch: two code comments (`handoff_bridge.py`, `tests/
+  test_handoff_bridge.py`) still pointed at
+  `flutter-mapping.html#s2` (the Conflict List anchor, correct while
+  CFL-18 lived there) instead of `#s1c` (the Decision Log, where DEC-20
+  actually lives now that the CFL-18 row was removed) — fixed and
+  pushed before merge. Declined one review suggestion (keep a legacy
+  `update_available` derived field for API back-compat) — this is an
+  internal-only endpoint with no external consumers, and preserving the
+  ambiguous field would defeat the point of the fix. The recurring false
+  claim about `docs/local-data-model.md`/`docs/adr/*` not existing
+  resurfaced again as a caveat (not a real finding) in both rounds — no
+  action needed, consistent with every prior instance of this claim.
+- **Remaining**: Phase 7 (framework migration, DEC-01) and CFL-17 (full
+  agentic parity for API-key mode) are the only items still open. Both
+  remain deliberately deferred per the user's earlier explicit "stop
+  here" decision after Phase 6, and both are large/undesigned enough
+  (Phase 7 is a full stack rewrite and the project's stated final goal;
+  CFL-17 would add a new tool-execution/sandboxing surface with no
+  design yet) that they should go through the same
+  interview-before-implementing discipline as every prior phase, not be
+  started opportunistically.
+- **Blocked**: none. No further action pending — awaiting user direction
+  on whether/when to pick up CFL-17 or Phase 7.
