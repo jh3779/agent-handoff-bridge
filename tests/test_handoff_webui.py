@@ -1443,7 +1443,10 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         self.assertEqual(status, 200)
 
     def test_run_with_invalid_provider_is_rejected(self):
-        status, data = self._post("/api/run", {"provider": "gemini", "text": "hi"})
+        # "gemini" used to be the invalid example here -- Phase 5 made it
+        # a real provider (handoff_bridge.PROVIDERS grew to include it),
+        # so a genuinely unknown name is needed instead.
+        status, data = self._post("/api/run", {"provider": "not-a-real-provider", "text": "hi"})
         self.assertEqual(status, 400)
         self.assertIn("error", data)
 
@@ -2437,10 +2440,17 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         status, data = self._get("/api/providers")
         self.assertEqual(status, 200)
         by_name = {p["provider"]: p for p in data["providers"]}
-        self.assertEqual(set(by_name), {"codex", "claude"})
+        # Phase 5: PROVIDERS grew to include gemini for CLI dispatch, but
+        # API_KEY_MODE_PROVIDERS (DEC-15's scope) deliberately did not --
+        # gemini shows up here (real CLI-detection badge) without gaining
+        # a key field.
+        self.assertEqual(set(by_name), {"codex", "claude", "gemini"})
         for info in by_name.values():
             self.assertIn("cli_detected", info)
             self.assertFalse(info["api_key_configured"])
+        self.assertTrue(by_name["codex"]["api_key_mode_supported"])
+        self.assertTrue(by_name["claude"]["api_key_mode_supported"])
+        self.assertFalse(by_name["gemini"]["api_key_mode_supported"])
 
     def test_saving_a_key_never_echoes_it_back(self):
         status, data = self._post("/api/provider-key", {"provider": "claude", "key": "sk-secret-value", "model": "claude-sonnet-5"})
@@ -2465,6 +2475,15 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         self.assertFalse(claude["api_key_configured"])
 
     def test_invalid_provider_is_rejected_with_400(self):
+        status, data = self._post("/api/provider-key", {"provider": "totally-unknown", "key": "sk-x"})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_gemini_is_rejected_here_even_though_its_a_real_cli_provider_elsewhere(self):
+        # DEC-15's API-key-mode scope (API_KEY_MODE_PROVIDERS) deliberately
+        # was not extended to gemini when PROVIDERS grew in Phase 5 -- this
+        # endpoint specifically must keep rejecting it, even though
+        # GET /api/providers and POST /api/run both now recognize it fine.
         status, data = self._post("/api/provider-key", {"provider": "gemini", "key": "sk-x"})
         self.assertEqual(status, 400)
         self.assertIn("error", data)

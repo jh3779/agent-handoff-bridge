@@ -51,6 +51,9 @@ context.
 - [Research: API-Key Mode](research-api-key-mode.md): Phase 4's
   pre-implementation research into Anthropic/OpenAI direct-API capabilities
   and credential storage options.
+- [Research: Gemini CLI](research-gemini-cli.md): Phase 5's
+  pre-implementation research into Gemini CLI's non-interactive mode,
+  JSON output, session resume, auth, and hooks.
 
 ## Templates And Machine Contracts
 

@@ -1,8 +1,8 @@
 # Architecture
 
-The project is intentionally file-centered. It does not try to merge Codex and
-Claude transcripts. Instead, it makes the workspace itself the durable handoff
-surface.
+The project is intentionally file-centered. It does not try to merge
+provider transcripts together. Instead, it makes the workspace itself the
+durable handoff surface.
 
 ## Components
 
@@ -15,10 +15,20 @@ handoff_control.py  ->  handoff_bridge.py
         |                    +--> codex exec --json
         |                    |
         |                    +--> claude -p --output-format stream-json
+        |                    |
+        |                    +--> gemini --output-format json
         |
         v
 .handoff/current.md + shared docs + git workspace
 ```
+
+Gemini was added in Phase 5
+([docs/design-system/roadmap.md](design-system/roadmap.md)) as this
+project's first test of whether the two-provider assumption baked into
+earlier code actually generalized — see
+[docs/provider-extensibility.md](provider-extensibility.md) for what had
+to change (`other_provider()` → `next_provider()`) and what didn't
+(`classify_handoff()`).
 
 `handoff_desktop.py` provides the same control flow with a macOS/Windows GUI
 for folder selection and mobile prompt generation.

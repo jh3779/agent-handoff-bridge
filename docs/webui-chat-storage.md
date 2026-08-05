@@ -38,7 +38,7 @@ separate file.
 | `role` | `"user"` \| `"system"` \| `"agent"` | validated server-side (`CHAT_ROLES`); anything else is rejected with 400 |
 | `text` | string | may be empty if the message is attachments-only |
 | `attachments` | array | client-supplied as-is (see "What Gets Persisted" below) |
-| `provider` | string \| null | **`agent` role only** — `"codex"` or `"claude"` (never `"auto"`; that's resolved to a real provider before the record exists) |
+| `provider` | string \| null | **`agent` role only** — `"codex"`, `"claude"`, or (as of Phase 5) `"gemini"` (never `"auto"`; that's resolved to a real provider before the record exists) |
 | `status` | string \| null | **`agent` role only** — `"success"` \| `"handoff"` \| `"fail"`, from `classify_run_status()` |
 | `reason` | string \| null | **`agent` role only** — the underlying `handoff_bridge.py` `classify_handoff()` reason string (e.g. `"rate_limit: matched rate_limit signal"`) |
 

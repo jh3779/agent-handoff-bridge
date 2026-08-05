@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from handoff_bridge import HANDOFF_DIR, PROVIDERS, WriteLock, atomic_write_text, choose_auto_provider
+from handoff_bridge import HANDOFF_DIR, PROVIDERS, WriteLock, atomic_write_text, choose_auto_provider, next_provider
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
@@ -684,10 +684,18 @@ def build_history_drawer(current_workspace: Path | None) -> list[dict]:
 
 _CREDENTIALS_LOCK = threading.Lock()
 
-# DEC-15: both existing providers get API-key mode symmetrically, same as
-# every other provider-facing feature in this project (Gemini is CFL-13,
-# unrelated/unimplemented).
-#
+# DEC-15: both providers that existed at the time got API-key mode
+# symmetrically. Deliberately its own tuple, not an alias for the
+# `PROVIDERS` imported from handoff_bridge above -- Phase 5 grew that one
+# to `("codex", "claude", "gemini")` for CLI dispatch, but API-key mode's
+# scope was never revisited to include Gemini (a real, separate design
+# decision this project hasn't made), so it must not silently inherit a
+# new entry just because the shared tuple grew. `cli_available()`-based
+# dispatch and the Diagnose panel's CLI-detection badges use the full
+# `PROVIDERS` (Gemini included); credential storage, `/api/provider-key`,
+# and `API_KEY_MODE_DEFAULT_MODELS` use this one instead.
+API_KEY_MODE_PROVIDERS = ("codex", "claude")
+
 # Deliberately empty for *both* providers, not just OpenAI/Codex: an
 # earlier version hardcoded a Claude default on the reasoning that model
 # IDs from this session's own environment context were "safe to default
@@ -730,7 +738,7 @@ def read_credentials() -> dict:
         return {}
     result = {}
     for provider, entry in data.items():
-        if provider not in PROVIDERS or not isinstance(entry, dict):
+        if provider not in API_KEY_MODE_PROVIDERS or not isinstance(entry, dict):
             continue
         key = entry.get("key")
         if not isinstance(key, str) or not key:
@@ -1288,7 +1296,20 @@ def _run_provider_via_bridge_locked(
             # finish and save its own. Without this, the caller would
             # silently see only the first record and have no idea a second
             # attempt was even in flight.
-            timed_out_provider = "claude" if new_records[-1]["provider"] == "codex" else "codex"
+            #
+            # Phase 5 bug, found in review: this used to be a hardcoded
+            # "claude" if codex else "codex" binary guess -- other_provider()'s
+            # own replacement (next_provider()) generalized the *real*
+            # fallback logic in handoff_bridge.py, but this webui-local
+            # guess was never updated to match. With PROVIDERS now 3-wide,
+            # the recursive fallback call handoff_bridge.py actually made
+            # is next_provider(new_records[-1]["provider"]), not always
+            # "the other of codex/claude" -- e.g. a claude run needing
+            # handoff recurses into gemini, not codex. Reusing the same
+            # function here (rather than reimplementing the guess) is the
+            # only way this stays correct if PROVIDERS' order ever changes
+            # again.
+            timed_out_provider = next_provider(new_records[-1]["provider"])
             new_records.append(
                 {
                     "provider": timed_out_provider,
@@ -1416,14 +1437,24 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
             elif parsed.path == "/api/providers":
                 # Backs SCR-06/components.html §14's connection panel. Never
                 # includes the raw key -- only whether one is configured.
+                # Covers the full (Gemini-included) PROVIDERS for CLI
+                # detection -- Phase 5 finally resolves what SCR-06
+                # originally shipped as a "미확인" placeholder badge for
+                # Gemini into a real one. `api_key_mode_supported` is
+                # False for Gemini: API_KEY_MODE_PROVIDERS wasn't extended
+                # to it (a separate, unmade design decision), so the
+                # frontend knows not to offer a key field for it even
+                # though its CLI status is now real.
                 credentials = read_credentials()
                 providers = []
                 for provider in PROVIDERS:
-                    entry = credentials.get(provider)
+                    supports_api_key_mode = provider in API_KEY_MODE_PROVIDERS
+                    entry = credentials.get(provider) if supports_api_key_mode else None
                     providers.append(
                         {
                             "provider": provider,
                             "cli_detected": cli_available(provider),
+                            "api_key_mode_supported": supports_api_key_mode,
                             "api_key_configured": entry is not None,
                             "model": (entry or {}).get("model") if entry else None,
                         }
@@ -1512,7 +1543,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 try:
                     body = self._read_json_body()
                     provider = str(body.get("provider") or "auto")
-                    if provider not in ("auto", "codex", "claude"):
+                    if provider not in ("auto",) + PROVIDERS:
                         raise WorkspaceError(f"invalid provider: {provider}")
                     text = str(body.get("text") or "").strip()
                     attachments = body.get("attachments") or []
@@ -1555,7 +1586,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 try:
                     body = self._read_json_body()
                     provider = str(body.get("provider") or "")
-                    if provider not in PROVIDERS:
+                    if provider not in API_KEY_MODE_PROVIDERS:
                         raise WorkspaceError(f"invalid provider: {provider}")
                     key = str(body.get("key") or "").strip()
                     model = str(body.get("model") or "").strip() or None

@@ -271,7 +271,7 @@
 
   // ---------- provider connection panel (Phase 4, SCR-06/components.html §14) ----------
 
-  const PROVIDER_LABEL = { codex: "Codex", claude: "Claude Code" };
+  const PROVIDER_LABEL = { codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI" };
 
   function renderProviderRow(info) {
     const row = el("div", { class: "pp-row" }, []);
@@ -286,6 +286,15 @@
     );
     if (info.cli_detected) {
       return row; // SCR-06: API 키 입력은 "CLI 없음" 상태에서만 노출
+    }
+    if (!info.api_key_mode_supported) {
+      // Gemini (Phase 5): CLI 감지 로직은 있지만 API 키 모드는 아직
+      // 지원 대상이 아님(DEC-15가 codex/claude로만 한정) -- 키 입력
+      // UI 없이 상태만 보여준다.
+      row.appendChild(
+        el("div", { class: "pp-note", text: "로컬에 CLI가 설치되어 있지 않습니다. 이 provider는 아직 API 키 모드를 지원하지 않습니다." }, [])
+      );
+      return row;
     }
     if (info.api_key_configured) {
       row.appendChild(

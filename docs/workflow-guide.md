@@ -133,7 +133,7 @@ under `~/Documents/Agent Handoff Bridge/` from your first message (or click
 Click a file in the sidebar, or drag one onto the chat area, to attach it to
 the draft message. Use **Open Folder** (top-left, VS Code-style) to switch
 workspace at runtime instead of restarting with a different `--workspace`.
-Pick a provider from the titlebar (`auto`/`codex`/`claude`), then **Send**
+Pick a provider from the titlebar (`auto`/`codex`/`claude`/`gemini`), then **Send**
 actually runs it — the first send in a browser session asks for
 confirmation ("this may spend tokens"), later sends in the same session run
 immediately. Every message, yours and the agent's, persists to that

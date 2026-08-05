@@ -44,7 +44,7 @@ HANDOFF_LABELS = (
     "unknown",
 )
 
-PROVIDERS = ("codex", "claude")
+PROVIDERS = ("codex", "claude", "gemini")
 
 INSTALL_FILES = [
     ("handoff_bridge.py", "handoff_bridge.py"),
@@ -212,7 +212,7 @@ def load_state() -> dict[str, Any]:
             "primary_provider": "codex",
             "last_provider": None,
             "status": "new",
-            "sessions": {"codex": None, "claude": None},
+            "sessions": {provider: None for provider in PROVIDERS},
             "history": [],
         }
     return json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -357,6 +357,13 @@ def diagnose(_: argparse.Namespace) -> int:
 
     codex_auth = short_run(["codex", "login", "status"])
     claude_auth = short_run(["claude", "auth", "status", "--text"])
+    # Gemini CLI has no free auth-status subcommand (docs/research-gemini-
+    # cli.md "Practical Limitations") -- the only way to actually check
+    # would be a real headless call that spends a token. DEC-18
+    # (docs/design-system/flutter-mapping.html#s1c): diagnose() stays free
+    # to run as often as a user wants, so this deliberately does not
+    # probe -- CLI installation is still checked above (the `checks` loop
+    # already covers Gemini via PROVIDERS), only auth state is skipped.
 
     print(f"Handoff bridge diagnostics (agent-handoff-bridge {BRIDGE_VERSION})")
     print(f"- cwd: {Path.cwd()}")
@@ -366,6 +373,7 @@ def diagnose(_: argparse.Namespace) -> int:
             print(f"  version: {item['version']}")
     print(f"- codex auth: exit {codex_auth[0]} | {(codex_auth[1] or codex_auth[2])}")
     print(f"- claude auth: exit {claude_auth[0]} | {(claude_auth[1] or claude_auth[2])}")
+    print("- gemini auth: not checked (no free status command exists -- see docs/research-gemini-cli.md)")
     return 0
 
 
@@ -385,7 +393,7 @@ def init_handoff(args: argparse.Namespace) -> int:
         "instruction_type": args.instruction_type,
         "last_provider": None,
         "status": "ready",
-        "sessions": {"codex": None, "claude": None},
+        "sessions": {provider: None for provider in PROVIDERS},
         "history": [],
     }
     save_state(state)
@@ -401,7 +409,7 @@ def init_handoff(args: argparse.Namespace) -> int:
 
 - Status: ready.
 - Primary provider: {args.primary}.
-- Fallback provider: {other_provider(args.primary)}.
+- Fallback provider: {next_provider(args.primary)}.
 
 ## Active Work Target
 
@@ -433,8 +441,28 @@ No agent run has been recorded yet.
     return 0
 
 
-def other_provider(provider: str) -> str:
-    return "claude" if provider == "codex" else "codex"
+def next_provider(current: str, tried: "set[str] | frozenset[str]" = frozenset()) -> str:
+    """Replaces the old `other_provider()` binary toggle (Phase 5,
+    docs/provider-extensibility.md "The Current Code Assumes Exactly Two
+    Providers") -- with three or more entries in PROVIDERS, "the other
+    one" stops being well-defined.
+
+    Walks PROVIDERS in order starting right after `current`, wrapping
+    around, and returns the first entry not in `tried` (which does not
+    need to include `current` itself -- it's excluded unconditionally).
+    Falls back to `current` if every provider has already been tried
+    (nothing left to hand off to) rather than raising, since every
+    existing call site only ever does a single hop today and has no
+    other provider to fall back to in that case either.
+    """
+    exclude = set(tried) | {current}
+    ordered = list(PROVIDERS)
+    start = ordered.index(current) if current in ordered else -1
+    for offset in range(1, len(ordered) + 1):
+        candidate = ordered[(start + offset) % len(ordered)]
+        if candidate not in exclude:
+            return candidate
+    return current
 
 
 def git_snapshot() -> str:
@@ -536,11 +564,25 @@ def provider_command(provider: str, state: dict[str, Any], model: str | None = N
         command.append("-")
         return command
 
-    if session_id:
+    if provider == "claude":
+        if session_id:
+            command = [
+                "claude",
+                "--resume",
+                session_id,
+                "-p",
+                "--input-format",
+                "text",
+                "--output-format",
+                "stream-json",
+                "--permission-mode",
+                "auto",
+            ]
+            if model:
+                command.extend(["--model", model])
+            return command
         command = [
             "claude",
-            "--resume",
-            session_id,
             "-p",
             "--input-format",
             "text",
@@ -552,16 +594,24 @@ def provider_command(provider: str, state: dict[str, Any], model: str | None = N
         if model:
             command.extend(["--model", model])
         return command
-    command = [
-        "claude",
-        "-p",
-        "--input-format",
-        "text",
-        "--output-format",
-        "stream-json",
-        "--permission-mode",
-        "auto",
-    ]
+
+    # provider == "gemini". Prompt travels via stdin like the other two
+    # (subprocess.run(..., input=prompt, ...) in run_provider()) -- no
+    # `-p "<text>"` flag needed; docs/research-gemini-cli.md confirmed
+    # piped stdin alone auto-triggers Gemini's non-interactive mode.
+    command = ["gemini", "--output-format", "json"]
+    if session_id:
+        # Gemini's JSON response has no session/thread ID field
+        # (docs/research-gemini-cli.md "Practical Limitations") -- unlike
+        # codex/claude, this bridge can never capture a *specific* prior
+        # session to resume by ID. DEC-17
+        # (docs/design-system/flutter-mapping.html#s1c): use `--resume
+        # latest` instead. `session_id` here is always the literal
+        # sentinel "latest" (set by summarize_gemini() only after a clean
+        # prior run in this workspace), not a real ID -- it exists purely
+        # to answer "has gemini run successfully here before," which is
+        # exactly when --resume is safe to add at all.
+        command.extend(["--resume", "latest"])
     if model:
         command.extend(["--model", model])
     return command
@@ -628,6 +678,53 @@ def summarize_claude(events: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
+def summarize_gemini(stdout: str, exit_code: int = 0) -> dict[str, Any]:
+    """`gemini --output-format json` returns one JSON object at the end
+    of the run, not a JSONL event stream like Codex/Claude
+    (docs/research-gemini-cli.md "Bottom Line") -- parse_jsonl() doesn't
+    apply here, so this parses `stdout` directly instead of taking
+    pre-parsed `events` like summarize_codex()/summarize_claude() do.
+
+    `session_id` is always the literal sentinel "latest", never a real
+    ID (see provider_command()'s Gemini branch for why) -- set only when
+    `exit_code` is 0 *and* the response parsed as a JSON object with no
+    `error` field, so a workspace that has never had a clean Gemini run
+    has nothing marked resumable. Both conditions matter: Gemini's own
+    exit-code/JSON-body correlation on failure isn't fully documented
+    (docs/research-gemini-cli.md "Practical Limitations" -- two
+    overlapping, disagreeing exit-code tables exist in its own docs), so
+    a nonzero exit with a superficially clean, `error`-free JSON body is
+    a real possibility this project can't rule out from official sources
+    alone -- checking exit_code too, not just the JSON body, avoids
+    marking a failed run resumable on the strength of the body check
+    alone.
+    """
+    summary: dict[str, Any] = {
+        "provider": "gemini",
+        "session_id": None,
+        "usage": None,
+        "cost_usd": None,
+        "final_text": "",
+        "errors": [],
+    }
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return summary
+    if not isinstance(data, dict):
+        return summary
+    summary["final_text"] = data.get("response") or ""
+    stats = data.get("stats")
+    if isinstance(stats, dict):
+        summary["usage"] = stats
+    error = data.get("error")
+    if error:
+        summary["errors"].append(error)
+    elif exit_code == 0:
+        summary["session_id"] = "latest"
+    return summary
+
+
 def classify_handoff(exit_code: int, stdout: str, stderr: str, parsed: dict[str, Any]) -> tuple[bool, str]:
     """Classify whether the run needs a handoff.
 
@@ -690,7 +787,7 @@ def append_current(record: dict[str, Any]) -> None:
 
 def choose_auto_provider(state: dict[str, Any]) -> str:
     if state.get("status") == "handoff_needed" and state.get("last_provider"):
-        return other_provider(state["last_provider"])
+        return next_provider(state["last_provider"])
     primary = state.get("primary_provider") or "codex"
     if shutil.which(primary):
         return primary
@@ -767,8 +864,12 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
     (run_dir / "stdout.jsonl").write_text(stdout, encoding="utf-8")
     (run_dir / "stderr.log").write_text(stderr, encoding="utf-8")
 
-    events = parse_jsonl(stdout)
-    parsed = summarize_codex(events) if provider == "codex" else summarize_claude(events)
+    if provider == "codex":
+        parsed = summarize_codex(parse_jsonl(stdout))
+    elif provider == "claude":
+        parsed = summarize_claude(parse_jsonl(stdout))
+    else:
+        parsed = summarize_gemini(stdout, exit_code)  # single JSON object, not a JSONL stream
     handoff_needed, handoff_reason = classify_handoff(exit_code, stdout, stderr, parsed)
 
     session_id = parsed.get("session_id")
@@ -799,7 +900,7 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
     print(f"handoff needed: {handoff_needed} ({handoff_reason})")
 
     if handoff_needed:
-        fallback = other_provider(provider)
+        fallback = next_provider(provider)
         # Carry the ORIGINAL user_prompt into the fallback, not a generic
         # placeholder -- the handoff_reason is already conveyed separately
         # via build_prompt()'s reason_block, so replacing the actual
@@ -879,7 +980,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.set_defaults(func=init_handoff)
 
     p_run = sub.add_parser("run", help="Run or preview a provider invocation.")
-    p_run.add_argument("provider", choices=("auto", "codex", "claude"))
+    p_run.add_argument("provider", choices=("auto",) + PROVIDERS)
     p_run.add_argument("prompt", nargs="?", default="", help="Turn-specific prompt.")
     p_run.add_argument("--prompt-file", help="Read the turn-specific prompt from a file.")
     p_run.add_argument("--execute", action="store_true", help="Actually invoke the provider.")

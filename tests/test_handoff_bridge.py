@@ -92,8 +92,16 @@ class ChooseAutoProviderTests(unittest.TestCase):
         state = {"status": "handoff_needed", "last_provider": "codex", "primary_provider": "codex"}
         self.assertEqual(hb.choose_auto_provider(state), "claude")
 
-    def test_handoff_needed_from_claude_switches_to_codex(self):
+    def test_handoff_needed_from_claude_switches_to_gemini(self):
+        # Phase 5: PROVIDERS is now ("codex", "claude", "gemini") -- N-way
+        # fallback walks to the *next* provider in that order, not back to
+        # the start. "the other one" stopped being well-defined once a
+        # third provider existed (docs/provider-extensibility.md).
         state = {"status": "handoff_needed", "last_provider": "claude", "primary_provider": "codex"}
+        self.assertEqual(hb.choose_auto_provider(state), "gemini")
+
+    def test_handoff_needed_from_gemini_wraps_around_to_codex(self):
+        state = {"status": "handoff_needed", "last_provider": "gemini", "primary_provider": "codex"}
         self.assertEqual(hb.choose_auto_provider(state), "codex")
 
     def test_prefers_primary_when_available(self):
@@ -360,6 +368,180 @@ class AutoFallbackPromptPropagationTests(unittest.TestCase):
                 claude_stdin,
                 msg="fallback provider must receive the user's actual prompt, not a placeholder",
             )
+
+
+class NextProviderTests(unittest.TestCase):
+    """Phase 5: next_provider() replaces the old other_provider() binary
+    toggle -- docs/provider-extensibility.md's "The Current Code Assumes
+    Exactly Two Providers" finding, resolved by walking PROVIDERS in order
+    instead of a two-way ternary."""
+
+    def test_walks_to_the_next_provider_in_order(self):
+        self.assertEqual(hb.next_provider("codex"), "claude")
+        self.assertEqual(hb.next_provider("claude"), "gemini")
+
+    def test_wraps_around_at_the_end(self):
+        self.assertEqual(hb.next_provider("gemini"), "codex")
+
+    def test_skips_entries_already_in_tried(self):
+        # codex -> claude is next in order, but claude is already tried,
+        # so this must skip to gemini instead.
+        self.assertEqual(hb.next_provider("codex", tried={"claude"}), "gemini")
+
+    def test_falls_back_to_current_when_every_provider_is_exhausted(self):
+        self.assertEqual(hb.next_provider("codex", tried={"codex", "claude", "gemini"}), "codex")
+
+    def test_current_itself_is_always_excluded_even_if_not_in_tried(self):
+        # A 2-provider cycle: excluding claude and gemini leaves only
+        # codex itself, which must never be returned as its own "next".
+        self.assertEqual(hb.next_provider("codex", tried={"claude", "gemini"}), "codex")
+
+
+class ProviderCommandGeminiTests(unittest.TestCase):
+    def test_first_call_in_a_workspace_has_no_resume_flag(self):
+        state = {"sessions": {"gemini": None}}
+        command = hb.provider_command("gemini", state)
+        self.assertEqual(command[0], "gemini")
+        self.assertIn("--output-format", command)
+        self.assertIn("json", command)
+        self.assertNotIn("--resume", command)
+
+    def test_a_prior_clean_run_adds_resume_latest(self):
+        # session_id is always the literal sentinel "latest" for gemini
+        # (see summarize_gemini()) -- provider_command() doesn't know or
+        # care that it isn't a real ID, only that one was previously set.
+        state = {"sessions": {"gemini": "latest"}}
+        command = hb.provider_command("gemini", state)
+        idx = command.index("--resume")
+        self.assertEqual(command[idx + 1], "latest")
+
+    def test_model_is_passed_through(self):
+        state = {"sessions": {"gemini": None}}
+        command = hb.provider_command("gemini", state, model="gemini-2.5-pro")
+        idx = command.index("--model")
+        self.assertEqual(command[idx + 1], "gemini-2.5-pro")
+
+    def test_no_inline_prompt_flag_prompt_travels_via_stdin_like_the_others(self):
+        # docs/research-gemini-cli.md: piped stdin alone auto-triggers
+        # non-interactive mode, matching how codex/claude already receive
+        # their prompt via subprocess.run(..., input=prompt), not argv.
+        state = {"sessions": {"gemini": None}}
+        command = hb.provider_command("gemini", state)
+        self.assertNotIn("-p", command)
+
+
+class SummarizeGeminiTests(unittest.TestCase):
+    def test_successful_response_is_parsed(self):
+        stdout = json.dumps({"response": "hello back", "stats": {"tokens": {"total": 42}}})
+        summary = hb.summarize_gemini(stdout, exit_code=0)
+        self.assertEqual(summary["final_text"], "hello back")
+        self.assertEqual(summary["usage"], {"tokens": {"total": 42}})
+        self.assertEqual(summary["errors"], [])
+        # A clean run marks the resume sentinel -- the *only* way
+        # provider_command() ever learns "gemini has run here before".
+        self.assertEqual(summary["session_id"], "latest")
+
+    def test_nonzero_exit_never_marks_the_resume_sentinel_even_with_a_clean_looking_body(self):
+        # Regression (found in review): Gemini's own docs have two
+        # overlapping, disagreeing exit-code tables and don't fully
+        # document exit-code/JSON-body correlation on failure -- a
+        # nonzero exit (e.g. exit 41, FatalAuthenticationError) could in
+        # principle still print a `response`/no-`error` body. Checking
+        # only the JSON body (ignoring exit_code) would have wrongly
+        # marked a failed run as safe to --resume latest on the next
+        # call.
+        stdout = json.dumps({"response": "partial output before the crash"})
+        summary = hb.summarize_gemini(stdout, exit_code=41)
+        self.assertIsNone(summary["session_id"])
+        # The (misleadingly clean-looking) response text/usage still get
+        # surfaced -- only the resume sentinel is suppressed.
+        self.assertEqual(summary["final_text"], "partial output before the crash")
+
+    def test_error_field_is_captured_and_session_id_stays_none(self):
+        stdout = json.dumps({"response": "", "error": {"type": "AuthError", "message": "not authenticated"}})
+        summary = hb.summarize_gemini(stdout)
+        self.assertEqual(len(summary["errors"]), 1)
+        self.assertEqual(summary["errors"][0]["type"], "AuthError")
+        # An error response must never mark the resume sentinel -- there's
+        # nothing confirmed resumable from a failed call.
+        self.assertIsNone(summary["session_id"])
+
+    def test_malformed_json_does_not_raise(self):
+        summary = hb.summarize_gemini("not json at all")
+        self.assertEqual(summary["provider"], "gemini")
+        self.assertIsNone(summary["session_id"])
+        self.assertEqual(summary["final_text"], "")
+
+    def test_empty_stdout_does_not_raise(self):
+        summary = hb.summarize_gemini("")
+        self.assertIsNone(summary["session_id"])
+
+    def test_a_json_array_top_level_does_not_raise(self):
+        # Valid JSON, but not the expected object shape -- must not crash
+        # trying to call .get() on a list.
+        summary = hb.summarize_gemini("[1, 2, 3]")
+        self.assertIsNone(summary["session_id"])
+        self.assertEqual(summary["final_text"], "")
+
+
+class GeminiIntegrationTests(unittest.TestCase):
+    """Real subprocess, fake `gemini` binary -- same pattern as
+    RunProviderTimeoutIntegrationTests/AutoFallbackPromptPropagationTests
+    above, extended to the third provider."""
+
+    def setUp(self):
+        if os.name != "posix" or not hb.shutil.which("sh"):
+            self.skipTest("POSIX shell not available for fake provider scripts")
+
+    def test_successful_gemini_run_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            fake_gemini = fake_bin / "gemini"
+            fake_gemini.write_text(
+                "#!/bin/sh\n"
+                "cat >/dev/null\n"
+                'echo \'{"response": "fake gemini reply", "stats": {"tokens": {"total": 7}}}\'\n',
+                encoding="utf-8",
+            )
+            fake_gemini.chmod(0o755)
+
+            prompt_path = workspace / "prompt.txt"
+            prompt_path.write_text("hello", encoding="utf-8")
+
+            env = dict(os.environ)
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(bridge_script),
+                    "--workspace",
+                    str(workspace),
+                    "run",
+                    "gemini",
+                    "--execute",
+                    "--prompt-file",
+                    str(prompt_path),
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(state["history"]), 1)
+            record = state["history"][0]
+            self.assertEqual(record["provider"], "gemini")
+            self.assertEqual(record["final_text"], "fake gemini reply")
+            self.assertFalse(record["handoff_needed"])
+            # The sentinel, captured from summarize_gemini()'s clean-run
+            # detection, now saved into state so the *next* gemini call in
+            # this workspace resumes instead of starting fresh.
+            self.assertEqual(state["sessions"]["gemini"], "latest")
 
 
 if __name__ == "__main__":

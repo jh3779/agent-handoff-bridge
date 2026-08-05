@@ -275,20 +275,71 @@ List에서 제거됨. 새로 발생: [CFL-17](flutter-mapping.html#s2)(전체
 `python3 -m unittest discover -s tests -v`로 확인(고정 숫자를 여기 적지
 않는 이유는 위 Phase 1/3 문단과 동일 — 드리프트하기 쉬움).
 
-## Phase 5 — Gemini CLI 실사용 지원 + provider 확장성 리팩터
+## Phase 5 — Gemini CLI 실사용 지원 + provider 확장성 리팩터 ✅ 완료
 
 **목표**: 세 번째 provider를 실제로 붙인다.
 
-1. 먼저 실제 조사 — `docs/research.md`가 Codex/Claude에 했던 것과 동일한
-   조사를 Gemini CLI에 대해 수행([CFL-13](flutter-mapping.html#s2)이
-   이미 "검증 안 됨"이라고 명시).
-2. `handoff_bridge.py`의 `other_provider()`(이진 토글)를 N-way fallback으로
-   리팩터 — [provider-extensibility.md](../provider-extensibility.md)
-   "The Current Code Assumes Exactly Two Providers"에 이미 정확히 이
-   문제가 문서화되어 있다.
-3. `PROVIDERS` 튜플 확장, `provider_command()`/`summarize_gemini()` 추가.
+**착수 전 조사** (`docs/research.md`와 같은 형식으로
+[docs/research-gemini-cli.md](../research-gemini-cli.md) 작성): Gemini
+CLI는 codex/claude와 같은 "subprocess + 구조화 출력 파싱 + handoff 신호
+감지" 아키텍처에 그대로 들어맞지만, 세 가지가 진짜로 다르다 — (1) 무료
+인증-상태 확인 명령이 없음, (2) JSON 출력이 JSONL 스트림이 아니라 실행
+끝에 객체 하나, (3) JSON 응답에 세션/스레드 ID가 없음. 이 세 가지가
+단순 기계적 확장이 아니라 실제 설계 결정을 요구했다.
 
-Phase 1(CLI 연결)이 끝나야 의미가 있어 그 뒤에 배치했다.
+**설계 확정** (2026-08-05, 조사 결과를 바탕으로 사전 인터뷰 2건 — 1건은
+세션 스코프 관련 추가 조사 후 재확정 →
+[flutter-mapping.html DEC-17~18](flutter-mapping.html#s1c)):
+- Gemini resume = **`--resume latest` 사용**. Gemini 세션이 전역이 아니라
+  워크스페이스 디렉터리별로 스코프된다는 걸 확인한 뒤, codex/claude와
+  동일한 컨텍스트 유지 UX를 택함 — 같은 디렉터리에서 사용자가 bridge
+  밖에서 직접 대화형 gemini를 돌리면 섞일 수 있다는 잔여 위험은 문서화만
+  (DEC-17).
+- Gemini 인증 확인 = **probe 생략**. `diagnose()`는 CLI 설치 여부만
+  확인하고 인증 상태는 "확인 안 함"으로 표시 — 토큰을 쓰는 probe 호출을
+  강제하지 않아 diagnose가 항상 무료/예측 가능하게 유지 (DEC-18).
+
+**해소하는 항목**: [CFL-13](flutter-mapping.html#s2) 완전 해소 — Conflict
+List에서 제거됨.
+
+**실제로 한 것**:
+- `handoff_bridge.py`: `PROVIDERS`를 `("codex", "claude", "gemini")`로
+  확장. `other_provider()`(이진 토글)를
+  `next_provider(current, tried=frozenset())`로 교체 — `PROVIDERS` 순서를
+  따라가며 랩어라운드, `tried`에 있는 항목은 건너뜀. 3개 호출부
+  (`init_handoff()`, `choose_auto_provider()`, `run_provider()`의
+  auto-fallback) 전부 연결 — auto-fallback은 여전히 한 홉만 시도(기존
+  동작 그대로, "다음 provider를 어떻게 고르는지"만 일반화됨).
+- `provider_command()`에 `gemini` 분기 추가 — 프롬프트는 codex/claude와
+  동일하게 stdin으로 전달(`-p` 인자 없음), `session_id`가 있을 때만
+  `--resume latest` 추가.
+- `summarize_gemini(stdout)` 신설 — `parse_jsonl()`이 적용 안 되는 이유는
+  Gemini의 `--output-format json`이 JSONL 스트림이 아니라 실행 끝에 JSON
+  객체 하나만 반환하기 때문. `session_id`는 실제 ID가 아니라, 이 실행이
+  `error` 필드 없이 깨끗하게 끝났을 때만 세팅되는 `"latest"` sentinel —
+  `provider_command()`가 "이 워크스페이스에서 gemini가 성공적으로 실행된
+  적 있는지"만 알면 되기 때문.
+- `diagnose()`에 "gemini auth: not checked" 줄 추가(DEC-18) — CLI
+  감지 자체는 기존 `PROVIDERS` 순회 루프가 자동으로 커버.
+- `handoff_webui.py`: `API_KEY_MODE_PROVIDERS = ("codex", "claude")`를
+  기존 `PROVIDERS`와 별도로 신설 — Phase 4의 API 키 모드가 Gemini로
+  자동 확장되지 않도록(DEC-15는 여전히 codex/claude만 대상). `/api/run`은
+  `PROVIDERS` 전체를 인식하도록 검증 완화, `/api/providers`는 Gemini의
+  CLI 감지 배지는 보여주되(SCR-06이 원래 "미확인"으로 뒀던 자리가 이제
+  실제 값으로 채워짐) 키 입력 UI는 노출하지 않음
+  (`api_key_mode_supported` 플래그).
+- `webui/index.html`/`app.js`: provider-select에 `gemini` 옵션 추가,
+  연결 패널이 `api_key_mode_supported`를 확인해 Gemini에는 키 필드를
+  숨김.
+
+**검증**: `next_provider()`(순서·랩어라운드·tried 스킵), `provider_command()`
+gemini 분기, `summarize_gemini()`(성공·에러·malformed 입력), 가짜 `gemini`
+바이너리를 이용한 실제 서브프로세스 통합 테스트, webui 쪽
+`API_KEY_MODE_PROVIDERS` 분리가 실제로 Gemini를 API 키 모드에서
+차단하는지, `/api/providers`가 Gemini를 CLI 감지 배지로는 보여주지만
+키 UI는 숨기는지. 정확한 개수는
+`python3 -m unittest discover -s tests -v`로 확인(고정 숫자를 여기 적지
+않는 이유는 이전 phase들과 동일 — 드리프트하기 쉬움).
 
 ## Phase 6 — 자동 업데이트 확인
 

@@ -11,7 +11,12 @@ All commands are safe preview commands unless `--execute` or
 python3 handoff_bridge.py diagnose
 ```
 
-Checks local CLI paths and auth status for Codex and Claude Code.
+Checks local CLI paths for Codex, Claude Code, and (as of Phase 5) Gemini
+CLI, plus auth status for Codex and Claude Code. Gemini has no free
+auth-status command to check (`docs/research-gemini-cli.md`), so its line
+always reads "not checked" rather than a real status — checking would
+require a real, token-spending call, which `diagnose()` deliberately
+avoids so it stays free to run anytime.
 
 ### Install Into A Workspace
 
@@ -186,7 +191,8 @@ Phase 1, this actually calls Codex/Claude; as of Phase 2, `--workspace` is
 optional; as of Phase 3, a history drawer shows recent activity across
 every project you've opened, not just the current one; as of Phase 4, a
 provider with no local CLI can be connected via API key instead (chat-only
-— see below). A local stdlib HTTP server. What it does:
+— see below); as of Phase 5, Gemini CLI is a third selectable provider. A
+local stdlib HTTP server. What it does:
 
 - **`--workspace` is optional.** Omit it and the current directory is used
   automatically *if* it's already an initialized handoff workspace (has a
@@ -212,7 +218,8 @@ provider with no local CLI can be connected via API key instead (chat-only
   a real OS folder picker in the native window; a manual absolute-path
   prompt in browser mode), instead of only being able to browse the single
   folder passed at startup via `--workspace`.
-- Lets you pick a provider (`auto`/`codex`/`claude`) from the titlebar, then
+- Lets you pick a provider (`auto`/`codex`/`claude`/`gemini`, as of Phase
+  5) from the titlebar, then
   **"Send" actually runs it** — `POST /api/run` shells out to
   `handoff_bridge.py run <provider> --execute --auto-fallback` (the same CLI
   a human would type; see "Why a subprocess" below) and reads back the
@@ -368,7 +375,7 @@ Endpoints:
 | GET | `/api/chat?month=YYYY-MM` | This month's (or a given month's) chat history, plus the list of months that exist |
 | POST | `/api/chat` | Append one message to the current month's log |
 | POST | `/api/open-folder` | Switch the active workspace (validates the path is a real, absolute directory) |
-| POST | `/api/run` | Run `provider` (`auto`\|`codex`\|`claude`) with `text` as the turn prompt; persists and returns the resulting agent message(s) |
+| POST | `/api/run` | Run `provider` (`auto`\|`codex`\|`claude`\|`gemini`) with `text` as the turn prompt; persists and returns the resulting agent message(s) |
 | GET | `/api/history` | History drawer data: recently-opened workspaces grouped with their last 5 chat turns each (current workspace pinned first) |
 
 `/api/run` is the one endpoint that reaches outside the sandbox this
