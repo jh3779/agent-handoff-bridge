@@ -87,8 +87,8 @@ open docs/design-system/design-system.html   # macOS
 | [design-system.html](design-system.html) | 1 · 원칙, 색("Bridge Indigo"/"Signal Amber"), 타이포그래피, 간격/모양/고도, 모션 |
 | [components.html](components.html) | 2 · §1–6 v0.1 레거시 + §8–15 v0.2 신규(사이드바 트리·메시지 버블·입력창·히스토리 항목·히스토리 그룹·Provider 연결/API 키·업데이트 배지) + 제외 목록(§16) |
 | [patterns.html](patterns.html) | 3 · run 상태 전이도, 실행 상태 5종, 빈 상태, 비용 행동 확인 패턴(DEC-02 반영), 접근성 |
-| [flutter-mapping.html](flutter-mapping.html) | 4 · §1 v0.1 ttk 역매핑 + §1b 기술 스택 결정(프레임워크 전환) + §1c 결정 기록(DEC-01~03) + Conflict List(미해결 10건, CFL-01 Phase 1로 해소) |
-| [wireframes.html](wireframes.html) | 5 · 전체 워크플로우, **v0.2 화면 8종**(기본/드래그오버/히스토리(프로젝트별)/폴더선택/자동폴더생성/Provider 온보딩/업데이트확인), 터미널 메뉴 |
+| [flutter-mapping.html](flutter-mapping.html) | 4 · §1 v0.1 ttk 역매핑 + §1b 기술 스택 결정(프레임워크 전환) + §1c 결정 기록(DEC-01~12) + Conflict List(미해결 8건, CFL-01/10/16 해소) |
+| [wireframes.html](wireframes.html) | 5 · 전체 워크플로우, **v0.2 화면 7종**(기본/드래그오버/히스토리(프로젝트별)/폴더트리확장/자동폴더생성/Provider 온보딩/업데이트확인), 터미널 메뉴 |
 
 ## 이 문서가 다루는 것 / 다루지 않는 것
 

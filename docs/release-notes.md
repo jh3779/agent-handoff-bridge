@@ -317,6 +317,85 @@
     `GET /api/history` showed both in the right order with the right
     turns via curl.
 
+- Web UI cross-phase hardening: a comprehensive review of the whole
+  `handoff_webui.py`/`webui/*` surface as it stood after Phase 0-3 merged
+  together (not a single-phase diff -- three parallel agents covering
+  backend/security, frontend/UX, and doc accuracy), looking specifically
+  for bugs in how the phases interact now that they're all live at once:
+  - fixed a real gap: nothing stopped `POST /api/open-folder` from
+    reassigning `AppState.workspace` while a `POST /api/run` was still in
+    flight against the *old* workspace (up to `OUTER_SUBPROCESS_TIMEOUT_SECONDS`,
+    ~21 minutes) -- the run's eventual reply would still get persisted to
+    the correct (old) workspace's chat log server-side, but the client,
+    having already switched its visible thread to the new workspace,
+    would append that stale reply into the wrong project's thread once it
+    resolved. `/api/open-folder` now checks `_RUN_LOCK` and returns `409`
+    while a run is in progress, matching `/api/run`'s own concurrent-call
+    guard; `webui/app.js`'s `switchWorkspaceTo()` (shared by Open Folder
+    and every History drawer item click) gained the same `runInFlight`
+    guard client-side for immediate feedback;
+  - fixed a related gap the same review surfaced: `POST /api/chat`'s
+    `"user"` role had no equivalent guard, so a second browser tab (or any
+    direct API caller) could post a new user message into the *same*
+    workspace while a run was in flight elsewhere -- `pair_messages_into_turns()`
+    (Phase 3) attaches each `agent` reply to whichever `user` message it
+    saw most recently in the chat log's append order, so the in-flight
+    run's eventual reply could land in the log *after* the second
+    message and get misattributed to it in the history drawer. Now
+    rejected with `409` too (`system`-role posts are unaffected -- they
+    don't start a turn);
+  - fixed a real UX gap in `sendMessage()`'s auto-create-workspace error
+    path: if `POST /api/chat` failed while auto-creating a workspace, the
+    code fell through and called `POST /api/run` anyway with a stale
+    `hasWorkspace` flag, instead of stopping once it was clear there was
+    no workspace to run against;
+  - fixed a latent (currently unreachable through the shipped UI, which
+    never sends `model`) argv gap: `run_provider_via_bridge()` passed
+    `["--model", value]` instead of `["--model=value"]`, so a model
+    string starting with `-` would make argparse misparse it as the next
+    flag instead of `--model`'s value -- closed the same way the prompt
+    (`--prompt-file`) and `init`'s task (`--`) argv gaps were already
+    closed in earlier rounds;
+  - fixed several stale documentation claims found by the doc-accuracy
+    pass: `docs/design-system/components.html`'s page summary said the
+    history drawer components (§11/§13) had "no code" (Phase 3 shipped
+    them), `wireframes.html`'s SCR-01 tag still said "provider connection
+    excluded" (Phase 1 added it) and SCR-03 (history drawer) was missing
+    the "actually implemented" tag every other shipped screen has,
+    `cli-reference.md`'s closing pointer still listed cross-project
+    history browsing as intentionally missing (Phase 3 shipped it),
+    `design-system/README.md`'s page-index table cited stale DEC/CFL
+    counts and an off-by-one screen count, and CFL-14's example list
+    named provider-connection and history as things that might still be
+    added when both had already shipped;
+  - more tests for all of the above, including HTTP-level tests proving
+    `/api/open-folder` and a second `POST /api/chat` both correctly get
+    `409` while a run is in flight, and that a `system`-role message
+    doesn't;
+  - fixed a real gap a follow-up review found in the same area:
+    `sendMessage()` only stopped short of calling `POST /api/run` when
+    `POST /api/chat` failed *and* the workspace had just been missing --
+    for an already-existing workspace, a failed or `409`-rejected
+    `/api/chat` (e.g. the new concurrent-run guard above) fell through to
+    `/api/run` anyway, which would itself immediately `409` too (a
+    second, more confusing error stacked on the first) or, worse, let an
+    agent reply render and persist with no corresponding user turn ever
+    saved to back it. Now stops unconditionally on any `/api/chat`
+    failure, not just the auto-create case;
+  - considered, and consciously left as documented/accepted: the
+    `_RUN_LOCK.locked()` checks in `/api/open-folder` and `/api/chat`
+    (above) are a plain check-then-act, not atomic against a `/api/run`
+    that acquires the lock in the gap between the check and the
+    subsequent state change. Closing that fully would mean either
+    `/api/open-folder`/`/api/chat` blocking on the same lock `/api/run`
+    holds (up to `OUTER_SUBPROCESS_TIMEOUT_SECONDS`, ~21 minutes -- this
+    project has deliberately favored fail-fast `409`s over blocking
+    everywhere else `_RUN_LOCK` is involved) or a heavier shared-mutex
+    redesign across all three endpoints. Given this is a single-user,
+    single-process local tool, the residual window (a handful of Python
+    bytecode instructions, down from the *entire* run's duration before
+    this round) was judged not worth either tradeoff.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

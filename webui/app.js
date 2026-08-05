@@ -116,6 +116,18 @@
   }
 
   async function switchWorkspaceTo(rawPath) {
+    // A provider run in flight writes into whatever workspace was active
+    // when it started, and its reply/status render into chatThread
+    // whenever it resolves -- switching workspaces mid-run (Open Folder,
+    // a History drawer item) would tear down and rebuild chatThread out
+    // from under it via loadChatHistory() below, so the stale run's reply
+    // ends up appended to the *new* project's thread once it finally
+    // settles. sendMessage() already refuses a second concurrent /api/run
+    // this way; workspace switches need the same guard.
+    if (runInFlight) {
+      showToast("응답을 기다리는 중에는 워크스페이스를 전환할 수 없습니다.");
+      return;
+    }
     try {
       await postJSON("/api/open-folder", { path: rawPath });
     } catch (err) {
@@ -592,16 +604,29 @@
     const workspaceWasMissing = !hasWorkspace;
     try {
       await postJSON("/api/chat", userMessage);
-      if (workspaceWasMissing) {
-        // SCR-05: this /api/chat call is what just auto-created the
-        // workspace server-side (handoff_webui.create_workspace_for_first_message())
-        // -- bring the titlebar and file tree up to date with it before the
-        // provider call that's about to follow.
+    } catch (err) {
+      // Stop here unconditionally -- not just for the auto-create case.
+      // Calling /api/run right after a failed/rejected /api/chat means
+      // asking the provider to answer a message that was never actually
+      // recorded: at best it's a wasted round trip (a 409 here means a
+      // run is already in progress, so /api/run would immediately 409
+      // too -- a second, more confusing error on top of this one); at
+      // worst the agent's reply renders and persists with no
+      // corresponding user turn backing it, which pair_messages_into_turns()
+      // (Phase 3) can't attribute to anything in the history drawer.
+      showToast(`대화 기록 저장 실패(화면에는 남아있음): ${err.message}`);
+      return;
+    }
+    if (workspaceWasMissing) {
+      // SCR-05: bring the titlebar and file tree up to date with the
+      // workspace /api/chat just auto-created, before the provider call
+      // that's about to follow.
+      try {
         await refreshWorkspaceLabel();
         await renderTree(treeEl, "");
+      } catch (err) {
+        showToast(`워크스페이스 정보를 새로고침하지 못함: ${err.message}`);
       }
-    } catch (err) {
-      showToast(`대화 기록 저장 실패(화면에는 남아있음): ${err.message}`);
     }
 
     const busyMsg = renderBusyMessage(provider);

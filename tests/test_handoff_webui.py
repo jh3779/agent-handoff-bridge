@@ -1167,6 +1167,25 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
             self.assertEqual(command[idx + 1], str(webui.PROVIDER_RUN_TIMEOUT_SECONDS))
             self.assertEqual(spy.call_args.kwargs["timeout"], webui.OUTER_SUBPROCESS_TIMEOUT_SECONDS)
 
+    def test_model_starting_with_a_dash_is_passed_as_one_argv_token(self):
+        # ["--model", value] would let argparse misparse a value that
+        # looks like a flag (e.g. "--foo") as the next option instead of
+        # --model's value ("argument --model: expected one argument") --
+        # "--model=value" is unambiguous regardless of what value is.
+        # Not reachable through the shipped UI today (it never sends
+        # `model`), but the same class of gap was already closed for the
+        # prompt (--prompt-file) and init's task (--), so closing it here
+        # too for whenever `model` gets wired up.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+            with mock.patch("handoff_webui.subprocess.run", wraps=subprocess.run) as spy:
+                webui.run_provider_via_bridge(root, "codex", "hello", "--weird-model-name", "continue")
+            command = spy.call_args.args[0]
+            self.assertIn("--model=--weird-model-name", command)
+            # never as a separate token (that's the old, broken ["--model", value] form)
+            self.assertNotIn("--weird-model-name", command)
+
     def test_attachment_content_reaches_the_actual_prompt_file(self):
         # build_run_prompt() has its own unit tests (BuildRunPromptTests);
         # this closes the loop by checking run_provider_via_bridge() writes
@@ -1374,6 +1393,53 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
             webui._RUN_LOCK.release()
         self.assertEqual(status, 409)
         self.assertIn("error", data)
+
+    def test_open_folder_is_rejected_while_a_run_is_in_flight(self):
+        # A run writes into whatever workspace was active when it started
+        # and persists into that workspace's chat log on completion --
+        # switching state.workspace out from under it mid-run would
+        # misdirect where that write (and the client's eventual render of
+        # it) ends up.
+        webui._RUN_LOCK.acquire()
+        try:
+            status, data = self._post("/api/open-folder", {"path": str(self.root)})
+        finally:
+            webui._RUN_LOCK.release()
+        self.assertEqual(status, 409)
+        self.assertIn("error", data)
+
+    def test_new_user_message_is_rejected_while_a_run_is_in_flight(self):
+        # Phase 3 regression guard: pair_messages_into_turns() attaches
+        # each agent reply to whichever user message it saw most recently
+        # in the chat log's append order -- a second client posting a new
+        # user message while another run is still in flight could get
+        # that in-flight run's eventual reply misattributed to the newer
+        # message in the history drawer once it lands. Rejecting the new
+        # message outright means two user turns can never be
+        # simultaneously unanswered in the same workspace.
+        webui._RUN_LOCK.acquire()
+        try:
+            status, data = self._post("/api/chat", {"role": "user", "text": "a second message", "attachments": []})
+        finally:
+            webui._RUN_LOCK.release()
+        self.assertEqual(status, 409)
+        self.assertIn("error", data)
+
+        # and it really wasn't persisted
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/chat")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            chat = json.loads(resp.read().decode("utf-8"))
+        self.assertEqual(chat["messages"], [])
+
+    def test_system_message_is_still_accepted_while_a_run_is_in_flight(self):
+        # The 409 guard is specifically for "user" (new turns) -- a system
+        # message doesn't start a turn and shouldn't be blocked by it.
+        webui._RUN_LOCK.acquire()
+        try:
+            status, data = self._post("/api/chat", {"role": "system", "text": "note", "attachments": []})
+        finally:
+            webui._RUN_LOCK.release()
+        self.assertEqual(status, 200)
 
     def test_run_with_invalid_provider_is_rejected(self):
         status, data = self._post("/api/run", {"provider": "gemini", "text": "hi"})
