@@ -2279,6 +2279,20 @@ class ToolCallTranscriptTests(unittest.TestCase):
         inner = block[len("```\n") : -len("\n```")]
         self.assertNotIn("```", inner)
 
+    def test_transcript_block_truncates_large_arguments_not_just_large_results(self):
+        # A review round found write_file's `content`/edit_file's
+        # `new_string` had no cap on the *arguments* side, even though
+        # TOOL_OUTPUT_MAX_CHARS was already applied to tool *results* --
+        # a large-but-normal file write would otherwise inflate every
+        # subsequent API call's context indefinitely.
+        huge_args = '{"path": "big.txt", "content": "' + ("a" * (webui.TOOL_OUTPUT_MAX_CHARS + 500)) + '"}'
+        block = webui._tool_call_transcript_block("write_file", huge_args, "wrote a lot of characters to big.txt")
+        self.assertIn("truncated for transcript", block)
+        self.assertLess(len(block), len(huge_args))
+
+    def test_truncate_for_transcript_leaves_short_text_untouched(self):
+        self.assertEqual(webui._truncate_for_transcript("short"), "short")
+
 
 class ToolDefinitionTests(unittest.TestCase):
     """anthropic_tool_definitions()/openai_tool_definitions() are both

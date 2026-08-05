@@ -953,9 +953,14 @@ def _http_post_json(url: str, headers: dict, body: dict, timeout: int) -> tuple[
 # and run any shell command in it, with no further per-call gate. This
 # mirrors the trust level already extended to CLI mode: `codex`/`claude`
 # subprocesses invoked elsewhere in this file already have full local
-# shell access when they actually run, so a workspace-cwd-confined shell
-# tool with no allowlist is not a new tier of trust, just a bridge-built
-# equivalent of what CLI mode already does.
+# shell access when they actually run, so a shell tool with no allowlist
+# is not a new tier of trust, just a bridge-built equivalent of what CLI
+# mode already does. `run_shell` sets `cwd=workspace` (where it starts,
+# matching CLI mode's own subprocess cwd) but is not a sandbox -- a
+# review round flagged an earlier draft of this comment for implying
+# otherwise. An absolute path or `..` still reaches anywhere the user
+# account itself can, the same as it would for a real terminal, or for
+# `codex`/`claude` run directly outside this bridge.
 
 # Bounds how many tool calls a single turn can make before this loop gives
 # up and returns whatever text exists -- without this, a confused model
@@ -1184,13 +1189,29 @@ def _escape_fence(text: str) -> str:
     return re.sub(r"`{3,}", lambda m: "\u200b".join(m.group(0)), text)
 
 
+def _truncate_for_transcript(text: str) -> str:
+    # TOOL_OUTPUT_MAX_CHARS already bounds what execute_tool_call()'s
+    # *results* feed into the next API call (read_file/run_shell), but a
+    # review round found the *arguments* side had no equivalent cap --
+    # write_file's `content` or edit_file's `new_string` can be
+    # arbitrarily long, and those land in the transcript verbatim via
+    # json.dumps(tool_input). A large-but-completely-normal file write
+    # would otherwise inflate every subsequent API call's context (and
+    # this project's persisted chat log) for no benefit -- the file
+    # itself is still on disk in full; the transcript only needs to show
+    # that the write happened, not replay the entire payload.
+    if len(text) > TOOL_OUTPUT_MAX_CHARS:
+        return text[:TOOL_OUTPUT_MAX_CHARS] + "... (truncated for transcript)"
+    return text
+
+
 def _tool_call_transcript_block(name: str, raw_args: str, result_text: str) -> str:
     # Reuses DEC-03 (fenced ```code``` blocks are the only markdown this
     # project's chat bubbles render specially) instead of inventing a new
     # message role/schema just to show tool activity -- this folds
     # straight into final_text and renders with zero frontend changes.
-    safe_args = _escape_fence(raw_args)
-    safe_result = _escape_fence(result_text)
+    safe_args = _escape_fence(_truncate_for_transcript(raw_args))
+    safe_result = _escape_fence(_truncate_for_transcript(result_text))
     return f"```\n$ {name}({safe_args})\n{safe_result}\n```"
 
 

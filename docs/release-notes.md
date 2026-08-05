@@ -830,9 +830,11 @@
     value) and an output-length cap (`TOOL_OUTPUT_MAX_CHARS`, truncated
     with an explicit note, never silently) — no command allowlist, by
     the interview's own choice, on the reasoning that a bridge-controlled
-    shell tool confined to the workspace directory isn't a new tier of
-    trust beyond what CLI mode's own `codex`/`claude` subprocesses
-    already have when they actually run.
+    shell tool with the workspace as its starting `cwd` (not a sandbox —
+    an absolute path or `..` still reaches anywhere the OS user account
+    can, exactly as a real terminal or CLI mode's own `codex`/`claude`
+    subprocess would) isn't a new tier of trust beyond what CLI mode
+    already has when it actually runs.
   - `call_anthropic_messages_api()`/`call_openai_responses_api()` grew
     the actual turn loop in place, rather than introducing new sibling
     functions — a response with no tool-call block still returns on the
@@ -903,6 +905,27 @@
     (`_escape_fence()`, applied to both tool names/arguments and
     results before they're folded into the transcript). New regression
     tests cover all of this directly.
+  - **Round 3** (fresh automated review on the Round 2 fix commit,
+    "no merge-blocking items" this time — 2 more real but genuinely
+    low-severity findings, both addressed anyway): the transcript's
+    *argument* side had no length cap even after Round 2 capped the
+    result side — `write_file`'s `content`/`edit_file`'s `new_string`
+    could still be arbitrarily long and land in the transcript verbatim
+    via `json.dumps(tool_input)`, inflating every subsequent call's
+    context for a completely normal large file write (the file itself
+    stays on disk in full either way — the transcript only needs to
+    show the write happened). `_truncate_for_transcript()` now applies
+    the same `TOOL_OUTPUT_MAX_CHARS` bound to arguments too. Separately,
+    this project's own comments/docs describing `run_shell` as
+    "cwd-confined" or "고정" could read as claiming stronger isolation
+    than `cwd=workspace` actually provides — it sets the *starting*
+    directory only, not a sandbox; an absolute path or `..` still
+    reaches anywhere the OS user account can, same as a real terminal or
+    CLI mode's own `codex`/`claude` subprocess. Reworded everywhere this
+    project describes `run_shell`'s isolation
+    (`handoff_webui.py`, this file, `webui-chat-storage.md`,
+    `flutter-mapping.html`'s DEC-21) to say so explicitly rather than
+    implying more than DEC-21 actually decided.
 
 ## v0.1.0 — 2026-08-03
 

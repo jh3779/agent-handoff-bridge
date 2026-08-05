@@ -338,10 +338,12 @@ strict superset of the earlier chat-only behavior, not a separate mode.
 `execute_tool_call()` never raises (a bad tool name or a malformed
 argument from the model degrades to an error string, not a crash), file
 tools reuse `safe_join()` for workspace confinement, and `run_shell` runs
-with `cwd=workspace` and no other restriction -- DEC-21's interview chose
-this over a narrower/more-restricted first pass, treating it as the same
-trust level CLI mode's own `codex`/`claude` subprocesses already have,
-not a new tier. `MAX_TOOL_ITERATIONS = 15` bounds a single turn so a
+with `cwd=workspace` (its starting directory, not a sandbox -- an
+absolute path or `..` reaches anywhere the OS user account can, same as
+a real terminal or CLI mode's own `codex`/`claude` subprocess) and no
+other restriction -- DEC-21's interview chose this over a narrower/
+more-restricted first pass, treating it as the same trust level CLI
+mode already has, not a new tier. `MAX_TOOL_ITERATIONS = 15` bounds a single turn so a
 confused model can't loop indefinitely. Tool-call activity (what ran,
 with what arguments, what it returned) is folded into `final_text` as a
 fenced code block -- DEC-03's existing code-block rendering, not a new
