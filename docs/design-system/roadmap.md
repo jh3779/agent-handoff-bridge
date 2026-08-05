@@ -202,19 +202,78 @@ auto-fallback 포함), **워크스페이스 미선택 시 자동 폴더 생성**
 한글 첫 메시지로 자동 생성 → Open Folder로 두 번째 프로젝트 전환 →
 히스토리 드로어에 둘 다 정확한 순서로 표시)을 curl로 검증.
 
-## Phase 4 — CLI 미설치 사용자 온보딩 + API 키 모드
+## Phase 4 — CLI 미설치 사용자 온보딩 + API 키 모드 ✅ 완료
 
 **목표**: [SCR-06](wireframes.html#s8)을 실제로 동작시킨다 — CLI가 없는
 사용자가 API 키로 provider에 연결.
 
-**왜 여기 오는가**: [CFL-12](flutter-mapping.html#s2)가 이미 지적하듯, 이건
+**왜 여기 오는가**: [CFL-12](flutter-mapping.html#s2)가 이미 지적했듯, 이건
 "UI 옵션 하나 추가"가 아니라 `run_provider()`의 서브프로세스 구조와
 근본적으로 다른 경로(HTTP/SDK 직접 호출, 세션 재개 재설계)가 필요하다.
 Phase 1로 CLI 경로가 실제로 검증된 뒤에 그 대안 경로를 설계하는 게
-순서상 맞다. 상세 절차는 [provider-extensibility.md](../provider-extensibility.md)
-"Adding An API-Key-Based Provider" 참고.
+순서상 맞다.
 
-**해소하는 항목**: CFL-12.
+**착수 전 조사** ([docs/research.md](../research.md)와 같은 형식으로
+[docs/research-api-key-mode.md](../research-api-key-mode.md) 작성): 두
+벤더 모두 "세션 재개·파일 편집·명령 실행"을 일반 API 키 호출 뒤에
+노출하지 않는다는 게 확인됐다 — Anthropic Messages API/OpenAI Responses
+API는 상태 없는(stateless) 텍스트 API고, 벤더의 "CLI 없이 에이전트를
+돌리는" 진짜 제품(Claude Code routines, Codex cloud tasks)은 fire-and-
+forget이고 벤더 자체 웹 UI에서 사전 설정이 필요해 이 앱의 기존 채팅
+UX와 맞지 않는다.
+
+**설계 확정** (2026-08-05, 조사 결과를 바탕으로 사용자에게 범위 질문 1건
+→ [flutter-mapping.html DEC-13~16](flutter-mapping.html#s1c)):
+- 범위 = **채팅 전용**. 전체 에이전트 기능 패리티(파일 편집·명령 실행)는
+  사용자 지시에 따라 **의도적으로 미래 phase로 명시적으로 연기**
+  (신규 [CFL-17](flutter-mapping.html#s2)) — 지금 결정하지 않는 게 아니라
+  "나중에 추가한다"고 결정한 것(DEC-13).
+- 키 저장 위치 = `~/Documents/Agent Handoff Bridge/credentials.json`,
+  `0600` 권한. OS 키체인·`keyring` 패키지 둘 다 기각(DEC-14).
+- Codex·Claude 둘 다 대칭 지원(DEC-15).
+- CLI가 감지되면 항상 CLI 경로, CLI가 없고 키가 저장된 경우에만 API 키
+  경로 — provider별 독립, `auto`는 CLI가 하나라도 있으면 기존 동작 유지
+  (DEC-16).
+
+**해소하는 항목**: [CFL-12](flutter-mapping.html#s2) 완전 해소 — Conflict
+List에서 제거됨. 새로 발생: [CFL-17](flutter-mapping.html#s2)(전체
+에이전트 기능 패리티, 의도적 연기).
+
+**실제로 한 것**:
+- `handoff_webui.py`: `credentials_path()`/`read_credentials()`/
+  `save_credential()`(registry.json과 같은 패턴 — 함수형 경로, 실패
+  격리, `0600` chmod), `cli_available()`, `call_anthropic_messages_api()`/
+  `call_openai_responses_api()`(`urllib`만 사용, 새 의존성 없음),
+  `build_api_message_history()`(세션이 없으므로 채팅 로그를 매 호출 다시
+  재생), `run_provider_via_api_key()`(기존 subprocess 경로와 동일한
+  레코드 shape 반환 — `classify_run_status()`/`append_chat_message()`가
+  수정 없이 그대로 처리). `.handoff/state.json`은 건드리지 않음(CLI
+  핸드오프 전용 상태로 남김).
+- `_run_provider_via_bridge_locked()`에 분기 추가 — CLI 감지 시/CLI
+  없고 키도 없을 시 기존 동작이 완전히 그대로임을 우선 보장.
+- `GET /api/providers`(연결 패널이 읽는 상태), `POST /api/provider-key`
+  신설 — **엔드포인트 자체의 계약**은 빈 키 = 해당 provider의 저장된 키
+  삭제(`save_credential()`의 계약, 지금도 그대로). 다만 **프론트엔드
+  "저장" 버튼**은 이후 리뷰 라운드에서 빈 키를 그대로 이 엔드포인트에
+  보내지 않도록 고쳐졌다 — 저장된 키는 패널에 다시 echo되지 않으므로
+  "저장" 클릭 시 키 필드가 비어 있으면 아무 요청도 보내지 않는 no-op이고
+  (예: model만 고치려다 실수로 키를 지우는 사고 방지), 실제 삭제는 별도
+  "연결 해제" 버튼만 이 엔드포인트에 빈 키를 보낸다. 즉 **엔드포인트
+  계약과 UI 동작은 서로 다른 층**이며 상충하지 않는다 — 전체 경위는
+  `docs/release-notes.md`의 Phase 4 "Round 2" 항목, UI 동작은
+  [CLI Reference § Web UI](../cli-reference.md#web-ui-mvp) 참고.
+- `webui/index.html`/`app.js`/`app.css`: Diagnose 버튼 + 연결 패널
+  (components.html §14 그대로) — provider별 CLI 감지됨/없음 배지, CLI
+  없을 때만 키+model 입력 노출.
+
+**검증**: 자격증명 CRUD(실패 격리·권한 포함), `/api/providers`·
+`/api/provider-key` 라우팅, 디스패치 우선순위(CLI가 감지되는 기존
+케이스는 전부 이 phase 이전 동작과 동일하게 무변경 통과), `_http_post_json`
+목(mock)을 통한 성공/에러 응답 매핑(Anthropic·OpenAI 두 응답 shape
+모두), API 키가 어떤 에러 메시지에도 절대 나타나지 않음, 채팅 히스토리
+재생(월 단위 캡). 정확한 개수는
+`python3 -m unittest discover -s tests -v`로 확인(고정 숫자를 여기 적지
+않는 이유는 위 Phase 1/3 문단과 동일 — 드리프트하기 쉬움).
 
 ## Phase 5 — Gemini CLI 실사용 지원 + provider 확장성 리팩터
 

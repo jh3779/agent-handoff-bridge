@@ -231,9 +231,105 @@ feature that's a convenience index, not the operation itself. Verified in
 unreadable file, write failure) and `HistoryDrawerLiveServerTests::
 test_open_folder_still_succeeds_even_if_the_registry_write_fails`.
 
+## Credentials & API-Key Mode (Phase 4)
+
+Also app-level, not per-workspace, same reasoning as the registry above —
+one set of saved keys applies regardless of which workspace is open:
+
+```
+~/Documents/Agent Handoff Bridge/credentials.json
+```
+
+**Schema** — a JSON object keyed by provider name:
+
+```json
+{"claude": {"key": "sk-ant-...", "model": "claude-sonnet-5"}, "codex": {"key": "sk-...", "model": "gpt-5.1-codex"}}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `key` | string | the raw API key, as pasted into the connection panel (SCR-06/`components.html` §14) |
+| `model` | string \| null | **required** in practice — `API_KEY_MODE_DEFAULT_MODELS` (`handoff_webui.py`) is deliberately empty for both providers (a hardcoded Claude default existed briefly but was removed: no externally-citable, dated source could back a specific model ID, and a wrong one would silently break every CLI-less Claude user). Without a saved `model`, `run_provider_via_api_key()` returns a clear "model not configured" chat-log error instead of guessing (see [DEC-13](design-system/flutter-mapping.html#s1c)) |
+
+**Never in git**: same posture as the chat log, but stronger — this file
+lives entirely outside any workspace, so it is never even reachable by
+`scripts/scan_secrets.py`'s git-diff-based scan (that scan only ever looks
+at files staged/tracked inside a workspace). **File permissions**: written
+via `atomic_write_text()` then `os.chmod(path, 0o600)` (best-effort — a
+`chmod` failure is swallowed, matching `touch_registry()`'s failure-
+isolation posture elsewhere in this file, since a permissions failure here
+must not break the save the user just triggered).
+
+**Never logged or echoed**: the raw key value necessarily flows through
+`save_credential()`/`read_credentials()` and on into
+`run_provider_via_api_key()`/`call_anthropic_messages_api()`/
+`call_openai_responses_api()`/`_http_post_json()` to actually send it — but
+every function that builds a chat-log-visible error string
+(`call_anthropic_messages_api()`, `call_openai_responses_api()`,
+`_api_key_mode_error_record()`) constructs its message only from the HTTP
+response body or exception text. The key itself is never interpolated into
+anything that could end up in `.handoff/webui/chat/*.jsonl`, the history
+drawer, or a toast.
+
+One exception text is deliberately **not** forwarded: `http.client` raises
+a bare `ValueError` (not `HTTPError`/`URLError`) if a header value
+contains characters it rejects — e.g. a saved key with an embedded CR/LF
+reaching the `x-api-key`/`Authorization` header unescaped — and that
+exception's own message embeds the offending header *value* verbatim,
+which here is the key itself. `_http_post_json()` catches this case
+specifically and returns a fixed, generic message instead of `str(exc)`,
+unlike every other exception type it handles.
+
+**Dispatch**: `_run_provider_via_bridge_locked()` only reaches the
+API-key-mode path (`run_provider_via_api_key()`) when a provider's CLI is
+genuinely absent (`cli_available()` is `shutil.which()`-based) *and* a key
+is saved for it — a CLI-available provider always uses the existing
+subprocess path unchanged, even if a key also happens to be saved for it.
+For `provider="auto"`, API-key mode is only considered when **no** provider
+CLI is available at all; otherwise `auto` keeps its existing CLI-only
+`choose_auto_provider()`/`--auto-fallback` behavior untouched.
+
+**Chat-log record shape**: `run_provider_via_api_key()` returns the same
+record shape the subprocess path does (see `agent` role fields above), so
+it flows into `classify_run_status()`/`append_chat_message()` unchanged,
+with two fields always fixed: `session_id: null` (no provider-managed
+session exists in this mode) and `run_dir: null` (no local run directory is
+created). It also deliberately **never writes to
+`.handoff/state.json`/`current.md`** — those remain the CLI-handoff-
+specific durable state files (`docs/architecture.md`'s "State Boundaries");
+API-key mode this phase is chat-only (DEC-13) and has no CLI session or
+cross-provider auto-fallback concept for them to record.
+
+**Conversation continuity**: since neither vendor's direct HTTP API is
+session-based (`docs/research-api-key-mode.md`), `build_api_message_history()`
+replays the chat log as alternating user/assistant turns on every call,
+standing in for what `codex exec resume`/`claude --resume` do for the CLI
+path. Two details a naive "just read this month's file" version got wrong,
+found in a second review round and fixed before merge:
+
+- **Scans months backward** (same pattern `collect_recent_turns()` already
+  established in Phase 3), not just the current month — otherwise the
+  first message(s) of a new UTC month would replay with zero prior
+  context even if the same conversation has weeks of history in the
+  previous month's file. Capped to the most recent
+  `API_KEY_MODE_MAX_HISTORY_MESSAGES` raw messages once enough are
+  collected, so a long-lived project doesn't need every month read.
+- **Merges consecutive same-role entries** instead of mapping the log
+  1:1 to alternating turns. Anthropic's Messages API requires strict
+  user/assistant alternation, but a single CLI turn can leave two
+  consecutive `agent` chat-log entries when `--auto-fallback` chains
+  providers (codex fails, claude succeeds) — replaying those as two
+  separate `assistant` messages would violate alternation and fail every
+  subsequent API-key-mode call in that workspace with a 400. The merge is
+  applied generically (including against the final `prompt`), so it also
+  covers the more obscure case of two consecutive bare `user` entries
+  with no reply in between.
+
 ## Known Open Questions
 
 Tracked as
 [CFL-15 in flutter-mapping.html](design-system/flutter-mapping.html#s2):
 retention/expiry policy, and whether/when a schema version field becomes
-necessary.
+necessary. [CFL-17](design-system/flutter-mapping.html#s2) tracks the
+deferred full-agent-parity extension to API-key mode (file edits, shell
+execution) this section deliberately does not implement.

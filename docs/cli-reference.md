@@ -184,8 +184,9 @@ python3 handoff_webui.py --workspace /path/to/project
 Chat redesign from [`docs/design-system/`](design-system/README.md) — as of
 Phase 1, this actually calls Codex/Claude; as of Phase 2, `--workspace` is
 optional; as of Phase 3, a history drawer shows recent activity across
-every project you've opened, not just the current one. A local stdlib HTTP
-server. What it does:
+every project you've opened, not just the current one; as of Phase 4, a
+provider with no local CLI can be connected via API key instead (chat-only
+— see below). A local stdlib HTTP server. What it does:
 
 - **`--workspace` is optional.** Omit it and the current directory is used
   automatically *if* it's already an initialized handoff workspace (has a
@@ -267,6 +268,24 @@ server. What it does:
   startup it's attached to (best-effort, logged not raised). Full schema,
   locking, and failure-isolation details:
   [Web UI Chat Storage § Recently-Opened Registry](webui-chat-storage.md#recently-opened-registry-phase-3).
+- **Diagnose** (titlebar button) opens a connection panel listing each
+  provider's CLI-detection status. A provider with **no local CLI detected**
+  can be connected instead by pasting an API key (and optionally a model) —
+  this calls the provider's HTTP API directly instead of a local subprocess.
+  **Chat-only**: this mode exchanges text only, and does not read/edit
+  workspace files or run shell commands the way CLI mode does — full
+  agentic parity is deliberately deferred to a future phase
+  ([CFL-17](design-system/flutter-mapping.html#s2)). A provider whose CLI
+  *is* detected always uses the CLI path, even if a key is also saved for
+  it. Keys are stored in
+  `~/Documents/Agent Handoff Bridge/credentials.json` (`0600`
+  permissions), never inside a workspace. A saved key is never echoed back
+  into the panel, so **"저장" with an empty key field is a no-op**, not a
+  delete — a separate **"연결 해제"** button (shown only once a key is
+  configured) is the only way to actually remove one, so reopening the
+  panel just to change a provider's model doesn't accidentally wipe its
+  key. Full schema, dispatch priority, and security posture:
+  [Web UI Chat Storage § Credentials & API-Key Mode](webui-chat-storage.md#credentials--api-key-mode-phase-4).
 
 **Why a subprocess, not an in-process function call**: `handoff_bridge.py`'s
 state functions resolve paths like `.handoff/state.json` relative to the

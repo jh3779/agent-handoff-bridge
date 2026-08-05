@@ -72,29 +72,45 @@ rest of the bridge already expects. Concretely:
 
 ## Adding An API-Key-Based Provider (No Local CLI)
 
-This is a materially different integration, not a variant of the CLI path —
-flagged as CFL-12 rather than designed in v0.2's wireframes because it
-changes the bridge's core mechanism, not just its provider list:
+**Implemented in Phase 4** (`docs/design-system/roadmap.md`), chat-only
+scope, per [DEC-13~16](design-system/flutter-mapping.html#s1c) — this
+section originally described the open questions before that work started
+(as CFL-12); kept below for what was actually decided plus what's still
+open.
 
-- `run_provider()` currently shells out to a local binary via `subprocess`.
-  An API-key mode calls a hosted API directly (HTTP/SDK) — there is no
-  subprocess, no local session file, no JSONL stream to tail.
+- `run_provider()`'s CLI subprocess path is completely unchanged.
+  `_run_provider_via_bridge_locked()` (`handoff_webui.py`) only diverts to
+  `run_provider_via_api_key()` when a provider's CLI is genuinely absent
+  (`shutil.which()`) *and* a key is saved for it — every previously-existing
+  code path (CLI available, or CLI absent with no key) behaves exactly as
+  before this phase.
 - Session resume (`codex exec resume <id>`, `claude --resume <id>`) and the
-  hooks-based signals `docs/research.md` relies on
-  (`StopFailure`, `PostCompact`, etc.) are CLI-specific. An API integration
-  needs its own equivalent — likely the provider SDK's own conversation/
-  thread ID and error types — designed from that SDK's actual capabilities,
-  not assumed to match the CLI behavior.
-- Credential storage needs a real decision: `scripts/scan_secrets.py`
-  (`docs/quality-gates.md` "No Secrets In Tracked Files") stops an API key
-  from being *committed* by accident, but doesn't address where the app
-  stores it at rest (OS keychain vs. a local config file) — that's a
-  separate security decision this doc does not make.
-- The v0.2 UI entry point for this (masked key field, per-provider
-  connection-mode badge) is designed in
+  hooks-based signals `docs/research.md` relies on (`StopFailure`,
+  `PostCompact`, etc.) genuinely have no equivalent behind a plain API-key
+  call, confirmed by [docs/research-api-key-mode.md](research-api-key-mode.md)
+  before this was built: neither Anthropic's Messages API nor OpenAI's
+  Responses API is session-based. `build_api_message_history()` replays the
+  chat log as alternating turns on every call instead — conversation
+  continuity, not a resumable server-side session.
+- Credential storage: `~/Documents/Agent Handoff Bridge/credentials.json`
+  (`0600` permissions), not an OS keychain or the `keyring` package
+  (DEC-14 — see `docs/webui-chat-storage.md`'s "Credentials & API-Key Mode"
+  section for the full schema and security posture).
+- The v0.2 UI entry point (masked key field, per-provider connection-mode
+  badge) designed in
   [docs/design-system/components.html §14](design-system/components.html#s14)
-  and [wireframes.html §S8](design-system/wireframes.html#s8) — but only the
-  entry point, not what happens after "저장" is clicked.
+  and [wireframes.html §S8](design-system/wireframes.html#s8) is now real —
+  `webui/index.html`'s Diagnose button opens it, backed by
+  `GET /api/providers`/`POST /api/provider-key`.
+- **Still open, deliberately** ([CFL-17](design-system/flutter-mapping.html#s2)):
+  this API-key path only exchanges text. It does not read or edit workspace
+  files, and does not run shell commands — the CLI's actual agentic
+  capability. Neither vendor's direct API exposes that behind a plain
+  API-key call; getting there means this project defining its own file-
+  read/write/edit and shell-exec tool schemas and running its own tool-use
+  turn loop, which is a substantially larger and riskier build (a new,
+  bridge-controlled shell-exec surface) than this phase's scope. Deferred to
+  a future phase by explicit user decision, not an oversight.
 
 ## Checklist When A Provider Is Actually Added
 

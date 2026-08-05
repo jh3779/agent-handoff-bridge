@@ -48,6 +48,9 @@ context.
   Codex and Claude Code control paths.
 - [Research Notes](research.md): source-backed research and implementation
   rationale.
+- [Research: API-Key Mode](research-api-key-mode.md): Phase 4's
+  pre-implementation research into Anthropic/OpenAI direct-API capabilities
+  and credential storage options.
 
 ## Templates And Machine Contracts
 

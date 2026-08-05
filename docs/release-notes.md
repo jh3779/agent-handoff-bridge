@@ -396,6 +396,143 @@
     bytecode instructions, down from the *entire* run's duration before
     this round) was judged not worth either tradeoff.
 
+- Web UI Phase 4 (API-key mode for CLI-less users, SCR-06): resolves
+  CFL-12. Chat-only scope, decided with the user after
+  `docs/research-api-key-mode.md` found neither Anthropic's Messages API
+  nor OpenAI's Responses API exposes session resume/file-edit/shell-exec
+  behind a plain API-key call the way the CLI path does — full agentic
+  parity is deliberately deferred to a future phase (new CFL-17), not
+  attempted here:
+  - added a per-provider connection panel (**Diagnose** titlebar button,
+    `webui/index.html`/`app.js`/`app.css`, matching
+    `docs/design-system/components.html` §14/wireframes.html SCR-06)
+    showing CLI-detected/CLI-missing status, with a masked key (+ optional
+    model) field exposed only when a provider's CLI isn't detected;
+  - added `GET /api/providers` and `POST /api/provider-key` (empty key =
+    remove);
+  - added `~/Documents/Agent Handoff Bridge/credentials.json`
+    (`0600` permissions, same base directory Phase 2/3 already established
+    as "the app owns this") — `read_credentials()`/`save_credential()`
+    follow the same failure-isolation pattern as `read_registry()`/
+    `touch_registry()`;
+  - `_run_provider_via_bridge_locked()` now only diverts to the new
+    `run_provider_via_api_key()` path when a provider's CLI is genuinely
+    absent (`shutil.which()`) *and* a key is saved for it — every
+    previously-existing case (CLI available, or CLI absent with no key)
+    is unchanged, verified by the full pre-existing test suite passing
+    with no modifications;
+  - `call_anthropic_messages_api()`/`call_openai_responses_api()` use only
+    `urllib` (no new dependency), through a small `_http_post_json()` seam
+    so tests substitute a fake transport instead of making real network
+    calls — the same posture the CLI path already has via fake
+    `codex`/`claude` scripts;
+  - `build_api_message_history()` replays the chat log as alternating
+    turns on every call (capped to the most recent 20 entries) since
+    neither vendor's API is session-based — stands in for
+    `codex exec resume`/`claude --resume`;
+  - API-key-mode replies reuse the exact same chat-log record shape the
+    CLI path produces (so `classify_run_status()`/`append_chat_message()`
+    need no changes), with `session_id`/`run_dir` always `null` and
+    `.handoff/state.json`/`current.md` deliberately untouched — those stay
+    the CLI-handoff-specific durable state files;
+  - the saved API key is never interpolated into any error message/chat-log
+    text/toast — every error string is built only from the HTTP response
+    body or exception text, verified by tests;
+  - Neither provider ships a built-in default model (a Claude default was
+    briefly considered/added, then removed in round 3 below once it was
+    flagged as an internal, undated assumption rather than a citable
+    source) — both return a clear error asking for one to be set via the
+    connection panel instead of guessing.
+  - **Round 2** (independent second-opinion review, before merge): fixed
+    a real gap the first review round didn't cover —
+    `build_api_message_history()` mapped the chat log to alternating
+    turns 1:1 with no merging, which breaks the moment a single CLI turn
+    left two consecutive `agent` entries (`--auto-fallback` chaining
+    providers) — Anthropic's Messages API requires strict alternation, so
+    that workspace's next API-key-mode call would 400. Now merges
+    consecutive same-role entries (including against the final prompt).
+    Also fixed: the same function only ever read the *current* month's
+    log, silently dropping all prior context on the first message(s) of a
+    new UTC month — the same class of cross-month bug Phase 3 already had
+    to fix once for `collect_recent_turns()` — now scans months backward
+    the same way that function does. Fixed an uncaught `ValueError`
+    `_http_post_json()` could raise (uncaught anywhere up the stack) if a
+    saved key contained characters `http.client` rejects in a header
+    value (e.g. embedded CR/LF) — now converted to a clean error tuple,
+    taking care not to forward `http.client`'s own exception text, which
+    embeds the offending header *value* (the key) verbatim. Frontend: the
+    connection panel's "저장" button deleted a provider's saved key if
+    the key field was left blank (e.g. reopening the panel just to fix
+    the model) since a saved key is never echoed back into the field —
+    now a no-op instead, with a separate "연결 해제" button as the only
+    way to actually remove a key; also added a request-generation guard
+    on the panel's refresh so an overlapping re-render (a save's own
+    refresh racing a fresh reopen) can't render a stale response's rows
+    on top of a newer one's. 5 new regression tests (exact count/names via
+    `python3 -m unittest discover -s tests -v`, per this file's usual
+    anti-drift practice).
+  - **Round 3** (two more pasted review passes, before merge): one real
+    ordering bug introduced by round 2 itself, one real cross-doc
+    consistency gap, one legitimate hardening request, one credential-
+    write gap found while writing docs (not by either pasted review), and
+    one recurring claim verified and rejected as false:
+    - fixed a self-inflicted bug: round 2's `except ValueError:` guard
+      around the header-injection case in `_http_post_json()` was broad
+      enough to also swallow `json.JSONDecodeError` (a `ValueError`
+      subclass) from a malformed-but-200 response body, mislabeling that
+      case as "headers were rejected" and making the caller-side
+      `except json.JSONDecodeError` handling added earlier in round 2
+      unreachable dead code. Restructured so the malformed-body case is
+      caught inside the success path specifically, before the broader
+      header-rejection handler ever gets a chance to misclassify it;
+    - added a small bounded retry (`API_KEY_MODE_MAX_RETRIES = 2`) for
+      429/5xx/network-transient failures in `_http_post_json()`, honoring
+      a numeric `Retry-After` header when present — `docs/research-api-
+      key-mode.md` already noted the official SDKs do this and a
+      hand-rolled `urllib` client doesn't get it for free; a review
+      correctly flagged the gap between that research finding and what
+      had actually been implemented;
+    - removed the hardcoded Claude default model
+      (`API_KEY_MODE_DEFAULT_MODELS` is now empty for both providers) — a
+      review correctly pointed out the only justification for it was this
+      session's own internal environment context, not an externally
+      citable, dated source the way this project's other model/API claims
+      are sourced; both providers now require an explicit model with no
+      guessing;
+    - found (while updating docs to describe the credential store, not by
+      either pasted review) that `save_credential()`'s write failure
+      wasn't caught anywhere — unlike `touch_registry()`'s deliberate
+      best-effort/log-only posture, a save is the entire point of
+      `POST /api/provider-key`, so its failure now surfaces as an ordinary
+      `WorkspaceError` → `400` instead of an uncaught exception killing
+      that request's thread with no response at all;
+    - extended `docs/security-model.md` § Credential Boundaries and
+      `docs/architecture.md` § State Boundaries to describe the API-key
+      mode exception explicitly (plaintext-at-rest tradeoff, storage
+      location, dispatch priority) — both previously only described the
+      CLI-only `handoff_bridge.py` posture, which Phase 4 doesn't
+      contradict but does add a real, documented exception next to;
+    - **verified and rejected**: both review passes also asked for
+      `docs/local-data-model.md` and `docs/adr/0010-*`/`0014-*`/`0015-*`
+      to be reconciled with this change. Checked `git log --all` across
+      every branch — neither has ever existed in this repository at any
+      point, and this exact same claim was already raised and resolved
+      once before, on an earlier PR (commit `e6c74c1`, "the review's
+      suggestion assumed a convention this project doesn't use" —
+      `docs/webui-chat-storage.md`'s own opening paragraph documents the
+      decision not to use an ADR directory). No ADR system or
+      `local-data-model.md` was invented to satisfy a convention this
+      project has twice now deliberately not adopted;
+    - **considered, not changed**: `.handoff/current.md`'s Phase 4 entry
+      names this PR's number and says "not yet merged" — accurate as of
+      when it was written, and it'll read as stale after merge the way
+      any last-updated packet does until the next session updates it
+      again (this repo's own `CLAUDE.md` protocol: "update before
+      stopping," not "keep evergreen"). Left as-is rather than rewritten
+      to avoid a specific PR number, since that would just trade one
+      snapshot-in-time framing for a vaguer one with no real gain.
+    - 9 more new regression tests in this round.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

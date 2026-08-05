@@ -31,6 +31,10 @@
   const historyScrim = document.getElementById("history-scrim");
   const historyCloseBtn = document.getElementById("history-close-btn");
   const historyList = document.getElementById("history-list");
+  const diagnoseBtn = document.getElementById("diagnose-btn");
+  const providerPanelOverlay = document.getElementById("provider-panel-overlay");
+  const providerPanelList = document.getElementById("provider-panel-list");
+  const providerPanelClose = document.getElementById("provider-panel-close");
 
   /** @type {{name: string, path: string|null, content: string|null, truncated: boolean}[]} */
   let attachments = [];
@@ -264,6 +268,129 @@
   historyBtn.addEventListener("click", openHistoryDrawer);
   historyCloseBtn.addEventListener("click", closeHistoryDrawer);
   historyScrim.addEventListener("click", closeHistoryDrawer);
+
+  // ---------- provider connection panel (Phase 4, SCR-06/components.html §14) ----------
+
+  const PROVIDER_LABEL = { codex: "Codex", claude: "Claude Code" };
+
+  function renderProviderRow(info) {
+    const row = el("div", { class: "pp-row" }, []);
+    const badge = info.cli_detected
+      ? el("span", { class: "status-badge status-success", text: "CLI 감지됨" }, [])
+      : el("span", { class: "status-badge status-fail", text: "CLI 없음" }, []);
+    row.appendChild(
+      el("div", { class: "pp-top" }, [
+        el("span", { class: "pp-name", text: PROVIDER_LABEL[info.provider] || info.provider }, []),
+        badge,
+      ])
+    );
+    if (info.cli_detected) {
+      return row; // SCR-06: API 키 입력은 "CLI 없음" 상태에서만 노출
+    }
+    if (info.api_key_configured) {
+      row.appendChild(
+        el(
+          "div",
+          { class: "pp-note", text: `API 키로 연결됨 (model: ${info.model || "설정 필요"})` },
+          []
+        )
+      );
+    } else {
+      row.appendChild(
+        el("div", { class: "pp-note", text: "로컬에 CLI가 설치되어 있지 않습니다. API 키로 연결할까요?" }, [])
+      );
+    }
+    const keyInput = el("input", { type: "password", placeholder: "API 키", "data-field": "key" }, []);
+    const modelInput = el("input", {
+      type: "text",
+      placeholder: "model",
+      "data-field": "model",
+      value: info.model || "",
+    }, []);
+    const saveBtn = el("button", { type: "button", class: "primary", text: "저장" }, []);
+    saveBtn.addEventListener("click", async () => {
+      const key = keyInput.value.trim();
+      // A saved key is never echoed back into keyInput (POST
+      // /api/provider-key never returns it), so an empty key here always
+      // means "user left the field blank" -- never "user wants to keep
+      // the existing key". POST-ing an empty key deletes it
+      // (save_credential()'s contract), so treating that as a no-op save
+      // (rather than silently disconnecting) avoids a real footgun: e.g.
+      // reopening the panel just to fix the model field (relevant since
+      // codex has no built-in default and must be set explicitly) without
+      // re-pasting the key would otherwise delete it.
+      if (!key) {
+        showToast("API 키를 입력해야 저장됩니다. 연결을 해제하려면 \"연결 해제\"를 사용하세요.");
+        return;
+      }
+      const model = modelInput.value.trim();
+      try {
+        await postJSON("/api/provider-key", { provider: info.provider, key, model });
+        showToast(`${PROVIDER_LABEL[info.provider]} API 키가 저장되었습니다.`);
+        await refreshProviderPanel();
+      } catch (err) {
+        showToast(`저장 실패: ${err.message}`);
+      }
+    });
+    const keyRow = el("div", { class: "pp-key-row" }, [keyInput, modelInput, saveBtn]);
+    row.appendChild(keyRow);
+    if (info.api_key_configured) {
+      const removeBtn = el("button", { type: "button", text: "연결 해제" }, []);
+      removeBtn.addEventListener("click", async () => {
+        try {
+          await postJSON("/api/provider-key", { provider: info.provider, key: "" });
+          showToast(`${PROVIDER_LABEL[info.provider]} API 키가 삭제되었습니다.`);
+          await refreshProviderPanel();
+        } catch (err) {
+          showToast(`삭제 실패: ${err.message}`);
+        }
+      });
+      row.appendChild(el("div", { class: "row", style: "justify-content:flex-end;margin-top:4px" }, [removeBtn]));
+    }
+    return row;
+  }
+
+  // Monotonic token so an overlapping refresh (e.g. a "저장" click's own
+  // await refreshProviderPanel() racing a fresh panel reopen) can't have
+  // an earlier, slower response render its rows on top of a later one's
+  // without re-clearing first -- only the response matching the most
+  // recently issued request is ever allowed to touch the DOM.
+  let providerPanelRequestId = 0;
+
+  async function refreshProviderPanel() {
+    const requestId = ++providerPanelRequestId;
+    let data;
+    let error;
+    try {
+      data = await fetchJSON("/api/providers");
+    } catch (err) {
+      error = err;
+    }
+    if (requestId !== providerPanelRequestId) return; // superseded by a newer refresh
+    providerPanelList.innerHTML = "";
+    if (error) {
+      providerPanelList.appendChild(el("div", { class: "hd-empty", text: `불러올 수 없음: ${error.message}` }, []));
+      return;
+    }
+    for (const info of data.providers) {
+      providerPanelList.appendChild(renderProviderRow(info));
+    }
+  }
+
+  function openProviderPanel() {
+    providerPanelOverlay.classList.add("show");
+    refreshProviderPanel();
+  }
+
+  function closeProviderPanel() {
+    providerPanelOverlay.classList.remove("show");
+  }
+
+  diagnoseBtn.addEventListener("click", openProviderPanel);
+  providerPanelClose.addEventListener("click", closeProviderPanel);
+  providerPanelOverlay.addEventListener("click", (event) => {
+    if (event.target === providerPanelOverlay) closeProviderPanel();
+  });
 
   // ---------- file tree ----------
 
