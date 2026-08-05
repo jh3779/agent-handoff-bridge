@@ -23,7 +23,7 @@
 
   <header class="pagehead">
     <div class="t">컴포넌트 라이브러리</div>
-    <div class="s">§1–5는 v0.1 폼 기반 GUI(<code>handoff_desktop.py</code> 실제 구현) 레거시 참고용. §6 터미널은 <code>handoff_control.py</code>로 이번 재설계와 무관. §8–15는 <a href="wireframes.html#s2">v0.2 채팅형 재설계</a>의 신규 컴포넌트 — Phase 0~6 완료로 <b>§3(상태 배지)·§8(사이드바 트리)·§9(메시지 버블, 코드블록 렌더링 포함)·§10(입력창/Open Folder/Provider 선택)·§11(히스토리 항목)·§13(히스토리 그룹 헤더)·§14(Provider 연결·API 키, 채팅 전용 범위)·§15(업데이트 배지·팝오버)까지 전부 <code>handoff_webui.py</code>에 실제 구현됨</b>. 남은 건 Phase 7(DEC-01 프레임워크 전환)뿐 — <a href="roadmap.md">roadmap.md</a>가 정본.</div>
+    <div class="s">§1–5는 v0.1 폼 기반 GUI(<code>handoff_desktop.py</code> 실제 구현) 레거시 참고용. §6 터미널은 <code>handoff_control.py</code>로 이번 재설계와 무관. §8–15는 <a href="wireframes.html#s2">v0.2 채팅형 재설계</a>의 신규 컴포넌트 — Phase 0~6 완료로 <b>§3(상태 배지)·§8(사이드바 트리)·§9(메시지 버블, 코드블록 렌더링 포함)·§10(입력창/Open Folder/Provider 선택)·§11(히스토리 항목)·§13(히스토리 그룹 헤더)·§14(Provider 연결·API 키, 전체 에이전트 기능 패리티 포함)·§15(업데이트 배지·팝오버)까지 전부 <code>handoff_webui.py</code>에 실제 구현됨</b>. 남은 건 Phase 7(DEC-01 프레임워크 전환)뿐 — <a href="roadmap.md">roadmap.md</a>가 정본.</div>
     <div class="toc">
       <a href="#s1">버튼(legacy)</a><a href="#s2">입력 필드(legacy)</a><a href="#s3">상태 배지</a>
       <a href="#s4">로그 콘솔(legacy)</a><a href="#s5">다이얼로그(legacy)</a><a href="#s6">터미널 메뉴</a>
@@ -237,9 +237,9 @@ handoff needed: True (tool_failure: provider command not found)</div>
       </div>
     </div>
     <div class="note" style="margin-top:10px">provider별 연결 상태 배지 3종: <b>CLI 감지됨</b>(성공색) / <b>CLI 없음</b>(실패색, API 키 입력 노출 — 단 API 키 모드를 지원하는 provider에서만) / <b>미확인</b>(대기색, 감지 로직 자체가 아직 없는 경우 — 와이어프레임 작성 당시 Gemini가 이 상태의 예시였으나, Phase 5에서 실제 감지 로직이 생겨 지금은 이 상태에 해당하는 provider가 없다). API 키 필드는 항상 마스킹, provider별로 독립.</div>
-    <div class="note" style="margin-top:6px"><b>Phase 4에서 실제 구현됨</b>(<code>handoff_webui.py</code>의 <code>GET /api/providers</code>·<code>POST /api/provider-key</code>, <code>webui/index.html</code>의 Diagnose 버튼 + 연결 패널) — 단 <a href="flutter-mapping.html#s1c">DEC-13</a>에 따라 <b>채팅 전용</b>: 이 화면에서 저장한 API 키는 provider의 텍스트 응답만 받아오고 파일을 편집하거나 명령을 실행하지 않는다. 전체 에이전트 기능 패리티는 <a href="flutter-mapping.html#s2">CFL-17</a>로 미래 phase에 연기.</div>
+    <div class="note" style="margin-top:6px"><b>Phase 4에서 실제 구현됨</b>(<code>handoff_webui.py</code>의 <code>GET /api/providers</code>·<code>POST /api/provider-key</code>, <code>webui/index.html</code>의 Diagnose 버튼 + 연결 패널) — 처음엔 <a href="flutter-mapping.html#s1c">DEC-13</a>에 따라 채팅 전용(provider의 텍스트 응답만, 파일 편집·명령 실행 없음)이었으나, <a href="flutter-mapping.html#s1c">DEC-21</a>(CFL-17 해소)로 이 화면에서 저장한 API 키가 이제 파일 읽기/쓰기/편집과 셸 명령 실행까지 포함한 전체 에이전트 기능 패리티를 지원한다 — DEC-02(세션 첫 전송만 확인)를 그대로 재사용해 도구 호출마다 별도 확인은 요구하지 않는다.</div>
     <div class="note" style="margin-top:6px"><b>Phase 5에서 갱신됨</b>: Gemini CLI 감지가 실제로 구현됐다(<a href="flutter-mapping.html#s1c">DEC-17~18</a>) — 이제 CLI 감지됨/없음 배지가 정확히 뜨지만, API 키 모드는 여전히 codex·claude로만 한정(<code>handoff_webui.py</code>의 <code>API_KEY_MODE_PROVIDERS</code>가 <code>PROVIDERS</code>와 의도적으로 분리) — Gemini의 "CLI 없음" 상태는 키 입력 필드를 노출하지 않는다.</div>
-    <div class="tag" style="margin-top:8px">사용처: <a href="wireframes.html#s8">SCR-06</a> · 결정 기록: <a href="flutter-mapping.html#s1c">DEC-13~18</a> · 후속 과제: <a href="flutter-mapping.html#s2">CFL-17</a></div>
+    <div class="tag" style="margin-top:8px">사용처: <a href="wireframes.html#s8">SCR-06</a> · 결정 기록: <a href="flutter-mapping.html#s1c">DEC-13~18</a> · <a href="flutter-mapping.html#s1c">DEC-21</a></div>
   </section>
 
   <section id="s15" class="sec">
@@ -265,7 +265,6 @@ handoff needed: True (tool_failure: provider command not found)</div>
         <tr><td>외부에 공개된 웹 대시보드</td><td>이 프로젝트에 존재하지 않음(로그인, 다중 사용자, 외부 접근 가능한 웹 서비스 등). 혼동 방지: <code>handoff_webui.py</code>가 띄우는 <b>로컬 전용</b> Web UI MVP(127.0.0.1 바인딩, 인증 없음, 단일 사용자)는 존재하며 이 재설계의 실제 구현체다 — <a href="../cli-reference.md#web-ui-mvp">CLI Reference § Web UI (MVP)</a> 참고. 이 줄은 "브라우저 UI 자체가 없다"고 잘못 읽힐 수 있어 2026-08-04 갱신.</td></tr>
         <tr><td>다크모드 강제 시스템 연동</td><td>tkinter 기본 테마는 OS 네이티브를 따르고 앱이 별도 라이트/다크 토큰을 구현하지 않음 — 이 문서(디자인 캔버스) 자체의 테마 토글과는 별개.</td></tr>
         <tr><td>메시지 본문 전체 마크다운 렌더링</td><td>2026-08-04 인터뷰로 <a href="flutter-mapping.html#s1c">코드블록만 지원(DEC-03)</a>하기로 결정 — 제목·목록·굵게 등 전체 마크다운은 범위 밖.</td></tr>
-        <tr><td>API 키 모드의 파일 편집·셸 명령 실행(전체 에이전트 기능 패리티)</td><td>Phase 4는 API 키 모드를 <i>채팅 전용</i>으로 실제 구현했다(<a href="flutter-mapping.html#s1c">DEC-13</a>) — provider의 HTTP API를 직접 호출해 텍스트만 주고받고, 워크스페이스 파일을 읽거나 쓰지 않는다. 이 프로젝트가 직접 파일/셸 tool을 구현해 CLI 모드와 동등한 기능을 내는 것은 <a href="flutter-mapping.html#s2">CFL-17</a>로 미래 phase에 연기.</td></tr>
         <tr><td>Gemini 외 추가 AI 모델의 화면·컴포넌트</td><td>요구사항이 "그 외 모델 추가는 문서로 남겨둘 것"으로 명시 — <a href="../provider-extensibility.md">provider-extensibility.md</a>에 일반화된 절차만 문서화하고 이 컴포넌트 라이브러리에는 넣지 않음.</td></tr>
       </table>
     </div>

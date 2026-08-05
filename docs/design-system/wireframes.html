@@ -499,7 +499,7 @@
           </div>
         </div>
       </div>
-      <div class="hand" style="max-width:820px">CLI 방식(로컬 바이너리 실행)과 API 키 방식(토큰 기반 직접 호출)을 provider별로 독립적으로 선택 — 한 사람이 Codex는 CLI로, Claude Code는 API 키로 동시에 쓸 수 있다. "CLI 없음" 상태에서만 API 키 입력이 열린다.</div>
+      <div class="hand" style="max-width:820px">CLI 방식(로컬 바이너리 실행)과 API 키 방식(토큰 기반 직접 호출)을 provider별로 독립적으로 선택 — 한 사람이 Codex는 CLI로, Claude Code는 API 키로 동시에 쓸 수 있다. "CLI 없음" 상태에서만 API 키 입력이 열린다. API 키 방식은 처음엔 텍스트만 주고받았지만, 이후 <a href="flutter-mapping.html#s1c">DEC-21</a>(CFL-17 해소)로 파일 읽기/쓰기/편집과 셸 명령 실행까지 CLI 방식과 동등하게 지원한다.</div>
       <div class="hand" style="max-width:820px;margin-top:4px">Gemini CLI는 이번 요구사항으로 <b>인식 대상에 추가</b>됨 — 다만 실제 CLI 명령 형태(<span class="mono">gemini</span> 바이너리 존재 여부 확인 방법, 인증 커맨드)는 검증되지 않음(가정). 그 외 미래의 다른 AI 모델 추가는 <a href="../provider-extensibility.md">provider-extensibility.md</a>에 별도 문서로 남김 — 이번 화면 설계 범위 밖.</div>
     </div>
   </section>

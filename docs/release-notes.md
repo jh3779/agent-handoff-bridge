@@ -807,6 +807,139 @@
     over the real live server. Exact count via
     `python3 -m unittest discover -s tests -v`.
 
+- CFL-17 follow-up (full agentic parity for API-key mode, resolved as
+  DEC-21): API-key mode started chat-only (DEC-13, Phase 4); this adds
+  the file-edit/shell-exec parity with CLI mode that Phase 4 explicitly
+  deferred. A design interview resolved two open forks: build file tools
+  and the shell tool together in one pass (the larger, riskier option —
+  not the more conservative file-tools-only recommendation), and reuse
+  DEC-02 (confirm only the first send per session) for every tool call
+  this adds rather than requiring a stronger per-call confirmation.
+  - `handoff_webui.py`: four tools (`read_file`, `write_file`,
+    `edit_file`, `run_shell`), declared once in `_TOOL_SPECS` and
+    rendered into each vendor's own schema shape
+    (`anthropic_tool_definitions()`/`openai_tool_definitions()`) so the
+    two can't silently drift apart. `execute_tool_call()` dispatches to
+    the matching executor and never raises — an unknown tool name or a
+    bug inside an executor degrades to an error string the model can see,
+    not a crash mid-conversation. File tools reuse the existing
+    `safe_join()`/`read_file_preview()` primitives for workspace
+    confinement and the existing size cap; `run_shell` runs
+    `subprocess.run(..., shell=True, cwd=workspace)` with a timeout
+    (`TOOL_EXEC_TIMEOUT_SECONDS`, reusing `API_KEY_MODE_TIMEOUT_SECONDS`'
+    value) and an output-length cap (`TOOL_OUTPUT_MAX_CHARS`, truncated
+    with an explicit note, never silently) — no command allowlist, by
+    the interview's own choice, on the reasoning that a bridge-controlled
+    shell tool with the workspace as its starting `cwd` (not a sandbox —
+    an absolute path or `..` still reaches anywhere the OS user account
+    can, exactly as a real terminal or CLI mode's own `codex`/`claude`
+    subprocess would) isn't a new tier of trust beyond what CLI mode
+    already has when it actually runs.
+  - `call_anthropic_messages_api()`/`call_openai_responses_api()` grew
+    the actual turn loop in place, rather than introducing new sibling
+    functions — a response with no tool-call block still returns on the
+    first HTTP call, the exact behavior these two functions had before
+    this change, so a plain chat turn is unaffected. Anthropic's loop
+    sets `tool_choice.disable_parallel_tool_use: true` (one tool call
+    per turn, simpler to log and reason about); OpenAI's Responses API
+    has no documented equivalent, so a response containing more than one
+    `function_call` item executes and returns results for all of them.
+    Both bound a single turn to `MAX_TOOL_ITERATIONS = 15` tool calls,
+    returning whatever text exists plus a note if hit, so a confused
+    model can't loop indefinitely burning API cost. Tool-call activity
+    (tool name, arguments, result) is folded into `final_text` as a
+    fenced code block — DEC-03's existing code-block rendering, not a
+    new message schema or frontend change — so what ran is visible in
+    the persisted chat log even though DEC-02's single confirm gate means
+    nothing interrupts the turn to ask per call.
+  - Both vendors' tool-use JSON shapes (Anthropic's `tool_use`/
+    `tool_result` content blocks, OpenAI's `function_call`/
+    `function_call_output` items) were confirmed against each vendor's
+    current official documentation before implementing, not assumed from
+    older or general knowledge — cited in each function's docstring.
+  - New tests: tool schema consistency between the two vendor shapes,
+    each tool executor directly (path-escape rejection via `safe_join()`,
+    `edit_file`'s exact-one-match requirement, `run_shell`'s timeout and
+    output-truncation handling, an executor exception being caught not
+    propagated), and the turn loop itself with `execute_tool_call()`
+    mocked out (a tool-call round trip, the `MAX_TOOL_ITERATIONS` bound,
+    the `tool_use_id`/`call_id` correctly threaded back, OpenAI's
+    multiple-function-calls-in-one-output case, malformed
+    `arguments` JSON not crashing the loop). Existing tests covering the
+    pre-tool-loop single-call behavior needed only a `workspace` argument
+    added — a response with no tool-call block is exactly their fixture
+    shape, so the loop's zero-iteration case reproduces the old behavior
+    verbatim. Exact count via `python3 -m unittest discover -s tests -v`.
+  - **Round 2** (independent self-review before opening the PR, then a
+    real automated review on GitHub, both genuinely useful — 3 real
+    findings between them, no stale/false claims this round): the
+    self-review found `MAX_TOOL_ITERATIONS` was bounding HTTP round
+    trips, not actual tool executions -- since a single response
+    (either vendor) can legitimately carry more than one tool call, a
+    model batching many into one response could execute well past the
+    intended cap; both loops now track a running executed-count instead.
+    Same review found the Anthropic loop only ever executed
+    `tool_use_blocks[0]`, silently dropping any others if the API ever
+    didn't honor `disable_parallel_tool_use` (a hint, not a guarantee) --
+    it now executes every block, matching the OpenAI loop's existing
+    defensive handling of a multi-call response. The GitHub review then
+    found two more, both fixed: a mid-turn API failure (network error,
+    non-200) discarded the transcript of any tool that had *already*
+    executed on an earlier iteration -- if `write_file`/`edit_file`/
+    `run_shell` already had a real effect before the *next* call failed,
+    that record vanished along with the error, undermining DEC-21's own
+    premise that skipping per-tool-call confirmation is safe because
+    activity stays visible after the fact (`_error_with_transcript()`
+    now prefixes any accumulated transcript onto the failure message);
+    and `read_file` returned `read_file_preview()`'s content directly,
+    bounded only by `MAX_FILE_BYTES` (~256KB, what's read off disk) and
+    not by `TOOL_OUTPUT_MAX_CHARS` (4000 chars, what's fed into the
+    *next* API call) the way `run_shell`'s output already was -- a
+    handful of large-file reads in one turn could still blow past the
+    context/cost budget that constant exists to bound. One review
+    suggestion (also address the fenced-code-block audit trail
+    potentially breaking if tool output/arguments contain their own
+    ` ``` `) was addressed too even though the review itself marked it
+    optional, not merge-blocking -- it directly supports the same
+    post-hoc-visibility guarantee the other two fixes protect
+    (`_escape_fence()`, applied to both tool names/arguments and
+    results before they're folded into the transcript). New regression
+    tests cover all of this directly.
+  - **Round 3** (fresh automated review on the Round 2 fix commit,
+    "no merge-blocking items" this time — 2 more real but genuinely
+    low-severity findings, both addressed anyway): the transcript's
+    *argument* side had no length cap even after Round 2 capped the
+    result side — `write_file`'s `content`/`edit_file`'s `new_string`
+    could still be arbitrarily long and land in the transcript verbatim
+    via `json.dumps(tool_input)`, inflating every subsequent call's
+    context for a completely normal large file write (the file itself
+    stays on disk in full either way — the transcript only needs to
+    show the write happened). `_truncate_for_transcript()` now applies
+    the same `TOOL_OUTPUT_MAX_CHARS` bound to arguments too. Separately,
+    this project's own comments/docs describing `run_shell` as
+    "cwd-confined" or "고정" could read as claiming stronger isolation
+    than `cwd=workspace` actually provides — it sets the *starting*
+    directory only, not a sandbox; an absolute path or `..` still
+    reaches anywhere the OS user account can, same as a real terminal or
+    CLI mode's own `codex`/`claude` subprocess. Reworded everywhere this
+    project describes `run_shell`'s isolation
+    (`handoff_webui.py`, this file, `webui-chat-storage.md`,
+    `flutter-mapping.html`'s DEC-21) to say so explicitly rather than
+    implying more than DEC-21 actually decided.
+  - **Round 4** (fresh review on the Round 3 fix commit — "no
+    merge-blocking items" again, two more low-severity optional items):
+    `subprocess.run(..., timeout=...)`'s `TimeoutExpired` handling only
+    guarantees killing the immediate subprocess, not a whole process
+    tree a backgrounded/forked command might spawn — real, but
+    cross-platform process-group cleanup (`os.killpg` on POSIX, a job
+    object on Windows) is meaningfully more code than this round's
+    scope, so it's documented as a known, accepted gap
+    (`handoff_webui.py`, `webui-chat-storage.md`) rather than
+    implemented, the same posture DEC-21 already takes toward
+    `run_shell` having no command allowlist. The PR description itself
+    still said "cwd-confined" even after Round 3 fixed every persisted
+    doc/comment — corrected there too.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

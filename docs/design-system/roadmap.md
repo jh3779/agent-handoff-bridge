@@ -224,9 +224,10 @@ UX와 맞지 않는다.
 
 **설계 확정** (2026-08-05, 조사 결과를 바탕으로 사용자에게 범위 질문 1건
 → [flutter-mapping.html DEC-13~16](flutter-mapping.html#s1c)):
-- 범위 = **채팅 전용**. 전체 에이전트 기능 패리티(파일 편집·명령 실행)는
+- 범위 = **채팅 전용**(이후 CFL-17로 전체 패리티까지 확장됨 — 아래
+  "후속 수정" 참고). 전체 에이전트 기능 패리티(파일 편집·명령 실행)는
   사용자 지시에 따라 **의도적으로 미래 phase로 명시적으로 연기**
-  (신규 [CFL-17](flutter-mapping.html#s2)) — 지금 결정하지 않는 게 아니라
+  (신규 CFL-17) — 지금 결정하지 않는 게 아니라
   "나중에 추가한다"고 결정한 것(DEC-13).
 - 키 저장 위치 = `~/Documents/Agent Handoff Bridge/credentials.json`,
   `0600` 권한. OS 키체인·`keyring` 패키지 둘 다 기각(DEC-14).
@@ -236,8 +237,9 @@ UX와 맞지 않는다.
   (DEC-16).
 
 **해소하는 항목**: [CFL-12](flutter-mapping.html#s2) 완전 해소 — Conflict
-List에서 제거됨. 새로 발생: [CFL-17](flutter-mapping.html#s2)(전체
-에이전트 기능 패리티, 의도적 연기).
+List에서 제거됨. 새로 발생: CFL-17(전체 에이전트 기능 패리티, 의도적
+연기 — 이후 [DEC-21](flutter-mapping.html#s1c)로 해소됨, 아래 "후속
+수정" 참고).
 
 **실제로 한 것**:
 - `handoff_webui.py`: `credentials_path()`/`read_credentials()`/
@@ -274,6 +276,20 @@ List에서 제거됨. 새로 발생: [CFL-17](flutter-mapping.html#s2)(전체
 재생(월 단위 캡). 정확한 개수는
 `python3 -m unittest discover -s tests -v`로 확인(고정 숫자를 여기 적지
 않는 이유는 위 Phase 1/3 문단과 동일 — 드리프트하기 쉬움).
+
+- **후속 수정(DEC-21, CFL-17 해소)**: 채팅 전용으로 남겨뒀던 API 키
+  모드에 전체 에이전트 기능 패리티를 추가 — `read_file`/`write_file`/
+  `edit_file`/`run_shell` 4개 도구와 그 turn loop를
+  `call_anthropic_messages_api()`/`call_openai_responses_api()` 내부에
+  구현(기존 함수 이름·계약 그대로, 도구 호출이 없는 평범한 채팅 턴은
+  루프 1회로 끝나 이전 동작과 동일). 인터뷰로 확정된 범위는 파일 도구와
+  셸 실행을 함께 구현하는 더 큰 쪽, 도구 호출 확인 UX는 DEC-02 그대로
+  재사용(세션 첫 전송만 확인, 이후 셸 실행 포함 모든 도구 호출 자동
+  실행) — 자세한 트레이드오프는
+  [flutter-mapping.html DEC-21](flutter-mapping.html#s1c) 참고. 파일
+  도구는 기존 `safe_join()`을 그대로 재사용해 워크스페이스 밖 경로를
+  차단하고, 도구 호출 활동은 새 메시지 스키마 없이 DEC-03(펜스
+  코드블록)으로 채팅 로그에 그대로 노출된다.
 
 ## Phase 5 — Gemini CLI 실사용 지원 + provider 확장성 리팩터 ✅ 완료
 
@@ -437,7 +453,7 @@ DEC-01이 가리키는 실제 프로덕션 스택(Tauri/Electron류)으로 이�
 | 1 — Provider 연결(CLI) | ✅ 완료 | CFL-01, CFL-03, DEC-02/03 적용 |
 | 2 — 자동 폴더 생성 | ✅ 완료 | SCR-05 구현, DEC-04~07 적용 |
 | 3 — 멀티 프로젝트 히스토리 | ✅ 완료 | CFL-10/16 해소, DEC-08~12 적용 |
-| 4 — API 키 모드 | ✅ 완료 | CFL-12 해소, DEC-13~16 적용 |
+| 4 — API 키 모드 | ✅ 완료 | CFL-12 해소, DEC-13~16 적용 (CFL-17 후속 발견 → DEC-21로 별도 해소) |
 | 5 — Gemini + provider 확장성 | ✅ 완료 | CFL-13 해소, DEC-17/18 적용 |
 | 6 — 자동 업데이트 확인 | ✅ 완료 | CFL-11 해소, DEC-19 적용 (CFL-18 후속 발견 → DEC-20으로 별도 해소) |
 | 7 — 프레임워크 전환 | 미착수 | CFL-06(실행), CFL-09 |

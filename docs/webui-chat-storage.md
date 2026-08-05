@@ -297,8 +297,9 @@ session exists in this mode) and `run_dir: null` (no local run directory is
 created). It also deliberately **never writes to
 `.handoff/state.json`/`current.md`** — those remain the CLI-handoff-
 specific durable state files (`docs/architecture.md`'s "State Boundaries");
-API-key mode this phase is chat-only (DEC-13) and has no CLI session or
-cross-provider auto-fallback concept for them to record.
+API-key mode started chat-only (DEC-13) and, as of the CFL-17 follow-up
+below, now also runs a tool loop, but it still has no CLI session or
+cross-provider auto-fallback concept for either of those files to record.
 
 **Conversation continuity**: since neither vendor's direct HTTP API is
 session-based (`docs/research-api-key-mode.md`), `build_api_message_history()`
@@ -325,11 +326,37 @@ found in a second review round and fixed before merge:
   covers the more obscure case of two consecutive bare `user` entries
   with no reply in between.
 
+**Tool loop (CFL-17, resolved as
+[DEC-21](design-system/flutter-mapping.html#s1c))**: `call_anthropic_messages_api()`/
+`call_openai_responses_api()` now run a full tool-use turn loop instead of
+a single stateless call -- `read_file`/`write_file`/`edit_file`/`run_shell`,
+declared once in `_TOOL_SPECS` and rendered into each vendor's own schema
+shape (`anthropic_tool_definitions()`/`openai_tool_definitions()`) so the
+two can't drift apart. A response with no tool-call block returns on the
+first iteration, so a plain chat turn is unaffected -- this loop is a
+strict superset of the earlier chat-only behavior, not a separate mode.
+`execute_tool_call()` never raises (a bad tool name or a malformed
+argument from the model degrades to an error string, not a crash), file
+tools reuse `safe_join()` for workspace confinement, and `run_shell` runs
+with `cwd=workspace` (its starting directory, not a sandbox -- an
+absolute path or `..` reaches anywhere the OS user account can, same as
+a real terminal or CLI mode's own `codex`/`claude` subprocess) and no
+other restriction -- DEC-21's interview chose this over a narrower/
+more-restricted first pass, treating it as the same trust level CLI
+mode already has, not a new tier. `TOOL_EXEC_TIMEOUT_SECONDS` only
+guarantees killing the immediate subprocess, not a whole process tree a
+backgrounded/forked command might spawn -- a known, accepted gap, not a
+guaranteed sandbox. `MAX_TOOL_ITERATIONS = 15` bounds a single turn so a
+confused model can't loop indefinitely. Tool-call activity (what ran,
+with what arguments, what it returned) is folded into `final_text` as a
+fenced code block -- DEC-03's existing code-block rendering, not a new
+message schema -- so it's visible in the persisted chat log even though
+DEC-02's single confirm-on-first-send gate means no per-call confirmation
+interrupts the turn.
+
 ## Known Open Questions
 
 Tracked as
 [CFL-15 in flutter-mapping.html](design-system/flutter-mapping.html#s2):
 retention/expiry policy, and whether/when a schema version field becomes
-necessary. [CFL-17](design-system/flutter-mapping.html#s2) tracks the
-deferred full-agent-parity extension to API-key mode (file edits, shell
-execution) this section deliberately does not implement.
+necessary.
