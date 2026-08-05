@@ -178,3 +178,15 @@ because it changes what SCR-06's masked-key field is actually for.
 - OpenAI: [Using tools](https://developers.openai.com/api/docs/guides/tools)
 - OpenAI: [Migrate to the Responses API](https://developers.openai.com/api/docs/guides/migrate-to-responses)
 - Wikipedia: [OpenAI Codex (AI agent)](https://en.wikipedia.org/wiki/OpenAI_Codex_(AI_agent))
+
+### CFL-17 follow-up (DEC-21, full agentic parity)
+
+Consulted when implementing the tool-use turn loop itself, not just
+scoping the decision:
+
+- Anthropic: [Tool use with Claude](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview)
+  -- `tools[].input_schema`, `tool_choice.disable_parallel_tool_use`,
+  `tool_use`/`tool_result` content block shapes.
+- OpenAI: [Function calling](https://developers.openai.com/api/docs/guides/function-calling)
+  -- `tools[].type="function"`/`parameters`/`strict`, `function_call`
+  output items, `function_call_output` input items.

@@ -1173,17 +1173,30 @@ def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict], 
     from `api_key`, so a saved key can never leak into a chat log entry via
     an error message.
 
-    Runs the tool-use turn loop (CFL-17/DEC-21): sends `messages` plus
-    this project's tool schemas, executes any `tool_use` block Claude
-    returns via execute_tool_call(), feeds the result back, and repeats
-    until Claude stops requesting tools or MAX_TOOL_ITERATIONS is hit. A
-    response with no tool_use block returns on the first iteration --
-    the exact single-call behavior this function had before CFL-17, so a
-    plain chat turn (no tool calls) is unaffected.
-    `tool_choice.disable_parallel_tool_use` keeps this to one tool call
-    per turn -- simpler to log and reason about than unwinding several
-    simultaneous tool calls, at the cost of an extra round trip for a
-    task that could otherwise batch calls.
+    Runs the tool-use turn loop (CFL-17/DEC-21; request/response shapes
+    -- tools[].input_schema, tool_choice.disable_parallel_tool_use,
+    tool_use/tool_result content blocks -- confirmed against
+    https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview
+    before implementing, not assumed): sends `messages` plus this
+    project's tool schemas, executes any `tool_use` block(s) Claude
+    returns via execute_tool_call(), feeds the results back, and repeats
+    until Claude stops requesting tools or MAX_TOOL_ITERATIONS actual
+    tool calls have been executed (not just HTTP round trips -- a
+    self-review round pointed out that bounding round trips alone
+    doesn't bound cost/runaway-loop risk if a single response can carry
+    more than one call). A response with no tool_use block returns on
+    the first iteration -- the exact single-call behavior this function
+    had before CFL-17, so a plain chat turn (no tool calls) is
+    unaffected.
+    `tool_choice.disable_parallel_tool_use` asks Claude for one tool
+    call per turn -- simpler to log and reason about than unwinding
+    several simultaneous tool calls, at the cost of an extra round trip
+    for a task that could otherwise batch calls -- but this is a hint,
+    not a guarantee the API enforces, so every tool_use block in a
+    response is still executed (each needs a matching tool_result or
+    the next call would 400 on mismatched IDs), matching the defensive
+    posture call_openai_responses_api() already needs for the same
+    reason on its side.
     """
     headers = {
         "x-api-key": api_key,
@@ -1193,7 +1206,8 @@ def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict], 
     working_messages = list(messages)
     transcript_parts: list[str] = []
     tools = anthropic_tool_definitions()
-    for _ in range(MAX_TOOL_ITERATIONS):
+    tool_calls_executed = 0
+    while True:
         body = {
             "model": model,
             "max_tokens": API_KEY_MODE_MAX_TOKENS,
@@ -1220,42 +1234,49 @@ def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict], 
         if not tool_use_blocks:
             return {"ok": True, "text": "\n\n".join(transcript_parts)}
         working_messages.append({"role": "assistant", "content": content})
-        tool_use = tool_use_blocks[0]
-        tool_name = tool_use.get("name", "")
-        tool_input = tool_use.get("input") or {}
-        result_text = execute_tool_call(workspace, tool_name, tool_input)
-        transcript_parts.append(_tool_call_transcript_block(tool_name, json.dumps(tool_input, ensure_ascii=False), result_text))
-        working_messages.append(
-            {
-                "role": "user",
-                "content": [{"type": "tool_result", "tool_use_id": tool_use.get("id"), "content": result_text}],
-            }
-        )
-    transcript_parts.append(f"(stopped after {MAX_TOOL_ITERATIONS} tool calls in one turn -- send another message to continue)")
-    return {"ok": True, "text": "\n\n".join(transcript_parts)}
+        tool_results: list[dict] = []
+        for tool_use in tool_use_blocks:
+            if tool_calls_executed >= MAX_TOOL_ITERATIONS:
+                transcript_parts.append(
+                    f"(stopped after {MAX_TOOL_ITERATIONS} tool calls in one turn -- send another message to continue)"
+                )
+                return {"ok": True, "text": "\n\n".join(transcript_parts)}
+            tool_name = tool_use.get("name", "")
+            tool_input = tool_use.get("input") or {}
+            result_text = execute_tool_call(workspace, tool_name, tool_input)
+            tool_calls_executed += 1
+            transcript_parts.append(_tool_call_transcript_block(tool_name, json.dumps(tool_input, ensure_ascii=False), result_text))
+            tool_results.append({"type": "tool_result", "tool_use_id": tool_use.get("id"), "content": result_text})
+        working_messages.append({"role": "user", "content": tool_results})
 
 
 def call_openai_responses_api(api_key: str, model: str, messages: list[dict], workspace: Path) -> dict:
     """Same contract and same tool-use turn loop as
     call_anthropic_messages_api() -- see its docstring for the shared
-    reasoning (MAX_TOOL_ITERATIONS bound, single-call behavior preserved
-    when no tool call happens). Responses API input items use OpenAI's
-    {role, content} shape too, so `messages` (already built for the
-    Anthropic call) is reused as-is for the initial `input`.
+    reasoning (MAX_TOOL_ITERATIONS bounds actual tool *executions*, not
+    HTTP round trips -- a response's `output` array can carry more than
+    one call, so counting round trips alone wouldn't actually bound
+    cost/runaway-loop risk). Request/response shapes -- tools[].type=
+    "function"/parameters/strict, function_call output items,
+    function_call_output input items -- confirmed against
+    https://developers.openai.com/api/docs/guides/function-calling
+    before implementing, not assumed. Responses API input items use
+    OpenAI's {role, content} shape too, so `messages` (already built for
+    the Anthropic call) is reused as-is for the initial `input`.
 
-    Unlike the Anthropic loop, this does not force one tool call per
-    turn -- no Responses API equivalent of `disable_parallel_tool_use`
-    turned up in docs/research-api-key-mode.md's research, so a
-    response's `output` array is handled as documented: it may contain
-    more than one `function_call` item, and this executes and returns
-    results for all of them before the next call, rather than assuming
-    only one.
+    No Responses API equivalent of `disable_parallel_tool_use` turned up
+    in that research, so a response's `output` array is handled as
+    documented: it may contain more than one `function_call` item, and
+    each is executed and given a matching `function_call_output` before
+    the next call -- OpenAI's contract otherwise has no way to answer
+    only some of a batch.
     """
     headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
     working_input = list(messages)
     transcript_parts: list[str] = []
     tools = openai_tool_definitions()
-    for _ in range(MAX_TOOL_ITERATIONS):
+    tool_calls_executed = 0
+    while True:
         body = {"model": model, "input": working_input, "tools": tools}
         try:
             status, data = _http_post_json(OPENAI_RESPONSES_URL, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
@@ -1285,6 +1306,11 @@ def call_openai_responses_api(api_key: str, model: str, messages: list[dict], wo
         if not function_calls:
             return {"ok": True, "text": "\n\n".join(transcript_parts)}
         for call in function_calls:
+            if tool_calls_executed >= MAX_TOOL_ITERATIONS:
+                transcript_parts.append(
+                    f"(stopped after {MAX_TOOL_ITERATIONS} tool calls in one turn -- send another message to continue)"
+                )
+                return {"ok": True, "text": "\n\n".join(transcript_parts)}
             working_input.append(call)
             name = call.get("name", "")
             raw_args = call.get("arguments", "{}")
@@ -1293,10 +1319,9 @@ def call_openai_responses_api(api_key: str, model: str, messages: list[dict], wo
             except json.JSONDecodeError:
                 tool_input = {}
             result_text = execute_tool_call(workspace, name, tool_input)
+            tool_calls_executed += 1
             transcript_parts.append(_tool_call_transcript_block(name, raw_args if isinstance(raw_args, str) else "{}", result_text))
             working_input.append({"type": "function_call_output", "call_id": call.get("call_id"), "output": result_text})
-    transcript_parts.append(f"(stopped after {MAX_TOOL_ITERATIONS} tool calls in one turn -- send another message to continue)")
-    return {"ok": True, "text": "\n\n".join(transcript_parts)}
 
 
 def run_provider_via_api_key(

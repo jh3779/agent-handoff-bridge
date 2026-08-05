@@ -2441,6 +2441,52 @@ class AgenticLoopTests(unittest.TestCase):
         self.assertEqual(tool_result_message["content"][0]["tool_use_id"], "toolu_abc")
         self.assertEqual(tool_result_message["content"][0]["content"], "file contents")
 
+    def test_anthropic_defensively_executes_every_tool_use_block_even_if_the_api_ever_ignores_disable_parallel(self):
+        # disable_parallel_tool_use is a hint, not an API guarantee this
+        # code controls -- if a response ever carries more than one
+        # tool_use block anyway, every one of them still needs an
+        # executed result and a matching tool_result, or the next call
+        # would 400 on a mismatched-tool-result-id error. A self-review
+        # round found the original implementation only executed
+        # tool_use_blocks[0] and silently dropped the rest.
+        two_tool_use_response = (
+            200,
+            {
+                "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "a.txt"}},
+                    {"type": "tool_use", "id": "toolu_2", "name": "read_file", "input": {"path": "b.txt"}},
+                ]
+            },
+        )
+        final_response = (200, {"content": [{"type": "text", "text": "done"}]})
+        with mock.patch(
+            "handoff_webui._http_post_json", side_effect=[two_tool_use_response, final_response]
+        ) as http_spy, mock.patch("handoff_webui.execute_tool_call", return_value="ok") as exec_spy:
+            webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertEqual(exec_spy.call_count, 2)
+        second_call_body = http_spy.call_args_list[1].args[2]
+        tool_result_message = second_call_body["messages"][-1]
+        self.assertEqual(len(tool_result_message["content"]), 2)
+        self.assertEqual({b["tool_use_id"] for b in tool_result_message["content"]}, {"toolu_1", "toolu_2"})
+
+    def test_anthropic_max_iterations_bounds_executions_even_across_a_multi_block_response(self):
+        batch_response = (
+            200,
+            {
+                "content": [
+                    {"type": "tool_use", "id": f"toolu_{i}", "name": "run_shell", "input": {"command": "echo hi"}}
+                    for i in range(webui.MAX_TOOL_ITERATIONS + 10)
+                ]
+            },
+        )
+        with mock.patch("handoff_webui._http_post_json", return_value=batch_response), mock.patch(
+            "handoff_webui.execute_tool_call", return_value="ok"
+        ) as exec_spy:
+            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertTrue(result["ok"])
+        self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
+        self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
+
     def test_anthropic_no_tool_use_returns_on_the_first_call(self):
         with mock.patch(
             "handoff_webui._http_post_json", return_value=(200, {"content": [{"type": "text", "text": "just chatting"}]})
@@ -2493,6 +2539,29 @@ class AgenticLoopTests(unittest.TestCase):
             "handoff_webui.execute_tool_call", return_value="ok"
         ) as exec_spy:
             result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "loop forever"}], self.workspace)
+        self.assertTrue(result["ok"])
+        self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
+        self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
+
+    def test_openai_max_iterations_bounds_executions_not_just_http_round_trips(self):
+        # A self-review round found that bounding the outer HTTP-call loop
+        # alone doesn't bound cost: OpenAI's output array can legitimately
+        # carry more than one function_call per response, so a single
+        # response batching many more than MAX_TOOL_ITERATIONS calls must
+        # still stop exactly at the bound, not execute the whole batch.
+        batch_response = (
+            200,
+            {
+                "output": [
+                    {"type": "function_call", "call_id": f"call_{i}", "name": "run_shell", "arguments": '{"command": "echo hi"}'}
+                    for i in range(webui.MAX_TOOL_ITERATIONS + 10)
+                ]
+            },
+        )
+        with mock.patch("handoff_webui._http_post_json", return_value=batch_response), mock.patch(
+            "handoff_webui.execute_tool_call", return_value="ok"
+        ) as exec_spy:
+            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertTrue(result["ok"])
         self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
         self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
