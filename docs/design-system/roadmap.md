@@ -566,6 +566,56 @@ sidecar 프로세스가 함께 정리되는지, 재실행 시 포트 `8787`이 �
   다)와 `cargo build`까지 직접 재현해 확인했지만, Windows/Linux
   러너에서의 실제 성공 여부는 CI 실행 결과로만 최종 확인 가능.
 
+**7b M3 실제로 한 것** (2026-08-06, 위 계획의 항목 3): "다음 작업
+진행해줘"로 착수. 실제 설치형 산출물 빌드(`cargo tauri build`)는
+GitHub 비공개 저장소 Actions 분당 과금이 macOS ×10 / Windows ×2라 매
+PR/push마다 도는 기존 job들과 같은 트리거로 두면 비용이 크다는 점을
+사용자에게 확인 — **`workflow_dispatch` 수동 트리거만**으로 결정
+(다른 두 옵션은 "main push에만"/"기존 job과 동일하게 매번"이었음).
+- `.github/workflows/ci.yml`에 `installer-build` job 신설(`if:
+  github.event_name == 'workflow_dispatch'`). `sidecar-build`와 동일한
+  3-way 매트릭스 + runner OS/arch 가드를 재사용하되, 실제 산출물이
+  필요하므로 `rust-build`의 더미 sidecar 대신 `scripts/
+  build_sidecars.py`로 진짜 sidecar를 먼저 빌드한 뒤 `cargo tauri
+  build`로 실제 번들(.dmg+.app / .msi+nsis .exe / .deb+.AppImage+.rpm)을
+  만든다. 서명은 하지 않음(7c/DEC-22가 그대로 적용 — 이번 산출물은
+  전부 미서명). 포맷별 산출 파일 존재를 OS별로 개별 검증(파일명만
+  보고 끝내지 않도록, `sidecar-build`의 review-bot 지적과 같은 원칙
+  재사용)한 뒤 `actions/upload-artifact`로 보관.
+- 로컬 macOS에서 CI와 동일한 순서(진짜 sidecar 빌드 → `cargo tauri
+  build`)로 실제 재현: `.app`/`.dmg` 둘 다 정상 생성, 검증 스텝의
+  `find` 조건도 실제 산출물 경로에 대해 그대로 통과 확인. Windows/
+  Linux는 로컬 재현이 불가능한 플랫폼이라 (M1 때와 마찬가지로) 실제
+  CI 실행 결과로만 최종 확인 가능 — 특히 Windows의 NSIS/WiX 자동
+  다운로드, Linux의 AppImage/rpm 번들러 동작은 이번이 처음 실제로
+  실행되는 지점.
+- **PR 오픈 전 self-review에서 잡힌 실수들**: 처음 작성했던 apt
+  패키지 목록이 틀렸음 — Tauri의 rpm 번들러는 순수 Rust `rpm` crate로
+  동작해 시스템 `rpm`/`rpmbuild`가 전혀 필요 없는데(소스 직접 확인),
+  실제로는 필요 없는 `rpm` 패키지를 추가했었음 — 제거. 대신 `rust-build`/
+  `sidecar-build` 둘 다 실제 Linux 번들링 경로를 한 번도 타본 적이
+  없어서 놓쳤던 진짜 필요 패키지(Tauri 공식 예제 CI가 쓰는
+  `patchelf`/`xdg-utils`)를 추가. 또한 AppImage 번들러(`linuxdeploy`)가
+  `ubuntu-latest`에서 실패하는 현재 열려 있는 업스트림 버그
+  (tauri-apps/tauri#14796)를 미리 알게 되어, 흔한 원인인 `libfuse2`
+  누락에 대한 선제 조치로 apt 목록에 추가 — 그래도 재발하면 실제 CI
+  로그로 진단 필요. `cargo install tauri-cli --version "^2"`는 버전이
+  고정되지 않아 이 job을 나중에 다시 수동 실행할 때마다 번들러 동작이
+  조용히 달라질 수 있어, 이번에 실제로 로컬 검증에 쓴 정확한 버전
+  (`2.11.4`)으로 고정.
+- **PR #14 실제 리뷰 라운드에서 잡힌 것 (머지 전 수정, 재검증 대기)**:
+  (1) `libfuse2` 고정 설치가 위험 중 지적됨 — `ubuntu-latest`가
+  24.04 계열이면 Ubuntu의 64-bit time_t 전환으로 패키지명이
+  `libfuse2t64`로 바뀌었을 수 있어, apt install 자체가 번들러 단계에
+  도달하기도 전에 실패할 수 있음. `libfuse2` 설치를 별도 단계로
+  분리하고 `libfuse2t64` 폴백을 추가(둘 다 실패해도 나머지 단계는
+  계속 진행 — AppImage leg만 나중에 실패하도록). (2) `workflow_dispatch`를
+  workflow 전체 트리거로 추가했더니 기존 `validate`/`rust-build`/
+  `sidecar-build`에는 조건이 없어 수동 실행 시 이들도 같이 돌아
+  비용 절감이라는 애초 목적을 일부 훼손함(위험 하로 지적) —
+  세 job 모두에 `if: github.event_name != 'workflow_dispatch'`를
+  추가해 수동 트리거 시 `installer-build`만 돌도록 격리.
+
 **7a 실제로 한 것**:
 - `src-tauri/`: `cargo tauri init`으로 스캐폴딩(바닐라 JS 템플릿,
   `frontendDist`는 `../webui`를 가리키지만 실제로는 사용되지 않음 —
