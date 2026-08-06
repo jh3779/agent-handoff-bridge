@@ -1069,6 +1069,80 @@
     four PyInstaller build invocations, addressed by
     `scripts/build_sidecars.py` above.
 
+- Phase 7b (cross-platform builds, real installers, sidecar lifecycle
+  fixes — PRs #13-#16): takes the 7a proof-of-concept from "runs on one
+  dev machine" to "actually builds and ships on macOS/Windows/Linux."
+  - **Cross-platform sidecar builds**: `scripts/build_sidecars.py`
+    (renamed/generalized from the 7a-only `build_phase7a_sidecars.py`)
+    now builds on any of macOS/Windows/Linux -- the `--add-data`
+    separator uses `os.pathsep` (Windows' `;` vs. everyone else's `:`,
+    exactly matching PyInstaller's own rule) instead of a hardcoded `:`,
+    and `rename_for_tauri()` automates producing Tauri's
+    `<name>-<target-triple>[.exe]` sidecar filenames (previously done by
+    hand, once per binary). New CI `sidecar-build` job: a
+    `macos-latest`/`windows-latest`/`ubuntu-latest` matrix that actually
+    runs this script per OS and smoke-tests each built sidecar
+    (`--version`/`--help`) rather than just checking filenames exist --
+    this project's first real CI execution on Windows.
+  - **Real per-OS installers**: new `installer-build` CI job producing
+    genuine, unsigned installers (`.dmg`/`.app` macOS, `.msi`+nsis `.exe`
+    Windows, `.deb`/`.AppImage`/`.rpm` Linux) via `cargo tauri build`,
+    using the real sidecars above rather than the placeholder files the
+    existing compile-check job uses. Deliberately gated to manual
+    trigger (`workflow_dispatch`) only, not every PR/push like the rest
+    of CI -- GitHub bills private-repo Actions minutes at 10x for macOS
+    runners and 2x for Windows, and a real bundle build is comparatively
+    expensive. Still unsigned (code signing stays a separate "Phase 7c"
+    decision gate, DEC-22/DEC-23 -- new cost, Apple Developer Program
+    $99/year+ -- explicitly declined to start for now).
+  - **`docs/release-process.md` rewritten** for two parallel packaging
+    tracks instead of one: the original git-free source zip
+    (`scripts/package_platforms.py`, unchanged, for terminal/CLI-only
+    use) stays alongside the new installers (for desktop GUI use) rather
+    than being replaced by them -- confirmed explicitly with the repo
+    owner rather than assumed, recorded as **DEC-23** (resolves the
+    long-open **CFL-09**, which had assumed the zip model would end
+    entirely once a framework migration happened).
+  - **Sidecar lifecycle, verified by actually building and quitting the
+    real `.app`, not just reading code**: two Phase 7a-deferred
+    questions turned out to need real fixes, not just verification.
+    Sidecar cleanup on app quit was genuinely broken -- discovered via a
+    real leftover orphaned process (parented to `launchd`, still holding
+    port 8787 hours after its app had exited) -- caused by the spawned
+    sidecar's `CommandChild` being discarded with no cleanup hook.
+    Fixed: the child is now kept in Tauri managed state and killed on
+    `RunEvent::Exit` (not `ExitRequested`, which never fires on a real
+    quit here -- confirmed by logging every event a real quit actually
+    produces). Getting a *clean* kill took two more rounds: a
+    single-PID `kill()` only reached the outer PyInstaller bootloader,
+    orphaning its re-exec'd inner process all over again, and a
+    single-hop `pkill -P` only reached the first process generation --
+    an in-flight provider run's real tree is 3-4 generations deep (a
+    second sidecar spawned mid-run, its own re-exec'd interpreter, then
+    the real `codex`/`claude`/`gemini` subprocess). Fixed by walking the
+    whole descendant tree before killing anything. Then: hard-killing
+    that whole tree unconditionally was itself a real risk if a provider
+    was mid-write -- now signals `SIGTERM`/a non-forced `taskkill`
+    first, waits briefly, and force-kills only whatever's still alive.
+    Port 8787 conflict handling was already non-hanging (an existing
+    error dialog already caught it) but showed a generic message;
+    `handoff_webui.py` now prints a stable marker
+    (`AHB_PORT_CONFLICT`) before re-raising the bind failure, and the
+    Rust side matches on that instead of guessing at OS/locale-specific
+    `OSError` text.
+  - **Known, accepted gaps, left open on purpose rather than guessed
+    at**: the deeper tree-kill and graceful-terminate logic above was
+    verified via compile checks only, not a repeated real
+    build-launch-quit cycle (a deliberate tradeoff after a local
+    system-resource-load concern came up during testing). Windows'
+    version of the same graceful-then-force kill still has a known,
+    unfixed edge case (re-targeting an already-dead root PID can miss
+    surviving descendants) -- left as-is because Windows-specific code
+    in this codebase has no verification path at all in this dev
+    environment, not even a CI compile check (`rust-build` only runs on
+    Linux). Real Windows/Linux testing of this whole feature remains
+    outstanding.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /

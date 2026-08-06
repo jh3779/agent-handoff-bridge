@@ -474,16 +474,22 @@ Electron 쪽(electron-updater, 문서화는 됐지만 "매우 특수한 경우�
 
 **Sub-phase 분해** (하나의 거대한 PR 대신 이전 phase들과 같은 크기
 규율 적용):
-- **7a — Tauri 셸 + Python sidecar (기능적 동등성만, 비주얼 다듬기 없음)**:
-  Tauri v2 프로젝트 스캐폴딩(바닐라 JS 템플릿), `handoff_webui.py`를
-  PyInstaller로 빌드해 sidecar로 등록, 기존 `webui/`를 sidecar의 로컬
-  HTTP 서버에 그대로 연결. 최소 한 OS(개발 머신)에서 엔드투엔드 동작
-  확인이 목표 — 배포 파이프라인·서명·크로스플랫폼 빌드는 범위 밖.
-- **7b — 크로스플랫폼 빌드 + 패키징**: Windows/Linux PyInstaller 빌드,
-  Tauri 번들 설정(설치형 산출물), `scripts/package_platforms.py`의 zip
-  방식 대체, `release-process.md` 재작성(CFL-09 해소).
-- **7c — 코드 서명**: macOS 공증 + Windows 서명. 비용/계정 준비가
-  필요해 별도 결정 게이트.
+- **7a — Tauri 셸 + Python sidecar (기능적 동등성만, 비주얼 다듬기 없음)
+  — ✅ 완료 (PR #12)**: Tauri v2 프로젝트 스캐폴딩(바닐라 JS 템플릿),
+  `handoff_webui.py`를 PyInstaller로 빌드해 sidecar로 등록, 기존
+  `webui/`를 sidecar의 로컬 HTTP 서버에 그대로 연결. 최소 한 OS(개발
+  머신)에서 엔드투엔드 동작 확인이 목표 — 배포 파이프라인·서명·
+  크로스플랫폼 빌드는 범위 밖.
+- **7b — 크로스플랫폼 빌드 + 패키징 — ✅ 완료 (PR #13~#16, 2026-08-06)**:
+  Windows/Linux PyInstaller 빌드, Tauri 번들 설정(설치형 산출물),
+  `scripts/package_platforms.py`의 zip 방식과 병행 유지(DEC-23),
+  `release-process.md` 재작성(CFL-09 해소), 7a가 남긴 sidecar 생명주기
+  후속 항목까지 검증·수정. 상세는 위 "7b 마무리 요약" 참고.
+- **7c — 코드 서명 — 보류, 명시적으로 제외됨 (2026-08-06)**: macOS
+  공증 + Windows 서명. 비용(Apple Developer Program $99/년+)/계정
+  준비가 필요해 별도 결정 게이트라는 DEC-22의 원래 결정 그대로 — 7b
+  완료 시점에 사용자가 "코드 서명 일단은 제외해줘"로 재확인. 별도
+  go-ahead 없이는 착수하지 않음.
 - **7d (별도 논의, 이번 범위 밖)** — 프론트엔드 프레임워크 도입(DEC-01의
   네이티브 애니메이션 목표를 실제로 달성하려면 필요할 가능성이 높지만,
   기술적으로는 독립된 결정).
@@ -498,40 +504,61 @@ sidecar 프로세스가 함께 정리되는지, 재실행 시 포트 `8787`이 �
 실제로 깨져 있었고(고아 프로세스로 확인), 뒤는 멈추진 않았지만
 메시지가 부실했음. 상세는 아래 "7b M6 실제로 한 것" 참고.
 
-**7b 계획 (착수 전 — 사용자 확인 후 시작, 2026-08-06)**: 7a 실제
-구현 경험에서 나온 구체적 작업 목록. 순서는 의존관계 기준(빌드
-인프라 → 패키징 → 배포 문서).
+**7b 계획 (착수 전 — 사용자 확인 후 시작, 2026-08-06) — ✅ 전 항목
+완료 (2026-08-06, PR #13~#16)**: 7a 실제 구현 경험에서 나온 구체적
+작업 목록. 순서는 의존관계 기준(빌드 인프라 → 패키징 → 배포 문서).
 
-1. **크로스플랫폼 sidecar 빌드**: PyInstaller/Nuitka는 크로스컴파일을
-   지원하지 않으므로(`docs/research-phase7-framework.md`) Windows·
-   Linux 각각 실제 해당 OS에서 빌드해야 함 — GitHub Actions
-   `windows-latest`/`ubuntu-latest` 러너 활용이 유력. `scripts/
-   build_phase7a_sidecars.py`는 현재 POSIX 전제(`--add-data` 구분자
-   `:`)라 Windows에서는 `;`로 바뀌어야 하고, `.exe` 접미사 처리도
-   추가해야 함 — 스크립트 이름도 `build_sidecars.py`처럼 7a 한정이
-   아니게 일반화하는 편이 나음.
-2. **target-triple 자동화**: 지금은 `cp binary binary-<triple>`을
-   손으로 했음 — 빌드 스크립트가 `rustc -vV`의 `host:` 값(또는 CI
-   매트릭스에서 명시적으로 지정한 타겟)을 읽어 자동으로 올바른
-   이름을 붙이도록 만들어야 함. macOS는 Intel(`x86_64-apple-darwin`)
-   지원 여부도 이번에 결정 필요(현재 Apple Silicon만 실제 빌드해봄).
-3. **`rust-build` CI를 실빌드로 확장**: 지금 CI는 `cargo build`
-   컴파일 체크만 함(더미 sidecar 사용). 7b에서는 각 OS 러너에서 실제
-   `cargo tauri build`로 진짜 설치형 산출물(.dmg/.msi/.AppImage 등)을
-   만드는 CI로 확장 — 이번에 발견한 `needrestart`/apt-get 비대화형
-   설정(`DEBIAN_FRONTEND=noninteractive`, `NEEDRESTART_MODE=a`)과
+1. **크로스플랫폼 sidecar 빌드** — ✅ **완료 (M1, PR #13)**.
+   PyInstaller/Nuitka는 크로스컴파일을 지원하지 않으므로
+   (`docs/research-phase7-framework.md`) Windows·Linux 각각 실제 해당
+   OS에서 빌드해야 함 — GitHub Actions `windows-latest`/`ubuntu-latest`
+   러너 활용이 유력. `scripts/build_phase7a_sidecars.py`는 현재 POSIX
+   전제(`--add-data` 구분자 `:`)라 Windows에서는 `;`로 바뀌어야 하고,
+   `.exe` 접미사 처리도 추가해야 함 — 스크립트 이름도
+   `build_sidecars.py`처럼 7a 한정이 아니게 일반화하는 편이 나음.
+2. **target-triple 자동화** — ✅ **완료 (M1에 통합, PR #13)**. 지금은
+   `cp binary binary-<triple>`을 손으로 했음 — 빌드 스크립트가
+   `rustc -vV`의 `host:` 값(또는 CI 매트릭스에서 명시적으로 지정한
+   타겟)을 읽어 자동으로 올바른 이름을 붙이도록 만들어야 함. macOS는
+   Intel(`x86_64-apple-darwin`) 지원 여부도 이번에 결정 필요(현재
+   Apple Silicon만 실제 빌드해봄) — **미결 상태로 남음**: M4에서
+   Apple Silicon 전용이라는 제약만 명시하고 Intel 지원 여부 자체는
+   아직 별도 결정되지 않음(`docs/release-process.md` 참고).
+3. **`rust-build` CI를 실빌드로 확장** — ✅ **완료 (M3, PR #14, 새
+   `installer-build` job)**. 지금 CI는 `cargo build` 컴파일 체크만
+   함(더미 sidecar 사용). 7b에서는 각 OS 러너에서 실제 `cargo tauri
+   build`로 진짜 설치형 산출물(.dmg/.msi/.AppImage 등)을 만드는 CI로
+   확장 — 이번에 발견한 `needrestart`/apt-get 비대화형 설정
+   (`DEBIAN_FRONTEND=noninteractive`, `NEEDRESTART_MODE=a`)과
    `timeout-minutes` 안전장치를 새 job에도 그대로 적용해 같은 함정을
    또 밟지 않도록.
-4. **`release-process.md` 재작성**: 현재 문서는 "zip 하나, git 불필요"
-   모델을 전제로 함(CFL-09). 새 모델은 "OS별 설치형 산출물 + 자동
-   업데이트는 여전히 기존 `gh` 기반 방식"으로 다시 쓰고,
-   `scripts/package_platforms.py`의 위치(완전 대체 vs 유지)도 결정.
-5. **코드 서명은 7c로 분리 유지**: 7b는 미서명 설치형 산출물까지만.
-   서명은 비용(Apple $99/년+)·계정 준비가 필요해 별도 게이트라는
-   DEC-22의 결정 그대로.
-6. **7a가 남긴 후속 항목도 이번에 같이 확인**: 위에서 언급한 sidecar
-   종료 정리, 포트 `8787` 충돌 처리 — 실제 설치형 배포판을 여러 OS에서
-   테스트하는 이번 단계가 이 두 가지를 자연스럽게 검증할 기회.
+4. **`release-process.md` 재작성** — ✅ **완료 (M4, PR #15, DEC-23)**.
+   현재 문서는 "zip 하나, git 불필요" 모델을 전제로 함(CFL-09). 새
+   모델은 "OS별 설치형 산출물 + 자동 업데이트는 여전히 기존 `gh` 기반
+   방식"으로 다시 쓰고, `scripts/package_platforms.py`의 위치(완전
+   대체 vs 유지)도 결정.
+5. **코드 서명은 7c로 분리 유지** — ✅ **항목 자체가 그대로 이행됨,
+   2026-08-06 사용자가 "코드 서명 일단은 제외해줘"로 재확인**. 7b는
+   미서명 설치형 산출물까지만. 서명은 비용(Apple $99/년+)·계정 준비가
+   필요해 별도 게이트라는 DEC-22의 결정 그대로 — 이 항목은 "하지
+   않는다"가 곧 이행이라, 별도 M 번호 없이 이 확인 자체로 완결.
+6. **7a가 남긴 후속 항목도 이번에 같이 확인** — ✅ **완료 (M6, PR #16)**.
+   위에서 언급한 sidecar 종료 정리, 포트 `8787` 충돌 처리 — 실제
+   설치형 배포판을 여러 OS에서 테스트하는 이번 단계가 이 두 가지를
+   자연스럽게 검증할 기회.
+
+**7b 마무리 요약** (2026-08-06): 6개 계획 항목 전부 이행 완료 —
+M1(PR #13)·M3(PR #14)·M4(PR #15, DEC-23)·M6(PR #16), M2는 M1에 통합,
+M5는 "하지 않는다"는 결정 자체의 재확인으로 완결. `docs/release-notes.md`
+Unreleased 섹션에 Phase 7b 항목 추가해 사용자 대상 변경 이력에도 반영.
+**7b 범위에서 여전히 열려 있는, 의도적으로 남겨둔 항목**: (a) macOS
+Intel(`x86_64-apple-darwin`) 지원 여부 — 결정된 적 없음, 필요해지면
+별도로 다뤄야 함; (b) 설치형 산출물 트랙(`installer-build`) 자체가
+실제 태그된 릴리즈로 한 번도 실행된 적 없음; (c) M6에서 고친 심화
+로직(트리 kill, graceful 타이밍)의 Windows/Linux 실기기 검증 —
+이 macOS 개발 환경에서는 애초에 불가능. 다음 단계는 7c(코드 서명,
+현재 명시적으로 제외)이거나, 위 (a)~(c) 중 하나를 실제로 겪을 때
+(예: 첫 실제 릴리즈, Windows 접근 가능해짐)까지 대기.
 
 **7b M1 실제로 한 것** (2026-08-06, 위 계획의 항목 1+2): 사용자가
 "계획만 준비"를 선택한 뒤, 이어서 "M1부터 실제 진행"을 명시적으로
@@ -875,7 +902,7 @@ package_platforms.py`의 위치(완전 대체 vs 유지) 결정"을 먼저 사�
 | 4 — API 키 모드 | ✅ 완료 | CFL-12 해소, DEC-13~16 적용 (CFL-17 후속 발견 → DEC-21로 별도 해소) |
 | 5 — Gemini + provider 확장성 | ✅ 완료 | CFL-13 해소, DEC-17/18 적용 |
 | 6 — 자동 업데이트 확인 | ✅ 완료 | CFL-11 해소, DEC-19 적용 (CFL-18 후속 발견 → DEC-20으로 별도 해소) |
-| 7 — 프레임워크 전환 | 🚧 진행 중 (7a·7b M1/M3/M4/M6 완료, 7b M5(7c로 분리)만 남음) | CFL-06(실행), CFL-09 해소·DEC-23 적용, CFL-14 해소·DEC-22 적용 |
+| 7 — 프레임워크 전환 | ✅ 7a·7b 완료 (2026-08-06) · 7c(코드 서명)는 명시적으로 제외, 별도 go-ahead 대기 | CFL-06(실행), CFL-09 해소·DEC-23 적용, CFL-14 해소·DEC-22 적용 |
 
 이 표가 정본은 아니다 — 각 phase가 끝나면 여기 상태만 갱신하고, 실제
 해소 근거는 [flutter-mapping.html Conflict List](flutter-mapping.html#s2)
