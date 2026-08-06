@@ -495,6 +495,41 @@ sidecar 프로세스가 함께 정리되는지, 재실행 시 포트 `8787`이 �
 아키텍처를 실제 운영 가능하게 다듬는 문제(엣지 케이스 견고화)라
 7b/7c의 성격에 더 가까움.
 
+**7b 계획 (착수 전 — 사용자 확인 후 시작, 2026-08-06)**: 7a 실제
+구현 경험에서 나온 구체적 작업 목록. 순서는 의존관계 기준(빌드
+인프라 → 패키징 → 배포 문서).
+
+1. **크로스플랫폼 sidecar 빌드**: PyInstaller/Nuitka는 크로스컴파일을
+   지원하지 않으므로(`docs/research-phase7-framework.md`) Windows·
+   Linux 각각 실제 해당 OS에서 빌드해야 함 — GitHub Actions
+   `windows-latest`/`ubuntu-latest` 러너 활용이 유력. `scripts/
+   build_phase7a_sidecars.py`는 현재 POSIX 전제(`--add-data` 구분자
+   `:`)라 Windows에서는 `;`로 바뀌어야 하고, `.exe` 접미사 처리도
+   추가해야 함 — 스크립트 이름도 `build_sidecars.py`처럼 7a 한정이
+   아니게 일반화하는 편이 나음.
+2. **target-triple 자동화**: 지금은 `cp binary binary-<triple>`을
+   손으로 했음 — 빌드 스크립트가 `rustc -vV`의 `host:` 값(또는 CI
+   매트릭스에서 명시적으로 지정한 타겟)을 읽어 자동으로 올바른
+   이름을 붙이도록 만들어야 함. macOS는 Intel(`x86_64-apple-darwin`)
+   지원 여부도 이번에 결정 필요(현재 Apple Silicon만 실제 빌드해봄).
+3. **`rust-build` CI를 실빌드로 확장**: 지금 CI는 `cargo build`
+   컴파일 체크만 함(더미 sidecar 사용). 7b에서는 각 OS 러너에서 실제
+   `cargo tauri build`로 진짜 설치형 산출물(.dmg/.msi/.AppImage 등)을
+   만드는 CI로 확장 — 이번에 발견한 `needrestart`/apt-get 비대화형
+   설정(`DEBIAN_FRONTEND=noninteractive`, `NEEDRESTART_MODE=a`)과
+   `timeout-minutes` 안전장치를 새 job에도 그대로 적용해 같은 함정을
+   또 밟지 않도록.
+4. **`release-process.md` 재작성**: 현재 문서는 "zip 하나, git 불필요"
+   모델을 전제로 함(CFL-09). 새 모델은 "OS별 설치형 산출물 + 자동
+   업데이트는 여전히 기존 `gh` 기반 방식"으로 다시 쓰고,
+   `scripts/package_platforms.py`의 위치(완전 대체 vs 유지)도 결정.
+5. **코드 서명은 7c로 분리 유지**: 7b는 미서명 설치형 산출물까지만.
+   서명은 비용(Apple $99/년+)·계정 준비가 필요해 별도 게이트라는
+   DEC-22의 결정 그대로.
+6. **7a가 남긴 후속 항목도 이번에 같이 확인**: 위에서 언급한 sidecar
+   종료 정리, 포트 `8787` 충돌 처리 — 실제 설치형 배포판을 여러 OS에서
+   테스트하는 이번 단계가 이 두 가지를 자연스럽게 검증할 기회.
+
 **7a 실제로 한 것**:
 - `src-tauri/`: `cargo tauri init`으로 스캐폴딩(바닐라 JS 템플릿,
   `frontendDist`는 `../webui`를 가리키지만 실제로는 사용되지 않음 —
