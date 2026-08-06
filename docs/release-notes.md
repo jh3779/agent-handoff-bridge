@@ -958,11 +958,22 @@
     `src-tauri/src/lib.rs` instead spawns the `agent-handoff-bridge-server`
     sidecar and only builds the window once its stdout contains the
     readiness line `handoff_webui.py`'s `main()` already prints right
-    after `ThreadingHTTPServer(...)` binds. The sidecar is spawned with
-    `PYTHONUNBUFFERED=1` — also found by testing the real build: a piped
-    (non-tty) stdout switches CPython to fully-buffered, so that
-    readiness print could sit in Python's own buffer indefinitely
-    instead of ever reaching Rust's `CommandEvent::Stdout`.
+    after `ThreadingHTTPServer(...)` binds.
+  - Two buffering bugs stacked on top of that first one, both found only
+    by testing the real built `.app`, not by unit tests: a piped
+    (non-tty) stdout switches CPython to fully-buffered, so the
+    readiness print above could sit in Python's own buffer indefinitely
+    instead of ever reaching Rust's `CommandEvent::Stdout`, hanging
+    window creation forever even with the fix above in place. First
+    tried `PYTHONUNBUFFERED=1` on the sidecar spawn; testing against the
+    actual PyInstaller onefile binary showed this alone did **not**
+    reliably fix it (its bootloader's own environment/re-exec handling
+    doesn't guarantee the variable reaches the embedded interpreter).
+    The real fix: `handoff_webui.py`'s `main()` now calls
+    `sys.stdout.reconfigure(line_buffering=True)` directly, confirmed by
+    redirecting the raw binary's stdout to a file and seeing the
+    readiness line appear immediately. `PYTHONUNBUFFERED=1` stays on the
+    spawn anyway as a harmless extra.
   - Four PyInstaller `--onefile` sidecars, following the real call
     chain: `agent-handoff-bridge-server` (`handoff_webui.py`),
     `agent-handoff-bridge-cli` (`handoff_bridge.py`, invoked by the
@@ -972,7 +983,12 @@
     validate's secret-scan step) — all four declared in
     `tauri.conf.json`'s `bundle.externalBin` (missing any of the last
     three works in ad hoc local testing but silently isn't bundled into
-    the real packaged `.app`).
+    the real packaged `.app`). `scripts/build_phase7a_sidecars.py` is
+    the actual, runnable build script for all four (added in a review
+    round after the four PyInstaller invocations first existed only as
+    interactive shell history) — it imports `handoff_bridge.INSTALL_FILES`
+    directly for the CLI sidecar's `--add-data` flags rather than
+    keeping a second, driftable copy of that file list.
   - Fixed four real instances of a pre-existing pattern this project
     already had (subprocess-invoking a sibling script via
     `[sys.executable, script_path, ...]`) that breaks under freezing --
@@ -1004,16 +1020,54 @@
     the Windows `.exe` suffix. Exact count via
     `python3 -m unittest discover -s tests -v`.
   - Verified against the actual built `.app`, not just unit tests: the
-    sidecar starts, `curl http://127.0.0.1:8787/` returns the real
-    frontend HTML, a first chat message through the real HTTP API
+    sidecar starts, a first chat message through the real HTTP API
     creates a real workspace (`.handoff/current.md`/`state.json`) via
     the CLI sidecar, and `agent-handoff-bridge-cli check` passes clean.
     macOS registers the app as `type="Foreground"` with the correct
     bundle ID and a live WebKit renderer process. Direct visual
     (screenshot) confirmation of the rendered window wasn't possible in
-    this dev environment due to Accessibility-permission limits --
-    functional evidence is strong, but this is flagged rather than
-    silently claimed as fully visually verified.
+    this dev environment (Accessibility-permission limits meant screen
+    automation kept targeting the wrong window entirely -- once
+    misdirecting a keystroke into an unrelated application, after which
+    further screenshot attempts were stopped rather than risking it
+    again). In its place: `tauri-plugin-log`'s persisted log file
+    (always-on, not just in debug builds -- see the review round below)
+    shows the *webview itself*, not `curl`, requesting `GET /`,
+    `GET /app.css`, `GET /app.js`, `GET /api/update-check`, and
+    `GET /api/info` in sequence right after the window was created --
+    exactly the request pattern of a real browser engine parsing the
+    HTML and executing the actual frontend, not something achievable by
+    a bare HTTP client. Near-conclusive without a screenshot; visually
+    confirming firsthand is still recommended.
+  - **Review round** (independent self-review before opening the PR, 5
+    findings, all addressed): a sidecar that dies or errors before ever
+    printing the readiness marker (bad build, port conflict, import
+    error) used to leave the app running with no window, no dialog, and
+    -- because logging was gated to debug builds only -- no diagnostic
+    trail at all in a release build. Fixed: logging is now always on
+    (writes to `tauri-plugin-log`'s normal per-platform log file
+    regardless of build type), and `tauri-plugin-dialog` was added
+    solely for a fatal-startup-error path -- a blocking native dialog
+    plus a clean exit if the sidecar terminates or errors before a
+    window ever exists, rather than sitting invisibly forever. Also
+    found: the new `tests/test_validate_handoff.py` wasn't registered in
+    `scripts/validate_handoff.py`'s own `REQUIRED_FILES`/`PYTHON_FILES`
+    (every other `tests/test_*.py` was) or in `handoff_bridge.py`'s
+    `INSTALL_FILES` (so a normal, unfrozen `install`/`check` would have
+    silently never installed or tracked its own new test file) --
+    registered in all three. `docs/security-model.md` had no section on
+    the new Tauri/sidecar architecture at all; added one, including the
+    finding that `capabilities/default.json`'s `shell:allow-execute`
+    grant and `tauri.conf.json`'s `"csp": null` are both currently inert
+    (the window only ever loads the sidecar's real external
+    `http://127.0.0.1:8787/` URL, and this project's Rust code calls the
+    shell plugin directly rather than through IPC a capability would
+    gate) -- documented so neither is mistaken for load-bearing, or
+    loosened further under the assumption it's already doing real work,
+    if a future sub-phase adds an actual native command surface
+    reachable from the frontend. And: no committed script captured the
+    four PyInstaller build invocations, addressed by
+    `scripts/build_phase7a_sidecars.py` above.
 
 ## v0.1.0 — 2026-08-03
 

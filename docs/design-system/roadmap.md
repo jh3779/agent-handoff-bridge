@@ -500,11 +500,18 @@ Electron 쪽(electron-updater, 문서화는 됐지만 "매우 특수한 경우�
   `ThreadingHTTPServer(...)` 바인딩 뒤에 찍는 준비 완료 신호 문자열을
   포함할 때만 `WebviewWindowBuilder`로 창을 **그때 처음** 만든다 —
   `http://127.0.0.1:8787/`(포트 고정, `--port` 기본값과 일치)로.
-  sidecar에는 `PYTHONUNBUFFERED=1`을 명시적으로 넘긴다 — 이것도
-  실제로 빌드해 띄워보고서야 발견한 문제: stdout이 파이프로 연결되면
-  CPython의 stdio가 줄 단위가 아니라 완전 버퍼링으로 바뀌어, 이
-  준비-신호 print가 버퍼에 갇힌 채 Rust 쪽 `CommandEvent::Stdout`에
-  전혀 도달하지 않을 수 있었다.
+  이것도 실제로 빌드해 띄워보고서야 발견한 문제: stdout이 파이프로
+  연결되면 CPython의 stdio가 줄 단위가 아니라 완전 버퍼링으로 바뀌어,
+  이 준비-신호 print가 버퍼에 갇힌 채 Rust 쪽 `CommandEvent::Stdout`에
+  전혀 도달하지 않을 수 있었다. sidecar spawn에 `PYTHONUNBUFFERED=1`을
+  넘기는 것으로 먼저 시도했으나, 실제로 빌드한 PyInstaller onefile
+  바이너리로 다시 테스트해보니 이 환경변수만으로는 안정적으로 해결되지
+  않았다(bootloader의 자체 환경변수/재실행 처리 때문으로 추정) — 최종
+  수정은 `handoff_webui.py`의 `main()` 맨 앞에서 직접
+  `sys.stdout.reconfigure(line_buffering=True)`를 호출하는 것이었고,
+  이건 실제로 리다이렉트된 파일로 즉시 확인함. `PYTHONUNBUFFERED=1`은
+  해가 없어 그대로 남겨둠(다른 여러 Python 도구가 존중하는 표준
+  신호이므로).
 - **sidecar 4개**, 전부 PyInstaller `--onefile`: `agent-handoff-bridge-server`
   (`handoff_webui.py`), `agent-handoff-bridge-cli`(`handoff_bridge.py`),
   `agent-handoff-bridge-validate`(`scripts/validate_handoff.py`),
@@ -549,10 +556,17 @@ Electron 쪽(electron-updater, 문서화는 됐지만 "매우 특수한 경우�
   `agent-handoff-bridge-cli check`가 전체 통과하는 것까지 전부 실제로
   확인. `.app` 자체가 macOS 프로세스 레지스트리에 `type="Foreground"`
   로 올바른 bundle ID(`com.jh3779.agenthandoffbridge`)로 등록되고
-  WebKit 렌더러 프로세스가 살아있는 것도 확인 — 다만 이 개발 환경의
-  Accessibility 권한 제약으로 렌더링된 창을 스크린샷으로 직접 눈으로
-  확인하지는 못함(기능적 증거는 강하지만, 사용자가 직접 한 번 열어
-  보는 것을 권장).
+  WebKit 렌더러 프로세스가 살아있는 것도 확인. 이 개발 환경의
+  Accessibility 권한 제약으로 스크린샷을 통한 직접 육안 확인은 못
+  했지만(자동화 스크린샷이 계속 다른 창을 잘못 캡처함 — 시도 중
+  실수로 무관한 창에 키 입력을 보낸 사고가 있어 이후 스크린샷 시도
+  자체를 중단함), `tauri-plugin-log`가 always-on으로 남긴 실제 로그가
+  더 강한 증거를 남겼다: 창이 뜬 뒤 `curl`이 아니라 **웹뷰 자신이**
+  `GET /`·`GET /app.css`·`GET /app.js`·`GET /api/update-check`·
+  `GET /api/info`를 순서대로 요청한 기록이 그대로 남음 — 이건 실제
+  브라우저/웹뷰가 HTML을 파싱하고 그 안의 CSS/JS를 로드하고 앱 자신의
+  초기화 API까지 호출했다는 뜻이라, 스크린샷 없이도 사실상 결정적인
+  증거. 그래도 사용자가 직접 한 번 열어 확인하는 것을 권장.
 
 ---
 

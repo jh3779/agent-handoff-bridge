@@ -60,6 +60,7 @@ REQUIRED_FILES = [
     "tests/test_scan_secrets.py",
     "tests/test_check_branch_name.py",
     "tests/test_handoff_webui.py",
+    "tests/test_validate_handoff.py",
     ".handoff/current.md",
     ".handoff/task-template.md",
 ]
@@ -86,6 +87,7 @@ PYTHON_FILES = [
     "tests/test_scan_secrets.py",
     "tests/test_check_branch_name.py",
     "tests/test_handoff_webui.py",
+    "tests/test_validate_handoff.py",
 ]
 
 # Must match HANDOFF_LABELS in handoff_bridge.py and the enum documented in

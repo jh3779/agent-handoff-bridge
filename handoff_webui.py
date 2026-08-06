@@ -2242,6 +2242,21 @@ def _check_for_update_in_background(state: "AppState") -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Phase 7a (DEC-22): when this process is spawned as a Tauri sidecar
+    # (src-tauri/src/lib.rs), the caller waits for a specific line on
+    # this process's stdout before it will create the app window at
+    # all -- but CPython only line-buffers stdout when it's a real tty;
+    # piped to another process (exactly what a sidecar's stdout is),
+    # it's fully block-buffered by default, so the readiness print below
+    # could sit unflushed in this process's own memory indefinitely
+    # (this is a long-running server that never naturally exits to
+    # trigger an on-exit flush). Setting PYTHONUNBUFFERED=1 on the
+    # sidecar spawn was tried first and empirically did NOT reliably
+    # reach this process through PyInstaller's onefile bootloader when
+    # actually tested against the built binary -- reconfiguring the
+    # stream directly here is unaffected by that and by any other
+    # environment-variable propagation question.
+    sys.stdout.reconfigure(line_buffering=True)
     args = build_parser().parse_args(argv)
     if not is_loopback_host(args.host):
         print(f"refusing to bind to non-loopback host: {args.host!r}", file=sys.stderr)

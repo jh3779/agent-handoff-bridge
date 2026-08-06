@@ -101,6 +101,44 @@ Avoid binding to public interfaces. If a non-local interface is required:
 
 The server refuses `--no-auth` on non-local hosts.
 
+## Tauri Shell Boundaries (Phase 7a, DEC-22)
+
+The Tauri shell (`src-tauri/`) does not change any trust boundary this
+document already establishes -- it wraps the existing Python backend
+(PyInstaller sidecar) rather than replacing it, so the backend's own
+already-documented posture applies unchanged: loopback-only HTTP with no
+authentication, and (per DEC-21, `docs/design-system/flutter-mapping.html`)
+a consciously-accepted unrestricted shell-exec tool in API-key mode. This
+section covers only what's new because a native shell now exists.
+
+- **The main window always loads the sidecar's real
+  `http://127.0.0.1:8787/` URL, never Tauri's own bundled/asset-protocol
+  content.** `src-tauri/capabilities/default.json`'s `shell:allow-execute`
+  grant for window `"main"` is consequently inert today: Tauri's
+  permission/capability system gates IPC calls a *webview's own JS*
+  initiates via `invoke(...)`, not calls the trusted Rust backend makes
+  directly (`src-tauri/src/lib.rs` calls `app.shell().sidecar(...)`
+  straight from Rust in `setup()`, never through IPC). The capability
+  entry is left in place because it matches Tauri's own scaffolding
+  convention, not because anything currently depends on it. If a future
+  sub-phase adds a real Tauri command invokable *from* the loaded web
+  content (e.g. wiring a native folder picker to replace the manual-path
+  fallback -- see `docs/design-system/roadmap.md`'s 7a notes), this
+  capability becomes load-bearing and needs to be re-scoped deliberately,
+  not assumed to already be doing something.
+- **`tauri.conf.json`'s `"security": {"csp": null}` is similarly a
+  no-op today**, not a deliberately widened attack surface: Tauri's CSP
+  injection applies to responses served through its own asset/IPC
+  protocol, not to arbitrary external `http://` content the window
+  navigates to. Revisit this the same time the capability grant above
+  gets revisited -- both assumptions hold only as long as the window's
+  content is exactly "the same local Python server this project already
+  runs and has already reasoned about," and no more.
+- `tauri-plugin-dialog` is registered only for a fatal-startup-error
+  path (a blocking native dialog if the sidecar dies before the window
+  is ever created) -- it exposes no new command surface reachable from
+  the frontend.
+
 ## Workspace Safety
 
 Before starting work:
