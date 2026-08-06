@@ -30,12 +30,16 @@ jobs:
   # Phase 7a (DEC-22): a review round found this repo's new src-tauri/ Rust
   # code had zero automated verification -- not even "does it compile" --
   # unlike everything else this project ships. Compile-only (not `cargo
-  # tauri build`/a real bundle): that needs the PyInstaller sidecar
-  # binaries in src-tauri/binaries/ (gitignored, built by
-  # scripts/build_phase7a_sidecars.py, deliberately not something CI
-  # produces here -- cross-platform packaging is 7b's explicit scope, not
-  # 7a's). `cargo build` alone needs none of that; it only proves the Rust
-  # source itself is sound, the actual gap this job closes.
+  # tauri build`/a real bundle, and not scripts/build_phase7a_sidecars.py's
+  # real PyInstaller binaries -- cross-platform packaging is 7b's explicit
+  # scope, not 7a's). Placeholder sidecar files are still required, though:
+  # tauri-build's own build script validates every tauri.conf.json
+  # `bundle.externalBin` path *exists* before it will compile at all --
+  # found the hard way, by this exact job failing on its first real CI run
+  # with "resource path ... doesn't exist" even though nothing here
+  # attempts a real bundle. Empty placeholders are enough to satisfy that
+  # check and prove the Rust source + tauri.conf.json config are both
+  # sound; they are never what a real build/release would ship.
   rust-build:
     runs-on: ubuntu-latest
     steps:
@@ -48,5 +52,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - name: Create placeholder sidecar binaries
+        run: |
+          mkdir -p src-tauri/binaries
+          for name in agent-handoff-bridge-server agent-handoff-bridge-cli agent-handoff-bridge-validate agent-handoff-bridge-scan; do
+            touch "src-tauri/binaries/${name}-x86_64-unknown-linux-gnu"
+            chmod +x "src-tauri/binaries/${name}-x86_64-unknown-linux-gnu"
+          done
       - name: cargo build (src-tauri)
         run: cargo build --manifest-path src-tauri/Cargo.toml
