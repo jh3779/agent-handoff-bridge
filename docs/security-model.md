@@ -171,18 +171,38 @@ section covers only what's new because a native shell now exists.
   mid-write. Windows' `taskkill /T` handles the whole tree in one call
   (graceful attempt first, then `/F` force for survivors).
 - **Distributed installers (`.dmg`/`.app`, `.msi`/nsis `.exe`,
-  `.deb`/`.AppImage`/`.rpm`, built by CI's `installer-build` job) are
-  currently unsigned.** No macOS notarization, no Windows Authenticode
-  signature -- code signing is deliberately deferred to a later "Phase
-  7c" sub-phase (DEC-22, reaffirmed by DEC-23), since it introduces a
-  new recurring cost (Apple Developer Program, $99/year+) and process
-  this project has never had. Practically: macOS Gatekeeper will refuse
-  to open the `.app` normally (right-click → Open, or `xattr -d
-  com.apple.quarantine`, is required the first time) and Windows
-  SmartScreen will show an "unknown publisher" warning. This is expected
-  today, not a bug -- see [Release Process](release-process.md) for how
-  installers are built and published, and `docs/design-system/
-  roadmap.md`'s Phase 7 plan for when signing is expected to land.
+  `.deb`/`.AppImage`/`.rpm`, built by CI's `installer-build` job) ship
+  unsigned, by deliberate, final decision (DEC-24), not a "not done yet."**
+  No macOS notarization, no Windows Authenticode signature. Confirmed
+  real costs before deciding: macOS notarization requires an Apple
+  Developer Program membership ($99/year -- a free Apple ID can sign but
+  not notarize, and Gatekeeper refuses to open an unnotarized app at
+  all); Windows requires purchasing an OV or EV code-signing certificate
+  (EV avoids SmartScreen friction immediately but needs hardware-backed
+  key storage -- a physical HSM or USB token, since file-based
+  Authenticode certs alone stopped being accepted industry-wide after
+  June 2023 -- or a cloud alternative like Azure Trusted Signing).
+  Neither cost is justified for this project's current scale (a private
+  repo where the real userbase is the operator, same premise DEC-19
+  already uses). A sibling project by the same operator
+  (`file-converter`, a separate repo) hit the identical fork and reached
+  the same conclusion (its own DEC-029): ship both platforms unsigned,
+  invest in clear bypass instructions instead of a signing budget. This
+  project follows the same pattern:
+  - **macOS**: the first launch, Gatekeeper blocks the app as being from
+    an "unidentified developer" -- this is not a malware warning. In
+    Finder, **control+click the app → "Open"** once; this bypasses the
+    warning for good after that first confirmation.
+  - **Windows**: SmartScreen shows a **blocking** red "Windows protected
+    your PC" screen (not a dismissible warning) -- this is the normal,
+    expected result of not having a paid code-signing certificate, not a
+    malware detection. That first screen has no "Run" button visible;
+    click the (non-button) **"More info"** text inside it, and a "Run
+    anyway" button appears.
+  Revisit this decision only if the premise changes (e.g. real users
+  beyond the operator, or the project's distribution scale grows) --
+  not on a fixed timeline. See [Release Process](release-process.md) for
+  how installers are built and published.
 
 ## Workspace Safety
 
