@@ -603,6 +603,18 @@ PR/push마다 도는 기존 job들과 같은 트리거로 두면 비용이 크�
   고정되지 않아 이 job을 나중에 다시 수동 실행할 때마다 번들러 동작이
   조용히 달라질 수 있어, 이번에 실제로 로컬 검증에 쓴 정확한 버전
   (`2.11.4`)으로 고정.
+- **PR #14 실제 리뷰 라운드에서 잡힌 것 (머지 전 수정, 재검증 대기)**:
+  (1) `libfuse2` 고정 설치가 위험 중 지적됨 — `ubuntu-latest`가
+  24.04 계열이면 Ubuntu의 64-bit time_t 전환으로 패키지명이
+  `libfuse2t64`로 바뀌었을 수 있어, apt install 자체가 번들러 단계에
+  도달하기도 전에 실패할 수 있음. `libfuse2` 설치를 별도 단계로
+  분리하고 `libfuse2t64` 폴백을 추가(둘 다 실패해도 나머지 단계는
+  계속 진행 — AppImage leg만 나중에 실패하도록). (2) `workflow_dispatch`를
+  workflow 전체 트리거로 추가했더니 기존 `validate`/`rust-build`/
+  `sidecar-build`에는 조건이 없어 수동 실행 시 이들도 같이 돌아
+  비용 절감이라는 애초 목적을 일부 훼손함(위험 하로 지적) —
+  세 job 모두에 `if: github.event_name != 'workflow_dispatch'`를
+  추가해 수동 트리거 시 `installer-build`만 돌도록 격리.
 
 **7a 실제로 한 것**:
 - `src-tauri/`: `cargo tauri init`으로 스캐폴딩(바닐라 JS 템플릿,
