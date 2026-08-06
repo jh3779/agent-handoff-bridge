@@ -1,5 +1,7 @@
 # Release Notes
 
+*([한글 번역](release-notes.ko.md) available.)*
+
 ## Unreleased
 
 ## v0.2.0 — 2026-08-06

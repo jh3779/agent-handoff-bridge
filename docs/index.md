@@ -29,10 +29,11 @@ context.
 - [Korean Operator Guide](ko-operator-guide.md): Korean setup and instruction
   templates for phone-based operation and handoff.
 - [Security Model](security-model.md): safety boundaries and operational risks.
-- [Release Process](release-process.md): how to cut a tagged release with
-  both source zips (terminal/CLI use) and Tauri desktop installers (GUI
-  use) attached.
-- [Release Notes](release-notes.md): what changed in each version.
+- [Release Process](release-process.md) ([한글](release-process.ko.md)):
+  how to cut a tagged release with both source zips (terminal/CLI use)
+  and Tauri desktop installers (GUI use) attached.
+- [Release Notes](release-notes.md) ([한글](release-notes.ko.md)): what
+  changed in each version.
 - [Design System Docs](design-system/README.md): wireframes for the desktop
   GUI and terminal menu, plus the end-to-end handoff workflow diagram.
 - [v0.2 Roadmap](design-system/roadmap.md): phased plan from the current

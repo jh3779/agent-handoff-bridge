@@ -1,5 +1,7 @@
 # Release Process
 
+*([한글 번역](release-process.ko.md) available.)*
+
 How to cut a tagged release of this repo. Since Phase 7b (DEC-23, resolving
 CFL-09), a release ships **two parallel packaging tracks** attached to the
 same version tag and the same GitHub Release:
@@ -196,11 +198,24 @@ private — see [Security Model](security-model.md)).
 - Both packaging tracks stay supported deliberately (DEC-23) — the source
   zip for terminal/scriptable use, the installers for desktop GUI use. Do
   not drop either without a fresh decision recorded the same way.
-- **This runbook's installer track (steps 5-7) has never been run
-  end-to-end** — no tagged release has shipped installer assets yet
-  (`gh release list` is still empty as of this writing). The commands are
-  believed correct against the real `installer-build` job and `gh` CLI
-  behavior, but treat the first real release as the actual test; adjust
-  this doc if anything about `gh run list`'s `headBranch` matching, the
-  artifact directory layout, or the `gh workflow run --ref <tag>` targeting
-  doesn't behave as described here.
+- **This runbook's installer track was run for real for the first time
+  cutting v0.2.0** — a few things worth knowing before the next release:
+  - `gh workflow run` actually printed the new run's URL directly on the
+    `gh` version used, making the bounded polling loop in step 6
+    unnecessary that time — but it's kept as documented since this isn't
+    guaranteed across `gh` versions; if a bare URL comes back, just
+    extract the run ID from it instead of polling.
+  - The Windows `installer-build` leg hit its 30-minute job timeout
+    during a post-job step (`Swatinem/rust-cache`'s cache-save cleanup)
+    that runs *after* the actual build, verification, and artifact
+    upload already completed successfully — so the job's reported
+    `conclusion` was `cancelled`, not `success`, even though the real
+    installer was already fully uploaded and downloadable. Don't treat a
+    `cancelled` conclusion as an automatic failure without checking
+    whether the artifact actually exists first
+    (`gh api repos/<owner>/<repo>/actions/runs/<run_id>/artifacts`) — it
+    might just be a timeout hitting during cleanup, not the build itself
+    failing. If this keeps happening, `timeout-minutes` on that job may
+    need raising.
+  - `gh release create`/`gh release upload` both worked exactly as
+    documented against the real downloaded artifacts.

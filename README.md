@@ -1,5 +1,7 @@
 # Claude Code / Codex / Gemini CLI Handoff Bridge
 
+*([한글 번역](README.ko.md) available.)*
+
 Claude Code CLI, Codex CLI, and Gemini CLI do not currently expose a single
 official "share my remaining tokens and continue in the other CLI" switch.
 This repo is a small bridge scaffold for the practical version: keep work
@@ -12,10 +14,38 @@ free auth-status check, not yet supported in the web UI's API-key mode).
 
 ## Download
 
-No `git clone` required. Grab a zip from
-[GitHub Releases](https://github.com/jh3779/agent-handoff-bridge/releases/latest)
-(this repo is private, so the link only resolves for accounts with access),
-unzip it, and follow the `START_HERE_MACOS.txt` / `START_HERE_WINDOWS.txt`
+This repo is private, so every link below only resolves for a GitHub account
+with access. Two independent ways to get it (DEC-23) — pick whichever fits:
+
+### Desktop installers (GUI, no Python required)
+
+| Platform | Download |
+|---|---|
+| 🪟 **Windows** | **[v0.2.0 인스톨러 (.exe)](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge_0.2.0_x64-setup.exe)** · [.msi](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge_0.2.0_x64_en-US.msi) |
+| 🍎 **macOS** (Apple Silicon only) | **[v0.2.0 dmg](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge_0.2.0_aarch64.dmg)** — Intel Mac은 아직 미지원 |
+| 🐧 **Linux** | **[.AppImage](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge_0.2.0_amd64.AppImage)** · [.deb](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge_0.2.0_amd64.deb) · [.rpm](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge-0.2.0-1.x86_64.rpm) |
+
+> ⚠️ **설치 파일은 미서명입니다** (DEC-24 — 이 프로젝트 규모에서 코드 서명
+> 비용은 정당화되지 않는다고 판단, 재논의 시한 없음). Windows/macOS 모두
+> 첫 실행 시 경고가 뜨는 게 정상이며 악성코드 탐지가 아닙니다:
+>
+> - **Windows**: SmartScreen이 빨간 "Windows의 PC 보호" 화면으로 실행을
+>   **차단**합니다(경고가 아니라 차단). 이 화면엔 "실행" 버튼이 없습니다 —
+>   화면 안의 (버튼이 아닌) **"추가 정보"** 텍스트를 누르면 그제야 "실행"
+>   버튼이 나타납니다.
+> - **macOS**: Gatekeeper가 "확인되지 않은 개발자" 경고로 막습니다. Finder에서
+>   앱을 **control+클릭 → "열기"**를 누르면 한 번만 이 경고를 넘길 수
+>   있습니다.
+>
+> 자세한 내용은 [Security Model](docs/security-model.md) 참고.
+
+### Source zip (terminal/CLI only, requires your own Python 3)
+
+No `git clone` required. Grab a zip —
+[macOS](https://github.com/jh3779/agent-handoff-bridge/releases/latest/download/agent-handoff-bridge-macos.zip)
+·
+[Windows](https://github.com/jh3779/agent-handoff-bridge/releases/latest/download/agent-handoff-bridge-windows.zip)
+— unzip it, and follow the `START_HERE_MACOS.txt` / `START_HERE_WINDOWS.txt`
 file inside. Verify the download without spending any provider tokens:
 
 ```bash
@@ -25,7 +55,8 @@ python3 handoff_bridge.py check
 
 Both commands work from the extracted zip with no git repo present. See
 [docs/release-process.md](docs/release-process.md) for how releases are cut,
-and [docs/release-notes.md](docs/release-notes.md) for what changed.
+and [docs/release-notes.md](docs/release-notes.md) (or the
+[Korean translation](docs/release-notes.ko.md)) for what changed.
 
 ## Current Local Status
 
@@ -172,6 +203,7 @@ want to spend tokens.
 
 ## Documentation
 
+- [README (한글)](README.ko.md)
 - [Documentation Index](docs/index.md)
 - [Platform Setup](docs/platform-setup.md)
 - [Architecture](docs/architecture.md)
@@ -180,7 +212,8 @@ want to spend tokens.
 - [Korean Operator Guide](docs/ko-operator-guide.md)
 - [Security Model](docs/security-model.md)
 - [Quality Gates](docs/quality-gates.md)
-- [Release Notes](docs/release-notes.md)
+- [Release Notes](docs/release-notes.md) ([한글](docs/release-notes.ko.md))
+- [Release Process](docs/release-process.md) ([한글](docs/release-process.ko.md))
 
 ## Optional Hook Setup
 
