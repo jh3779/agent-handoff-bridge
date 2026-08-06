@@ -804,3 +804,14 @@ create a task-specific packet.
   this round's fixes specifically target but never got to test live.
   Otherwise, the remaining Phase 7 items are M5 (code signing, deferred
   to 7c per DEC-22) and 7c itself.
+
+**2026-08-06, follow-up**: user explicitly said "코드 서명 일단은
+제외해줘" (exclude code signing for now) — reaffirms DEC-22's existing
+deferral, not a new decision. With M1/M3/M4/M6 merged and M2 folded into
+M1, **Phase 7b is now substantively complete**; 7c (code signing:
+macOS notarization + Windows Authenticode, new recurring cost — Apple
+Developer Program $99/year+) stays explicitly parked, out of scope until
+separately greenlit. No code/doc changes needed beyond this note — DEC-22
+and the roadmap's Phase 7 summary table already correctly describe this
+as a separate, ungated decision. Do not start 7c work without an explicit
+go-ahead.
