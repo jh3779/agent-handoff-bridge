@@ -464,3 +464,72 @@ create a task-specific packet.
   non-blocking for 7a's actual goal (prove the architecture works).
 - **Blocked**: none. No further action pending — awaiting user direction
   on whether/when to start Phase 7b.
+
+### 2026-08-06 — Phase 7b M1: cross-platform sidecar builds
+
+- **Target**: Claude Code CLI, build/CI work (`scripts/build_sidecars.py`,
+  `.github/workflows/ci.yml`), branch
+  `feature/phase7b-m1-cross-platform-sidecars`, PR #13
+  (https://github.com/jh3779/agent-handoff-bridge/pull/13), **merged**.
+  User confirmed to start 7b at M1 (of the plan recorded in
+  `docs/design-system/roadmap.md`'s "7b 계획" after Phase 7a merged).
+- **Changed**: Renamed/generalized `scripts/build_phase7a_sidecars.py` →
+  `scripts/build_sidecars.py` to build on macOS/Windows/Linux instead of
+  just macOS (Phase 7a's script was macOS-only, built by hand):
+  `--add-data`'s separator now uses `os.pathsep` (PyInstaller's documented
+  rule: `;` on Windows, `:` elsewhere) instead of a hardcoded `:`; new
+  `rename_for_tauri()` automates producing `<name>-<target-triple>[.exe]`
+  filenames (previously `cp` by hand per binary); new `--target-triple`
+  flag, auto-detected via `rustc -vV`'s `host:` line when omitted.
+  `handoff_bridge.py`'s `INSTALL_FILES` and `scripts/validate_handoff.py`'s
+  `REQUIRED_FILES`/`PYTHON_FILES` updated to the new filename (3 sites).
+  New `sidecar-build` CI job: a `macos-latest`/`windows-latest`/
+  `ubuntu-latest` matrix, each running `scripts/build_sidecars.py` with an
+  explicit per-OS `--target-triple` and uploading the four sidecars as
+  artifacts — this project's first real CI execution on Windows. Two known
+  pitfalls pre-empted rather than waited-for: `python` not `python3`
+  (`actions/setup-python` doesn't reliably alias `python3` on Windows),
+  and a `timeout-minutes: 10` safety net (reusing the fail-loudly lesson
+  from `rust-build`'s Phase 7a apt-get/needrestart hang, even though this
+  job has no apt-get step).
+- **Verified**: `python3 -m unittest discover -s tests -v` — 365 tests
+  passing. `python3 handoff_bridge.py check` passes.
+  `python3 scripts/scan_secrets.py` clean. Local macOS: full sidecar build
+  via both auto-detect and explicit `--target-triple` paths, functional
+  CLI `init`/`check` round-trip, `cargo build` clean. CI: all 7 checks
+  green, including `sidecar-build`'s first-ever real run on
+  `windows-latest`/`ubuntu-latest`. One self-review round before opening
+  the PR found no blocking issues (flagged zero test coverage of
+  `detect_target_triple()`/`rename_for_tauri()` as a non-blocking gap —
+  not fixed, noted below). One real automated GitHub review found two
+  medium-risk, both verified against the actual diff and fixed in a
+  follow-up commit before merge: (1) the CI matrix hardcodes each runner's
+  target triple, but `rename_for_tauri()` never checks the PyInstaller
+  output's actual OS/arch against it — if a GitHub runner label's
+  underlying machine ever changes, CI would stay green while producing a
+  wrongly-named artifact; fixed with a step comparing `runner.os`/
+  `runner.arch` against each matrix leg's expected value, failing loudly
+  on mismatch. (2) the "verify files exist" step only checked filenames,
+  never executed anything, so a frozen import error or bad bundling could
+  still pass; fixed with a smoke-test step running each triple-suffixed
+  sidecar right after building (CLI with `--version`, the other three
+  with `--help`) on all three OSes — confirmed working against the real
+  local macOS build before pushing. Re-review after the fix returned risk
+  하 (low), 0 findings.
+- **Remaining**: `scripts/build_sidecars.py`'s `detect_target_triple()`
+  (the `rustc -vV` auto-detect path) and `rename_for_tauri()` have zero
+  unit-test coverage — flagged by the self-review as a legitimate,
+  non-blocking gap (the CI job always passes `--target-triple` explicitly
+  and never exercises auto-detect at all). The review bot's optional
+  (non-blocking) suggestion — archive uploaded artifacts with `tar`/`zip`
+  to preserve Unix executable permission bits, since raw
+  `actions/upload-artifact` doesn't — is also still open. Per the 7b plan
+  in `docs/design-system/roadmap.md`, remaining milestones are M3 (extend
+  `rust-build` from compile-check to a real `cargo tauri build` producing
+  actual installers per OS), M4 (`docs/release-process.md` rewrite,
+  CFL-09), M5 (code signing, deferred to 7c per DEC-22), M6 (verify the
+  two Phase 7a-deferred follow-ups: sidecar cleanup on app quit, port 8787
+  conflict handling). M2 (target-triple automation) was substantially
+  folded into M1's work already.
+- **Blocked**: none. No further action pending — awaiting user direction
+  on whether/when to continue to 7b's next milestone.
