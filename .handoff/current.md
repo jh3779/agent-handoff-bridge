@@ -836,3 +836,26 @@ by a real tagged release; (3) M6's deeper tree-kill/graceful-timing fixes
 remain empirically unverified on real Windows/Linux. None are blocking
 anything — they're the natural entry points whenever this project picks
 Phase 7 back up (or starts 7c, if that gets a separate go-ahead).
+
+**2026-08-06, Phase 7c finalized as "no" (DEC-24)**: user asked to check
+code signing's real costs and, if any existed, follow the direction a
+sibling project (`file-converter`, `/Users/jihun/Developer/file-converter`,
+separate repo, same operator) took at the same fork. Confirmed real costs
+(macOS Apple Developer Program $99/year for notarization; Windows OV/EV
+cert, EV needing hardware-backed key storage post-June-2023) and directly
+inspected `file-converter`'s own decision log and CI config — it hit the
+identical fork and chose (its DEC-029) to ship both platforms unsigned,
+investing in clear Gatekeeper/SmartScreen bypass docs instead; confirmed
+this is actually implemented there, not just written down (zero
+signing-related steps anywhere in its `.github/workflows/build.yml`).
+Converted this project's Phase 7c from DEC-22's open-ended "separate
+decision gate" into **DEC-24: a final "no"** for the current scale
+(private repo, real userbase is the operator) -- not a postponement.
+`docs/security-model.md` gained the same concrete bypass instructions
+(macOS: control+click → Open; Windows: click "More info" → "Run
+anyway"). `docs/design-system/roadmap.md`'s Phase 7c bullet and status
+table, and `flutter-mapping.html`'s Decision Log, all updated to match.
+**Phase 7 (the entire framework-migration effort, DEC-01) is now fully
+closed out** — 7a/7b done, 7c decided against. Revisit only if the
+userbase premise changes, not on a fixed timeline; no code changes, no
+cost incurred.
