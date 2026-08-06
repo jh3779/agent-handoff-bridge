@@ -88,6 +88,41 @@ class MainRefusesNonLoopbackHostTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
 
 
+class BridgeCommandPrefixTests(unittest.TestCase):
+    """Phase 7a (DEC-22): when this module runs frozen (PyInstaller, as
+    the Tauri sidecar), sys.executable is the frozen server binary
+    itself, not a real Python interpreter -- bridge_command_prefix()
+    must switch to invoking a sibling CLI sidecar binary directly
+    instead of `[sys.executable, BRIDGE_SCRIPT]`."""
+
+    def test_unfrozen_uses_sys_executable_and_bridge_script(self):
+        with mock.patch.object(webui.sys, "frozen", False, create=True):
+            self.assertEqual(webui.bridge_command_prefix(), [webui.sys.executable, str(webui.BRIDGE_SCRIPT)])
+
+    def test_frozen_uses_a_sibling_cli_sidecar_next_to_sys_executable(self):
+        with mock.patch.object(webui.sys, "frozen", True, create=True), mock.patch.object(
+            webui.sys, "executable", "/Applications/Agent Handoff Bridge.app/Contents/MacOS/agent-handoff-bridge-server"
+        ), mock.patch.object(webui.sys, "platform", "darwin"):
+            prefix = webui.bridge_command_prefix()
+        self.assertEqual(
+            prefix, ["/Applications/Agent Handoff Bridge.app/Contents/MacOS/agent-handoff-bridge-cli"]
+        )
+
+    def test_frozen_on_windows_uses_the_exe_suffix(self):
+        # Deliberately POSIX-style (forward slashes), not a real Windows
+        # path -- pathlib.Path is platform-native, so a backslash path
+        # mocked in on a POSIX test runner would not split into
+        # components the way it does on real Windows (Path("C:\\a\\b")
+        # is one opaque POSIX filename, not a 3-part path); this only
+        # needs to prove the ".exe" suffix is added when sys.platform is
+        # "win32", not exercise real Windows path parsing.
+        with mock.patch.object(webui.sys, "frozen", True, create=True), mock.patch.object(
+            webui.sys, "executable", "/apps/agent-handoff-bridge/agent-handoff-bridge-server.exe"
+        ), mock.patch.object(webui.sys, "platform", "win32"):
+            prefix = webui.bridge_command_prefix()
+        self.assertEqual(prefix, ["/apps/agent-handoff-bridge/agent-handoff-bridge-cli.exe"])
+
+
 class SafeJoinTests(unittest.TestCase):
     def test_relative_path_within_root_resolves(self):
         with tempfile.TemporaryDirectory() as tmp:

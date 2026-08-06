@@ -1057,8 +1057,21 @@ def status(_: argparse.Namespace) -> int:
 
 
 def check(_: argparse.Namespace) -> int:
-    validator = BRIDGE_ROOT / "scripts/validate_handoff.py"
-    return subprocess.run([sys.executable, str(validator), "--root", str(Path.cwd())], check=False).returncode
+    if getattr(sys, "frozen", False):
+        # Phase 7a (DEC-22, docs/research-phase7-framework.md): frozen as
+        # the Tauri sidecar agent-handoff-bridge-cli, sys.executable is
+        # this binary itself, not a Python interpreter -- passing it
+        # scripts/validate_handoff.py's path wouldn't run that script.
+        # A sibling PyInstaller sidecar built from validate_handoff.py
+        # (agent-handoff-bridge-validate, Tauri places every declared
+        # sidecar in the same directory as this one) is invoked directly
+        # instead, matching handoff_webui.py's bridge_command_prefix().
+        validate_name = "agent-handoff-bridge-validate.exe" if sys.platform == "win32" else "agent-handoff-bridge-validate"
+        command = [str(Path(sys.executable).resolve().parent / validate_name), "--root", str(Path.cwd())]
+    else:
+        validator = BRIDGE_ROOT / "scripts/validate_handoff.py"
+        command = [sys.executable, str(validator), "--root", str(Path.cwd())]
+    return subprocess.run(command, check=False).returncode
 
 
 def build_parser() -> argparse.ArgumentParser:

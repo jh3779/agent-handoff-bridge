@@ -487,6 +487,73 @@ Electron 쪽(electron-updater, 문서화는 됐지만 "매우 특수한 경우�
   네이티브 애니메이션 목표를 실제로 달성하려면 필요할 가능성이 높지만,
   기술적으로는 독립된 결정).
 
+**7a 실제로 한 것**:
+- `src-tauri/`: `cargo tauri init`으로 스캐폴딩(바닐라 JS 템플릿,
+  `frontendDist`는 `../webui`를 가리키지만 실제로는 사용되지 않음 —
+  아래 이유). `tauri.conf.json`의 `app.windows`는 **의도적으로
+  비워둠** — 창을 정적으로 선언하면 sidecar가 실제로 준비되기 전에
+  즉시 그 URL로 첫 내비게이션을 시도하고, 실패하면 다시 시도하지
+  않는다(PyInstaller onefile 바이너리의 실제 시작 비용 — 압축 해제 +
+  Python import — 을 실제로 빌드한 `.app`을 직접 띄워보고서야
+  발견). 대신 `src-tauri/src/lib.rs`가 `agent-handoff-bridge-server`
+  sidecar를 spawn하고, 그 stdout이 `handoff_webui.py main()`이 이미
+  `ThreadingHTTPServer(...)` 바인딩 뒤에 찍는 준비 완료 신호 문자열을
+  포함할 때만 `WebviewWindowBuilder`로 창을 **그때 처음** 만든다 —
+  `http://127.0.0.1:8787/`(포트 고정, `--port` 기본값과 일치)로.
+  sidecar에는 `PYTHONUNBUFFERED=1`을 명시적으로 넘긴다 — 이것도
+  실제로 빌드해 띄워보고서야 발견한 문제: stdout이 파이프로 연결되면
+  CPython의 stdio가 줄 단위가 아니라 완전 버퍼링으로 바뀌어, 이
+  준비-신호 print가 버퍼에 갇힌 채 Rust 쪽 `CommandEvent::Stdout`에
+  전혀 도달하지 않을 수 있었다.
+- **sidecar 4개**, 전부 PyInstaller `--onefile`: `agent-handoff-bridge-server`
+  (`handoff_webui.py`), `agent-handoff-bridge-cli`(`handoff_bridge.py`),
+  `agent-handoff-bridge-validate`(`scripts/validate_handoff.py`),
+  `agent-handoff-bridge-scan`(`scripts/scan_secrets.py`) — CLI가
+  `check` 실행 시 validate를, validate가 secret scan 시 scan을 필요로
+  하는 실제 호출 사슬을 그대로 따라간 결과. `tauri.conf.json`의
+  `bundle.externalBin`에 네 개 전부 등록 — server만 등록하면 Tauri가
+  나머지 셋을 최종 `.app`에 아예 안 담아서, 로컬 테스트에선 되다가
+  실제 패키징된 앱에선 깨지는 함정.
+- **`sys.executable` + 스크립트 경로로 서로를 subprocess 호출하던
+  실제 버그 4곳**(이 프로젝트에 이미 있던 패턴 — frozen 상태에선
+  `sys.executable`이 진짜 Python 인터프리터가 아니라 그 바이너리
+  자신이라 완전히 다르게 동작함): `handoff_webui.py`의
+  `bridge_command_prefix()`(새 헬퍼, `init`/`run`이 CLI sidecar를
+  올바르게 찾도록), `handoff_bridge.py`의 `check()`(validate
+  sidecar), `scripts/validate_handoff.py`의 `check_secrets()`(scan
+  sidecar) — 셋 다 `getattr(sys, "frozen", False)`로 분기해 frozen일
+  땐 `sys.executable`과 같은 디렉터리의 형제 sidecar를 직접 실행.
+  `check_tests()`(전체 개발 테스트 스위트 재실행)는 같은 방식으로
+  고칠 수 없었다 — 그 테스트 스위트 자체가 `sys.executable` 기반
+  서브프로세스 호출로 통합 테스트를 하기 때문에, frozen 인터프리터
+  안에서 다시 실행하면 같은 문제가 재귀적으로 발생한다. 대신 frozen일
+  땐 조용히 건너뛴다(실제 배포된 앱에는 재실행할 "소스 트리 테스트
+  스위트" 자체가 없다는 논리 — dev/CI 전용 개념).
+- `handoff_bridge.py check`가 참조하는 ~50개 파일(`INSTALL_FILES`)을
+  CLI sidecar에 `--add-data`로 명시적으로 번들 — PyInstaller onefile은
+  Python 코드 외 데이터 파일을 기본으로 담지 않으므로, 이게 없으면
+  frozen 상태의 `init`이 새 워크스페이스에 아무것도 못 채운다.
+  `check_tests()`가 동적으로 discover하는 `tests/*.py`들이 쓰는
+  `unittest.mock`/`http.server` 등 표준 라이브러리 서브모듈도 정적
+  분석만으론 안 잡혀 `--hidden-import`로 명시 추가.
+- 새 테스트: `BridgeCommandPrefixTests`(handoff_webui.py),
+  `CheckCommandTests`(handoff_bridge.py),
+  `tests/test_validate_handoff.py`(신설 — 이전엔 이 스크립트에 단위
+  테스트가 아예 없었음) — 전부 frozen/unfrozen 두 경로와 Windows
+  `.exe` 접미사를 확인. 정확한 개수는
+  `python3 -m unittest discover -s tests -v`로 확인.
+- **검증**: 실제로 빌드한 `.app`을 직접 실행 — sidecar가 뜨고,
+  `curl http://127.0.0.1:8787/`이 실제 프론트엔드 HTML을 반환하고,
+  `POST /api/chat`으로 보낸 첫 메시지가 CLI sidecar를 통해 실제
+  워크스페이스(`.handoff/current.md`/`state.json` 포함)를 만들고,
+  `agent-handoff-bridge-cli check`가 전체 통과하는 것까지 전부 실제로
+  확인. `.app` 자체가 macOS 프로세스 레지스트리에 `type="Foreground"`
+  로 올바른 bundle ID(`com.jh3779.agenthandoffbridge`)로 등록되고
+  WebKit 렌더러 프로세스가 살아있는 것도 확인 — 다만 이 개발 환경의
+  Accessibility 권한 제약으로 렌더링된 창을 스크린샷으로 직접 눈으로
+  확인하지는 못함(기능적 증거는 강하지만, 사용자가 직접 한 번 열어
+  보는 것을 권장).
+
 ---
 
 ## 상태 추적
@@ -500,7 +567,7 @@ Electron 쪽(electron-updater, 문서화는 됐지만 "매우 특수한 경우�
 | 4 — API 키 모드 | ✅ 완료 | CFL-12 해소, DEC-13~16 적용 (CFL-17 후속 발견 → DEC-21로 별도 해소) |
 | 5 — Gemini + provider 확장성 | ✅ 완료 | CFL-13 해소, DEC-17/18 적용 |
 | 6 — 자동 업데이트 확인 | ✅ 완료 | CFL-11 해소, DEC-19 적용 (CFL-18 후속 발견 → DEC-20으로 별도 해소) |
-| 7 — 프레임워크 전환 | 🚧 진행 중 (설계 확정, 7a 착수) | CFL-06(실행), CFL-09, CFL-14 해소·DEC-22 적용 |
+| 7 — 프레임워크 전환 | 🚧 진행 중 (7a 완료, 7b/7c 남음) | CFL-06(실행), CFL-09(7b에서 해소 예정), CFL-14 해소·DEC-22 적용 |
 
 이 표가 정본은 아니다 — 각 phase가 끝나면 여기 상태만 갱신하고, 실제
 해소 근거는 [flutter-mapping.html Conflict List](flutter-mapping.html#s2)

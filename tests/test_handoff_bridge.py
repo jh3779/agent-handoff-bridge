@@ -202,6 +202,43 @@ class VersionTests(unittest.TestCase):
         self.assertIn(hb.BRIDGE_VERSION, result.stdout)
 
 
+class CheckCommandTests(unittest.TestCase):
+    """check()'s subprocess command construction -- Phase 7a (DEC-22):
+    when frozen (PyInstaller, as the Tauri sidecar
+    agent-handoff-bridge-cli), sys.executable is this binary itself, not
+    a Python interpreter, so `[sys.executable, validate_handoff.py]`
+    wouldn't run that script. A sibling PyInstaller sidecar built from
+    validate_handoff.py is invoked directly instead in that case."""
+
+    def test_unfrozen_shells_out_to_sys_executable_and_the_script(self):
+        with mock.patch.object(hb.sys, "frozen", False, create=True), mock.patch(
+            "handoff_bridge.subprocess.run"
+        ) as run_spy:
+            run_spy.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+            hb.check(mock.Mock())
+        command = run_spy.call_args.args[0]
+        self.assertEqual(command[0], hb.sys.executable)
+        self.assertTrue(command[1].endswith("scripts/validate_handoff.py"))
+
+    def test_frozen_uses_a_sibling_validate_sidecar_next_to_sys_executable(self):
+        with mock.patch.object(hb.sys, "frozen", True, create=True), mock.patch.object(
+            hb.sys, "executable", "/Applications/Agent Handoff Bridge.app/Contents/MacOS/agent-handoff-bridge-cli"
+        ), mock.patch.object(hb.sys, "platform", "darwin"), mock.patch("handoff_bridge.subprocess.run") as run_spy:
+            run_spy.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+            hb.check(mock.Mock())
+        command = run_spy.call_args.args[0]
+        self.assertEqual(command[0], "/Applications/Agent Handoff Bridge.app/Contents/MacOS/agent-handoff-bridge-validate")
+
+    def test_frozen_on_windows_uses_the_exe_suffix(self):
+        with mock.patch.object(hb.sys, "frozen", True, create=True), mock.patch.object(
+            hb.sys, "executable", "/apps/agent-handoff-bridge/agent-handoff-bridge-cli.exe"
+        ), mock.patch.object(hb.sys, "platform", "win32"), mock.patch("handoff_bridge.subprocess.run") as run_spy:
+            run_spy.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+            hb.check(mock.Mock())
+        command = run_spy.call_args.args[0]
+        self.assertEqual(command[0], "/apps/agent-handoff-bridge/agent-handoff-bridge-validate.exe")
+
+
 class WriteLockTests(unittest.TestCase):
     def test_lock_is_released_on_exit(self):
         with tempfile.TemporaryDirectory() as tmp:

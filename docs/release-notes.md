@@ -940,6 +940,81 @@
     still said "cwd-confined" even after Round 3 fixed every persisted
     doc/comment — corrected there too.
 
+- Phase 7a (framework migration kickoff, DEC-22 — CFL-14 resolved): the
+  first real, non-Python code in this repo. A design interview resolved
+  four architecture forks (Tauri over Electron, keep the Python backend
+  as a PyInstaller sidecar rather than a Rust rewrite, keep the existing
+  `gh`-based update check rather than either framework's own updater,
+  carry `webui/` over near-verbatim this phase) — see DEC-22. This adds
+  the smallest sub-phase (7a): prove the sidecar architecture actually
+  works end to end on one OS, no packaging/signing/cross-platform build
+  yet (7b/7c).
+  - `src-tauri/`: a Tauri v2 project (`cargo tauri init`, vanilla JS
+    template). `tauri.conf.json`'s `app.windows` is deliberately empty —
+    a statically-declared window navigates to its URL the instant it's
+    created, which races a PyInstaller onefile binary's real startup
+    cost (self-extraction + a full Python import), found by actually
+    launching the built `.app` and getting a permanently blank window.
+    `src-tauri/src/lib.rs` instead spawns the `agent-handoff-bridge-server`
+    sidecar and only builds the window once its stdout contains the
+    readiness line `handoff_webui.py`'s `main()` already prints right
+    after `ThreadingHTTPServer(...)` binds. The sidecar is spawned with
+    `PYTHONUNBUFFERED=1` — also found by testing the real build: a piped
+    (non-tty) stdout switches CPython to fully-buffered, so that
+    readiness print could sit in Python's own buffer indefinitely
+    instead of ever reaching Rust's `CommandEvent::Stdout`.
+  - Four PyInstaller `--onefile` sidecars, following the real call
+    chain: `agent-handoff-bridge-server` (`handoff_webui.py`),
+    `agent-handoff-bridge-cli` (`handoff_bridge.py`, invoked by the
+    server for `init`/`run`), `agent-handoff-bridge-validate`
+    (`scripts/validate_handoff.py`, invoked by the CLI's `check`),
+    `agent-handoff-bridge-scan` (`scripts/scan_secrets.py`, invoked by
+    validate's secret-scan step) — all four declared in
+    `tauri.conf.json`'s `bundle.externalBin` (missing any of the last
+    three works in ad hoc local testing but silently isn't bundled into
+    the real packaged `.app`).
+  - Fixed four real instances of a pre-existing pattern this project
+    already had (subprocess-invoking a sibling script via
+    `[sys.executable, script_path, ...]`) that breaks under freezing --
+    frozen, `sys.executable` is the frozen binary itself, not a Python
+    interpreter. `handoff_webui.py` gained `bridge_command_prefix()`;
+    `handoff_bridge.py`'s `check()` and
+    `scripts/validate_handoff.py`'s `check_secrets()` got the same
+    `getattr(sys, "frozen", False)` branch, invoking a sibling sidecar
+    binary directly instead. `check_tests()` (re-running this project's
+    own dev unit test suite) couldn't be fixed the same way -- that
+    suite's own integration tests spawn fresh `sys.executable`
+    subprocesses, the exact assumption being worked around, so re-running
+    it from inside an already-frozen interpreter hits the same problem
+    recursively. It skips cleanly when frozen instead, since a shipped
+    app has no dev checkout to test against anyway.
+  - The ~50 files `handoff_bridge.py`'s `install`/`init` copy into a new
+    workspace (`INSTALL_FILES`) had to be bundled into the CLI sidecar
+    via `--add-data` -- PyInstaller onefile doesn't include non-Python
+    data files by default, so the frozen `init` would otherwise silently
+    produce an incomplete workspace. Dynamically-`unittest.discover()`-ed
+    test modules' stdlib imports (`unittest.mock`, `http.server`, etc.)
+    needed explicit `--hidden-import` flags for the same reason (not
+    visible to PyInstaller's static analysis of the entry-point script
+    alone).
+  - New tests: `BridgeCommandPrefixTests` (`handoff_webui.py`),
+    `CheckCommandTests` (`handoff_bridge.py`), and a new
+    `tests/test_validate_handoff.py` (this script had no unit tests
+    before) -- all covering both the frozen and unfrozen branches, plus
+    the Windows `.exe` suffix. Exact count via
+    `python3 -m unittest discover -s tests -v`.
+  - Verified against the actual built `.app`, not just unit tests: the
+    sidecar starts, `curl http://127.0.0.1:8787/` returns the real
+    frontend HTML, a first chat message through the real HTTP API
+    creates a real workspace (`.handoff/current.md`/`state.json`) via
+    the CLI sidecar, and `agent-handoff-bridge-cli check` passes clean.
+    macOS registers the app as `type="Foreground"` with the correct
+    bundle ID and a live WebKit renderer process. Direct visual
+    (screenshot) confirmation of the rendered window wasn't possible in
+    this dev environment due to Accessibility-permission limits --
+    functional evidence is strong, but this is flagged rather than
+    silently claimed as fully visually verified.
+
 ## v0.1.0 — 2026-08-03
 
 First tagged release. Downloadable as `agent-handoff-bridge-macos.zip` /
