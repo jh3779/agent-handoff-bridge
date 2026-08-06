@@ -859,3 +859,124 @@ table, and `flutter-mapping.html`'s Decision Log, all updated to match.
 closed out** — 7a/7b done, 7c decided against. Revisit only if the
 userbase premise changes, not on a fixed timeline; no code changes, no
 cost incurred.
+
+### 2026-08-06 — v0.2.0: first real tagged release, cut end-to-end
+
+- **Target**: Claude Code CLI, direct commits to `main` (no PR — matches
+  how release-cutting has always worked per `docs/release-process.md`,
+  not a feature branch). User said "이제 다운로드 링크 릴리스 진행해줘"
+  (proceed with the download-link release now). **Codex explicitly not
+  involved in this piece of work** (user's own words), so no handoff
+  coordination needed here.
+- **Changed**: This is the **first tagged release this repo has ever
+  actually published on GitHub** — `git tag`/`gh release list` were both
+  completely empty beforehand, even though `docs/release-notes.md`
+  already had a historical "v0.1.0" section (written but apparently
+  never actually cut as a real GitHub Release/tag on this remote).
+  `BRIDGE_VERSION` bumped `0.1.0` → `0.2.0` (`handoff_bridge.py`,
+  `src-tauri/tauri.conf.json`) — matches this project's own long-standing
+  internal name for the entire chat-redesign + framework-migration body
+  of work sitting in `## Unreleased` (Phases 1-7, all of it, referred to
+  as "v0.2" throughout this project's history). Followed
+  `docs/release-process.md` step by step for the actual execution:
+  - **Step 3 (validation) caught a real bug immediately**: 
+    `tests/test_handoff_bridge.py::test_a_newer_release_is_reported` had
+    hardcoded a mock "newer" release tag as the literal string
+    `"v0.2.0"` — which silently collided the instant `BRIDGE_VERSION`
+    was actually bumped to that exact value, since the test then had no
+    version left that was legitimately "newer." Fixed by deriving the
+    mock tag relative to `BRIDGE_VERSION` (major + 1) instead of a
+    hardcoded literal, so this can never recur regardless of what the
+    real current version happens to be.
+  - **Step 4 (build+sanity-check the zip) caught two more real gaps**,
+    exactly the failure mode the doc's own step 4 anticipated ("a file
+    used by `check` is missing from `COMMON_FILES`"): extracting the
+    real built zip and running `check`/`install` standalone (no git
+    repo, exactly as a real downloader would) found
+    `scripts/build_sidecars.py` and `tests/test_validate_handoff.py`
+    missing from `scripts/package_platforms.py`'s `COMMON_FILES` (both
+    already required by `handoff_bridge.py`'s `INSTALL_FILES` /
+    `validate_handoff.py`'s `REQUIRED_FILES`, added in earlier Phase 7
+    work but never backfilled into the zip packaging list) — the first
+    caused an outright `check` failure; the second wouldn't fail `check`
+    but was still missing from what ships. Also found, by cross-checking
+    `INSTALL_FILES` against `COMMON_FILES` programmatically rather than
+    waiting to hit each gap one at a time: `.githooks/pre-commit`,
+    `.githooks/pre-push`, and `scripts/install_git_hooks.sh` were in
+    `INSTALL_FILES` (so `install` tries to copy them into a target
+    workspace) but never bundled into the zip itself -- a real
+    downloader running `install` from the extracted zip would have hit
+    `FileNotFoundError`. All four added to `COMMON_FILES`; re-verified
+    with a full extract → `check` → `install` cycle, including
+    confirming the git hooks' executable permissions survive the
+    zip round-trip.
+  - **Steps 5-8 (commit/tag/push, trigger `installer-build`, publish)
+    run for real for the first time**: tagged and pushed `v0.2.0`,
+    triggered `installer-build` via `gh workflow run ci.yml --ref
+    v0.2.0`. All three OS legs actually produced real installers;
+    downloaded and attached all 8 assets to the GitHub Release (2 source
+    zips, Windows `.exe`+`.msi`, macOS `.dmg`, Linux
+    `.AppImage`+`.deb`+`.rpm`).
+    [https://github.com/jh3779/agent-handoff-bridge/releases/tag/v0.2.0](https://github.com/jh3779/agent-handoff-bridge/releases/tag/v0.2.0)
+    — first real, live download links this project has ever had.
+  - **Real, first-time-only finding**: the Windows `installer-build` leg
+    hit its 30-minute job timeout, but *after* the real build,
+    verification, and artifact upload had already succeeded — the
+    timeout landed during a post-job step (`Swatinem/rust-cache`'s cache
+    save), so the job's `conclusion` reported `cancelled` even though
+    the artifact was genuinely fine and fully downloadable. Verified via
+    the GitHub API directly (artifact existed, correct size, not
+    expired) before trusting it. Documented in
+    `docs/release-process.md`'s Notes section so a future release
+    doesn't mistake this for an actual build failure. Also noted: `gh
+    workflow run` printed the new run's URL directly on the `gh` version
+    used this time, making step 6's documented polling loop unnecessary
+    in practice (kept in the doc anyway since this isn't guaranteed
+    across `gh` versions).
+  - **README.md's Download section**, previously deliberately left
+    zip-only (no real release existed yet to link), now has real,
+    live links to all v0.2.0 assets — styled after a sibling project's
+    (`file-converter`) table + blockquote-warning format: a platform
+    table for the desktop installers, explicit step-by-step
+    Gatekeeper/SmartScreen bypass instructions (matching the same
+    wording `docs/security-model.md` already uses per DEC-24), and the
+    existing source-zip instructions kept as a second, clearly-labeled
+    track underneath.
+  - **README.md separately updated to acknowledge Gemini** as a full
+    third provider (title, intro, "Current Local Status" section) — it
+    had been added as a real provider back in Phase 5 but README's
+    title/body text still only ever said "Codex/Claude," never
+    mentioning Gemini at all. Fixed with accurate, non-overclaiming
+    language about Gemini's real limitations (no free auth-status
+    check, not yet in API-key mode).
+  - **Korean translations added as separate files** (matching the
+    existing `docs/ko-operator-guide.md` pattern — English stays the
+    source of truth, Korean lives alongside it, not a replacement, per
+    the user's explicit choice when asked): `README.ko.md`,
+    `docs/release-notes.ko.md` (translated in full, both the huge
+    v0.2.0 entry and the shorter v0.1.0/Initial sections -- the user
+    initially scoped this to "just v0.2.0 in detail" given the sheer
+    size of the full changelog, then explicitly expanded it to
+    "전체 내용" (the whole thing) once the v0.2.0 section was done), and
+    `docs/release-process.ko.md`. Cross-linked from README.md,
+    `docs/index.md`, and a one-line pointer at the top of each English
+    original.
+- **Verified**: `python3 -m unittest discover -s tests -v` (365 tests,
+  passing after the version-bump-collision fix), `python3
+  handoff_bridge.py check`, `python3 scripts/scan_secrets.py` all clean
+  at every step. The actual release itself is about as end-to-end
+  verified as it gets short of a real user downloading it: real zip
+  extracted and round-tripped through `check`+`install` standalone, real
+  installers built by real CI runners on all three OSes, real GitHub
+  Release with real attached assets, real download link format
+  confirmed against `gh release view`.
+- **Remaining**: none of this touched code (only version numbers,
+  a test fixture, `COMMON_FILES`, and docs) beyond what release-cutting
+  itself requires — no new feature work. The known, already-recorded
+  gaps from Phase 7b/7c (Intel Mac unsupported, Windows sidecar-kill
+  edge case, Windows/Linux runtime never tested in this dev environment)
+  are unchanged by this release and still open. Whoever cuts the next
+  release should read the new "real experience" notes added to
+  `docs/release-process.md` first.
+- **Blocked**: none. v0.2.0 is live with working download links. No
+  further action pending.
