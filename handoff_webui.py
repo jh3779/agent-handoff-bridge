@@ -47,6 +47,15 @@ from handoff_bridge import (
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
+# Phase 7b M6: a stable, OS-independent stderr marker for "the port is
+# already in use" -- src-tauri/src/lib.rs used to detect this by matching
+# raw OSError text (POSIX's "Address already in use" vs. Windows'
+# WSAEADDRINUSE wording, which can itself be localized per system
+# language), which a review round pointed out was fragile. Printing this
+# fixed string ourselves, once, means the Rust side never has to guess at
+# what a given Python/OS combination's exception text looks like.
+PORT_CONFLICT_MARKER = "AHB_PORT_CONFLICT"
+
 
 def bridge_command_prefix() -> list[str]:
     """The argv prefix for invoking handoff_bridge.py's CLI as a
@@ -2276,7 +2285,12 @@ def main(argv: list[str] | None = None) -> int:
     threading.Thread(target=_check_for_update_in_background, args=(state,), daemon=True).start()
 
     handler = build_handler(state)
-    httpd = ThreadingHTTPServer((args.host, args.port), handler)
+    try:
+        httpd = ThreadingHTTPServer((args.host, args.port), handler)
+    except OSError as exc:
+        if exc.errno in (48, 98, 10048):  # EADDRINUSE: macOS, Linux, Windows
+            print(PORT_CONFLICT_MARKER, file=sys.stderr)
+        raise
     url = f"http://{args.host}:{args.port}/"
     if workspace is not None:
         print(f"Agent Handoff Bridge web UI (MVP) serving {workspace}")

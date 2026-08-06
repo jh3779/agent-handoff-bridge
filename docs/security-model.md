@@ -143,6 +143,33 @@ section covers only what's new because a native shell now exists.
   path (a blocking native dialog if the sidecar dies before the window
   is ever created) -- it exposes no new command surface reachable from
   the frontend.
+- **Sidecar process cleanup on app quit (Phase 7b M6).** Verified
+  empirically that this was actually broken through 7a and 7b M1-M4: the
+  `CommandChild` returned by spawning the sidecar was dropped immediately
+  with no cleanup, so quitting the app left the sidecar running forever
+  as a process reparented to `launchd`/init -- discovered via a real
+  leftover orphan, still holding port 8787 hours after its parent app
+  had exited. Fixed in `src-tauri/src/lib.rs`: the child is now kept in
+  managed state and explicitly killed on `RunEvent::Exit` (not
+  `ExitRequested`, which doesn't fire on a normal quit -- verified by
+  logging every event a real quit actually produces). Killing just the
+  tracked PID isn't enough either -- PyInstaller's onefile bootloader
+  re-execs into a second process, and `CommandChild::kill()` (SIGKILL/
+  TerminateProcess) only reaches the outer one, immediately orphaning the
+  inner one all over again. A single-hop `pkill -P <pid>` (killing only
+  *direct* children) isn't enough either: an in-flight provider run makes
+  the real tree deeper (a second PyInstaller sidecar,
+  `agent-handoff-bridge-cli`, spawned mid-run, which itself re-execs and
+  spawns the real `codex`/`claude`/`gemini` subprocess) -- none of those
+  are direct children of the tracked PID. On Unix, the fix walks the
+  whole descendant tree via repeated `pgrep -P` before killing anything
+  (a dead process's children can no longer be found by ppid), then
+  signals children before parents in reverse-discovery order --
+  gracefully (`SIGTERM`) first, escalating to `SIGKILL` only for whatever
+  is still alive after a short grace period, so an in-flight provider CLI
+  gets a chance to flush/clean up rather than always being hard-killed
+  mid-write. Windows' `taskkill /T` handles the whole tree in one call
+  (graceful attempt first, then `/F` force for survivors).
 - **Distributed installers (`.dmg`/`.app`, `.msi`/nsis `.exe`,
   `.deb`/`.AppImage`/`.rpm`, built by CI's `installer-build` job) are
   currently unsigned.** No macOS notarization, no Windows Authenticode
