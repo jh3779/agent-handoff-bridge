@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
-BRIDGE_VERSION = "0.1.0"
+BRIDGE_VERSION = "0.2.0"
 
 # Phase 6 (docs/design-system/roadmap.md, SCR-07, resolves CFL-11): this
 # repo is private (docs/security-model.md), so an anonymous request can't

@@ -33,6 +33,7 @@ COMMON_FILES = [
     "scripts/handoff_hook.py",
     "scripts/validate_handoff.py",
     "scripts/package_platforms.py",
+    "scripts/build_sidecars.py",
     "scripts/scan_secrets.py",
     "scripts/check_branch_name.py",
     "handoff_webui.py",
@@ -44,6 +45,7 @@ COMMON_FILES = [
     "tests/test_scan_secrets.py",
     "tests/test_check_branch_name.py",
     "tests/test_handoff_webui.py",
+    "tests/test_validate_handoff.py",
     "examples/claude-settings.handoff.json",
     "examples/codex-hooks.handoff.json",
     "launchers/macos/handoff-bridge.command",
@@ -51,6 +53,9 @@ COMMON_FILES = [
     "launchers/windows/handoff-bridge.cmd",
     "launchers/windows/handoff-bridge.ps1",
     "launchers/windows/install.ps1",
+    "scripts/install_git_hooks.sh",
+    ".githooks/pre-commit",
+    ".githooks/pre-push",
 ]
 
 

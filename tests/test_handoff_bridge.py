@@ -743,17 +743,26 @@ class CheckForUpdateTests(unittest.TestCase):
     both collapsing into the same falsy value."""
 
     def test_a_newer_release_is_reported(self):
+        # A hardcoded "v0.2.0" here used to silently collide with
+        # BRIDGE_VERSION whenever a real release actually bumped it to
+        # that value -- caught for real when cutting the v0.2.0 release.
+        # Derived relative to BRIDGE_VERSION (major+1) instead, so this
+        # test can never again coincide with whatever the real current
+        # version happens to be.
+        current = hb.parse_version_tuple(hb.BRIDGE_VERSION)
+        newer_tag = f"v{current[0] + 1}.0.0"
+        newer_version = f"{current[0] + 1}.0.0"
         with mock.patch.object(
-            hb, "short_run", return_value=(0, json.dumps({"tagName": "v0.2.0", "url": "https://example.invalid/v0.2.0"}), "")
+            hb, "short_run", return_value=(0, json.dumps({"tagName": newer_tag, "url": "https://example.invalid/latest"}), "")
         ):
             result = hb.check_for_update()
         self.assertEqual(
             result,
             {
                 "status": "available",
-                "latest_version": "0.2.0",
+                "latest_version": newer_version,
                 "current_version": hb.BRIDGE_VERSION,
-                "url": "https://example.invalid/v0.2.0",
+                "url": "https://example.invalid/latest",
             },
         )
 

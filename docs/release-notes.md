@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.2.0 — 2026-08-06
+
 - Web UI MVP:
   - added `handoff_webui.py` — local, read-only stdlib HTTP server for the
     v0.2 chat-redesign concept in `docs/design-system/`; no provider is
