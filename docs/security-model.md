@@ -143,6 +143,19 @@ section covers only what's new because a native shell now exists.
   path (a blocking native dialog if the sidecar dies before the window
   is ever created) -- it exposes no new command surface reachable from
   the frontend.
+- **Distributed installers (`.dmg`/`.app`, `.msi`/nsis `.exe`,
+  `.deb`/`.AppImage`/`.rpm`, built by CI's `installer-build` job) are
+  currently unsigned.** No macOS notarization, no Windows Authenticode
+  signature -- code signing is deliberately deferred to a later "Phase
+  7c" sub-phase (DEC-22, reaffirmed by DEC-23), since it introduces a
+  new recurring cost (Apple Developer Program, $99/year+) and process
+  this project has never had. Practically: macOS Gatekeeper will refuse
+  to open the `.app` normally (right-click → Open, or `xattr -d
+  com.apple.quarantine`, is required the first time) and Windows
+  SmartScreen will show an "unknown publisher" warning. This is expected
+  today, not a bug -- see [Release Process](release-process.md) for how
+  installers are built and published, and `docs/design-system/
+  roadmap.md`'s Phase 7 plan for when signing is expected to land.
 
 ## Workspace Safety
 

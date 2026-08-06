@@ -439,9 +439,10 @@ DEC-01이 가리키는 실제 프로덕션 스택으로 이관.
 옮기는 편이 싸다.
 
 **해소하는 항목**: [CFL-06](flutter-mapping.html#s1b)(선택 완료, 실행만
-남음), [CFL-09](flutter-mapping.html#s2)(배포 파이프라인 재설계 —
-"zip 하나로 git 없이 실행" 모델이 여기서 끝나므로
-[release-process.md](../release-process.md)도 이 단계에서 다시 써야 함),
+남음), CFL-09(배포 파이프라인 재설계 — 이 단계에서
+[release-process.md](../release-process.md)를 다시 써야 함. 실제로는
+"zip 하나로 git 없이 실행" 모델이 끝나는 게 아니라 병행 유지되는 쪽으로
+결론남 — [DEC-23](flutter-mapping.html#s1c) 참고),
 [CFL-14](flutter-mapping.html#s1c) 해소(MVP를 계속 확장할지/재작성할지
 질문 — 재작성 쪽으로 확정, 단 백엔드는 그대로 옮김).
 
@@ -603,7 +604,8 @@ PR/push마다 도는 기존 job들과 같은 트리거로 두면 비용이 크�
   고정되지 않아 이 job을 나중에 다시 수동 실행할 때마다 번들러 동작이
   조용히 달라질 수 있어, 이번에 실제로 로컬 검증에 쓴 정확한 버전
   (`2.11.4`)으로 고정.
-- **PR #14 실제 리뷰 라운드에서 잡힌 것 (머지 전 수정, 재검증 대기)**:
+- **PR #14 실제 리뷰 라운드에서 잡힌 것 (머지 전 수정 완료, 재검증까지
+  통과 — 위험 하/0건으로 머지됨)**:
   (1) `libfuse2` 고정 설치가 위험 중 지적됨 — `ubuntu-latest`가
   24.04 계열이면 Ubuntu의 64-bit time_t 전환으로 패키지명이
   `libfuse2t64`로 바뀌었을 수 있어, apt install 자체가 번들러 단계에
@@ -615,6 +617,65 @@ PR/push마다 도는 기존 job들과 같은 트리거로 두면 비용이 크�
   비용 절감이라는 애초 목적을 일부 훼손함(위험 하로 지적) —
   세 job 모두에 `if: github.event_name != 'workflow_dispatch'`를
   추가해 수동 트리거 시 `installer-build`만 돌도록 격리.
+
+**7b M4 실제로 한 것** (2026-08-06, 위 계획의 항목 4, CFL-09 해소): "계속
+진행해줘"로 착수. 항목 4가 명시적으로 요구한 "`scripts/
+package_platforms.py`의 위치(완전 대체 vs 유지) 결정"을 먼저 사용자에게
+확인 — **둘 다 유지(권장안)** 로 결정, **DEC-23**으로 기록(CFL-09 해소,
+`flutter-mapping.html#s1c`).
+- `docs/release-process.md` 전면 재작성: "release는 이제 병행 트랙
+  둘"(1) 기존 소스 zip(`scripts/package_platforms.py`, 터미널/CLI 전용,
+  git 불필요하지만 사용자 자신의 Python 3 필요) — 그대로 유지, (2) 신규
+  Tauri 설치형 산출물(`cargo tauri build`, Python 번들링돼 있어 사용자
+  Python 설치 불필요, 데스크톱 GUI 전용, 현재 미서명 — 7c/DEC-22
+  그대로) — 로 구조를 다시 씀. 버전 범프 단계에 `src-tauri/
+  tauri.conf.json`의 `version` 필드를 `BRIDGE_VERSION`과 수동 동기화하는
+  단계 추가(자동 동기화 메커니즘은 없음). 설치형 산출물 빌드 단계는
+  `installer-build`가 `workflow_dispatch` 전용이라는 걸 그대로 반영해
+  `gh workflow run` → `gh run watch` → `gh run download`로 실제
+  트리거·대기·다운로드하는 명령을 문서에 명시. GitHub Release 발행
+  단계에 zip과 함께 OS당 대표 설치형 파일 하나씩(`.dmg`/nsis
+  `.exe`/`.AppImage`)만 첨부하도록(나머지 포맷은 요청 시 개별
+  업로드) 정리 — 산출물이 6종(포맷 3개 × macOS 제외 시 아니고, 실제로는
+  macOS 2 + Windows 2 + Linux 3 = 7종)이라 전부 붙이면 릴리즈 페이지가
+  지저분해짐.
+- 연쇄 갱신: `docs/index.md`(Release Process 한 줄 설명을 두 트랙
+  기준으로), `docs/cli-reference.md`("Platform Packages" 절에 설치형
+  트랙은 별도 CI job이라는 안내 추가), `docs/platform-setup.md`("Build
+  Zip Packages" 절 끝에 이 문서는 터미널/CLI 경로만 다룬다는 점과
+  GUI 경로 포인터 추가), `docs/security-model.md`("Tauri Shell
+  Boundaries" 절에 설치형 산출물이 현재 미서명이라는 사실 — Gatekeeper/
+  SmartScreen 경고가 뜨는 게 정상 동작임 — 을 새 항목으로 명시. 이전엔
+  이 문서 어디에도 서명 상태 언급이 아예 없었음). `README.md`의
+  Download 절은 건드리지 않음 — 아직 실제 태그된 릴리즈에 설치형
+  산출물이 첨부된 적이 없어서, 미리 광고하면 과장이 됨(자체 판단, 별도
+  확인 없이 보수적으로 결정).
+- `flutter-mapping.html`: CFL-09를 Conflict List(§2)에서 제거하고
+  Decision Log(§1c)에 **DEC-23**으로 추가. DEC-01 행의 "CFL-09 신규
+  파생" 링크와 §1a의 프레임워크 비교 표(당초 "Python 단일 zip 배포가
+  더 이상 성립하지 않음"이라던 우려)도 DEC-23으로 해소됐음을 반영해
+  갱신 — 죽은 앵커 링크(`#s2`의 CFL-09 행)가 안 남도록.
+- 이 섹션 바로 아래 Phase 7 요약 표의 CFL-09 상태도 "7b에서 해소
+  예정" → 해소로 갱신(아래 표 참고).
+- **PR 오픈 전 self-review에서 잡힌 실제 버그**: 처음 쓴 초안은 "5.
+  설치형 산출물 빌드"를 "6. 커밋·태그·푸시"보다 **앞에** 배치했음 —
+  `installer-build`는 `workflow_dispatch` 시점에 지정된 ref(기본
+  `main`)를 그대로 빌드하는데, 버전 범프 커밋이 아직 push되지 않은
+  상태라 설치형 산출물이 새 버전이 아니라 **직전 버전**으로 만들어지는
+  실제 순서 버그였음 — 두 트랙이 같은 릴리즈에서 버전이 어긋나는 결과.
+  순서를 뒤바꿔 커밋·태그·푸시를 먼저 하고, `gh workflow run` 대상도
+  `--ref main`이 아니라 방금 만든 **태그**(`--ref vX.Y.Z`)로 지정하도록
+  수정 — 태그된 커밋 그대로 빌드된다는 보장이 더 명확해짐. 또한
+  `actions/upload-artifact@v4`가 여러 glob 패턴의 공통 상위 경로 아래
+  구조를 그대로 보존한다는 실제 동작을 놓치고 있었음(`gh release
+  create`의 asset 경로가 평평한 디렉터리를 가정했지만 실제로는
+  `installers-<triple>/<포맷>/<파일>`처럼 한 단계 더 들어감) — CI의
+  실제 `--add-data`/`path:` 정의와 대조해 경로 수정. `gh run list`도
+  `--event workflow_dispatch` 필터와 태그 이름 매칭이 없어 동시에 다른
+  트리거(예: push)가 돌면 엉뚱한 run을 집을 수 있었음 — 필터·태그
+  매칭·짧은 폴링 루프 추가. 이 설치형 트랙 런북 자체는 실제 태그된
+  릴리즈가 한 번도 없어서(`gh release list` 확인) 아직 end-to-end로
+  실행해본 적이 없다는 점을 문서에 그대로 명시.
 
 **7a 실제로 한 것**:
 - `src-tauri/`: `cargo tauri init`으로 스캐폴딩(바닐라 JS 템플릿,
@@ -710,7 +771,7 @@ PR/push마다 도는 기존 job들과 같은 트리거로 두면 비용이 크�
 | 4 — API 키 모드 | ✅ 완료 | CFL-12 해소, DEC-13~16 적용 (CFL-17 후속 발견 → DEC-21로 별도 해소) |
 | 5 — Gemini + provider 확장성 | ✅ 완료 | CFL-13 해소, DEC-17/18 적용 |
 | 6 — 자동 업데이트 확인 | ✅ 완료 | CFL-11 해소, DEC-19 적용 (CFL-18 후속 발견 → DEC-20으로 별도 해소) |
-| 7 — 프레임워크 전환 | 🚧 진행 중 (7a 완료, 7b/7c 남음) | CFL-06(실행), CFL-09(7b에서 해소 예정), CFL-14 해소·DEC-22 적용 |
+| 7 — 프레임워크 전환 | 🚧 진행 중 (7a·7b M1/M3/M4 완료, 7b M5/M6·7c 남음) | CFL-06(실행), CFL-09 해소·DEC-23 적용, CFL-14 해소·DEC-22 적용 |
 
 이 표가 정본은 아니다 — 각 phase가 끝나면 여기 상태만 갱신하고, 실제
 해소 근거는 [flutter-mapping.html Conflict List](flutter-mapping.html#s2)

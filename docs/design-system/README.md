@@ -157,11 +157,10 @@ open docs/design-system/design-system.html   # macOS
   기준으로 표시. **Phase 3에서 실제 구현됨.**
 
 남은 미해결 사항은 [flutter-mapping.html §Conflict List](flutter-mapping.html#s2)
-(CFL-03, 05, 09, 11~15)에 있다 — CFL-01은 Phase 1로, CFL-10/16은 Phase 3
-착수 전 인터뷰로 완전히 해소되어 목록에서 빠졌다. 그중 무게가 큰 것:
+(CFL-03, 05, 11~15)에 있다 — CFL-01은 Phase 1로, CFL-10/16은 Phase 3
+착수 전 인터뷰로, CFL-09는 7b M4(DEC-23)로 완전히 해소되어 목록에서 빠졌다.
+그중 무게가 큰 것:
 
-- **CFL-09**: 프레임워크 전환(DEC-01) 시 현재 "zip 하나로 git 없이 실행"
-  배포 모델이 깨진다 — 릴리즈 프로세스 자체를 다시 설계해야 함.
 - **CFL-12**: API 키 연결은 UI 진입점만 설계됨 — 실제 호출 아키텍처(세션
   재개, 이벤트 파싱)는 현재 CLI 서브프로세스 구조와 근본적으로 다르다.
 - **CFL-11**: 자동 업데이트 확인이 조회해야 할 GitHub Releases가 private
