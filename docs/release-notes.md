@@ -983,7 +983,7 @@
     validate's secret-scan step) — all four declared in
     `tauri.conf.json`'s `bundle.externalBin` (missing any of the last
     three works in ad hoc local testing but silently isn't bundled into
-    the real packaged `.app`). `scripts/build_phase7a_sidecars.py` is
+    the real packaged `.app`). `scripts/build_sidecars.py` is
     the actual, runnable build script for all four (added in a review
     round after the four PyInstaller invocations first existed only as
     interactive shell history) — it imports `handoff_bridge.INSTALL_FILES`
@@ -1067,7 +1067,7 @@
     if a future sub-phase adds an actual native command surface
     reachable from the frontend. And: no committed script captured the
     four PyInstaller build invocations, addressed by
-    `scripts/build_phase7a_sidecars.py` above.
+    `scripts/build_sidecars.py` above.
 
 ## v0.1.0 — 2026-08-03
 

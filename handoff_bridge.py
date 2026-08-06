@@ -85,7 +85,7 @@ INSTALL_FILES = [
     ("scripts/handoff_hook.py", "scripts/handoff_hook.py"),
     ("scripts/validate_handoff.py", "scripts/validate_handoff.py"),
     ("scripts/package_platforms.py", "scripts/package_platforms.py"),
-    ("scripts/build_phase7a_sidecars.py", "scripts/build_phase7a_sidecars.py"),
+    ("scripts/build_sidecars.py", "scripts/build_sidecars.py"),
     ("scripts/scan_secrets.py", "scripts/scan_secrets.py"),
     ("scripts/check_branch_name.py", "scripts/check_branch_name.py"),
     ("scripts/install_git_hooks.sh", "scripts/install_git_hooks.sh"),

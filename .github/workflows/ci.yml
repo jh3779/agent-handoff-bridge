@@ -30,9 +30,9 @@ jobs:
   # Phase 7a (DEC-22): a review round found this repo's new src-tauri/ Rust
   # code had zero automated verification -- not even "does it compile" --
   # unlike everything else this project ships. Compile-only (not `cargo
-  # tauri build`/a real bundle, and not scripts/build_phase7a_sidecars.py's
-  # real PyInstaller binaries -- cross-platform packaging is 7b's explicit
-  # scope, not 7a's). Placeholder sidecar files are still required, though:
+  # tauri build`/a real bundle, and not scripts/build_sidecars.py's
+  # real PyInstaller binaries -- those are the sidecar-build job below,
+  # added in 7b). Placeholder sidecar files are still required, though:
   # tauri-build's own build script validates every tauri.conf.json
   # `bundle.externalBin` path *exists* before it will compile at all --
   # found the hard way, by this exact job failing on its first real CI run
@@ -73,3 +73,99 @@ jobs:
           done
       - name: cargo build (src-tauri)
         run: cargo build --manifest-path src-tauri/Cargo.toml
+
+  # Phase 7b M1: real, per-OS sidecar builds. PyInstaller/Nuitka don't
+  # cross-compile (docs/research-phase7-framework.md), so "cross-platform"
+  # here means literally running scripts/build_sidecars.py once per OS,
+  # not compiling for multiple targets from one runner. Each GitHub-hosted
+  # runner's target triple is well-known and passed explicitly
+  # (--target-triple) rather than asking `rustc -vV` for it -- this job is
+  # fundamentally a Python/PyInstaller packaging step, not a Rust one, so
+  # it has no other reason to need a Rust toolchain installed at all.
+  # 10-minute timeout for the same reason rust-build has one: this
+  # project's one real CI hang so far was an apt-get/needrestart prompt,
+  # not this job specifically, but the lesson (fail loudly, not silently)
+  # applies here too.
+  sidecar-build:
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target-triple: aarch64-apple-darwin
+            expected-runner-os: macOS
+            expected-runner-arch: ARM64
+          - os: windows-latest
+            target-triple: x86_64-pc-windows-msvc
+            expected-runner-os: Windows
+            expected-runner-arch: X64
+          - os: ubuntu-latest
+            target-triple: x86_64-unknown-linux-gnu
+            expected-runner-os: Linux
+            expected-runner-arch: X64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # Review-bot finding on PR #13: matrix.target-triple is hardcoded per
+      # OS label, but scripts/build_sidecars.py's rename_for_tauri() trusts
+      # whatever triple it's given -- it never checks the PyInstaller
+      # output's actual OS/arch. If GitHub ever changes what a runner label
+      # (e.g. macos-latest) maps to, this job would still go green while
+      # silently naming an ARM64 binary as if it were x86_64 (or vice
+      # versa), producing an artifact Tauri can't actually run. runner.os/
+      # runner.arch are GitHub's own ground truth for the machine actually
+      # running this job, so compare against those before trusting the
+      # hardcoded triple at all.
+      - name: Verify runner OS/arch matches this leg's assumed target triple
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" != "${{ matrix.expected-runner-os }}" ] || [ "${{ runner.arch }}" != "${{ matrix.expected-runner-arch }}" ]; then
+            echo "runner.os/runner.arch is ${{ runner.os }}/${{ runner.arch }}, but ${{ matrix.target-triple }} assumes ${{ matrix.expected-runner-os }}/${{ matrix.expected-runner-arch }}."
+            echo "GitHub changed what '${{ matrix.os }}' maps to -- update this matrix leg's target-triple (and expected-runner-os/arch) to match."
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+      - name: Build sidecars
+        # `python`, not `python3` -- unlike branch-name/validate above
+        # (ubuntu-latest only), this job also runs on windows-latest,
+        # where actions/setup-python puts `python.exe` on PATH but not
+        # reliably a `python3` alias.
+        run: python scripts/build_sidecars.py --target-triple ${{ matrix.target-triple }}
+      - name: Verify all 8 expected files exist (plain + target-triple-suffixed, x4 sidecars)
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then suffix=".exe"; fi
+          for name in agent-handoff-bridge-server agent-handoff-bridge-cli agent-handoff-bridge-validate agent-handoff-bridge-scan; do
+            test -f "src-tauri/binaries/${name}${suffix}" || { echo "missing src-tauri/binaries/${name}${suffix}"; exit 1; }
+            test -f "src-tauri/binaries/${name}-${{ matrix.target-triple }}${suffix}" || { echo "missing src-tauri/binaries/${name}-${{ matrix.target-triple }}${suffix}"; exit 1; }
+          done
+          echo "all 8 files present for ${{ matrix.os }}"
+      # Review-bot finding on PR #13: file-existence alone doesn't prove the
+      # binaries actually run -- a frozen import error, missing bundled
+      # data, or (Windows-specific) a subtly wrong PyInstaller invocation
+      # would still leave the right *filenames* on disk. Run each
+      # triple-suffixed binary (the exact artifact this job ships) with a
+      # flag argparse always handles before any real subcommand logic:
+      # --version for the CLI (also proves BRIDGE_VERSION reads correctly
+      # out of the frozen bundle), --help for the other three.
+      - name: Smoke test built sidecars actually start and run
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then suffix=".exe"; fi
+          triple="${{ matrix.target-triple }}"
+          "src-tauri/binaries/agent-handoff-bridge-server-${triple}${suffix}" --help
+          "src-tauri/binaries/agent-handoff-bridge-cli-${triple}${suffix}" --version
+          "src-tauri/binaries/agent-handoff-bridge-validate-${triple}${suffix}" --help
+          "src-tauri/binaries/agent-handoff-bridge-scan-${triple}${suffix}" --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidecars-${{ matrix.target-triple }}
+          path: src-tauri/binaries/*-${{ matrix.target-triple }}*
+          retention-days: 7

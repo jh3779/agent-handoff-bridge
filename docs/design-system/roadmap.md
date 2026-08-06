@@ -530,6 +530,42 @@ sidecar 프로세스가 함께 정리되는지, 재실행 시 포트 `8787`이 �
    종료 정리, 포트 `8787` 충돌 처리 — 실제 설치형 배포판을 여러 OS에서
    테스트하는 이번 단계가 이 두 가지를 자연스럽게 검증할 기회.
 
+**7b M1 실제로 한 것** (2026-08-06, 위 계획의 항목 1+2): 사용자가
+"계획만 준비"를 선택한 뒤, 이어서 "M1부터 실제 진행"을 명시적으로
+요청해 착수.
+- `scripts/build_phase7a_sidecars.py` → `scripts/build_sidecars.py`로
+  이름 변경 + 일반화 — 더 이상 7a 한정 스크립트가 아니므로.
+  `handoff_bridge.py`의 `INSTALL_FILES`, `scripts/validate_handoff.py`의
+  `REQUIRED_FILES`/`PYTHON_FILES` 세 곳 모두 새 이름으로 갱신(옛 이름을
+  추적하던 목록이 갱신 안 되면 `check`가 삭제된 파일을 계속 찾게 됨).
+- `--add-data` 구분자를 하드코딩된 `:` 대신 `os.pathsep`으로 — Windows는
+  `;`, 그 외는 `:`라는 PyInstaller 자체 규칙과 정확히 일치.
+- `rename_for_tauri()`: 이전엔 손으로 `cp binary binary-<triple>`을
+  네 번 반복했던 걸 자동화. target triple은 `--target-triple` 인자로
+  명시하거나, 생략 시 `rustc -vV`의 `host:` 줄에서 자동 추론. Windows는
+  `.exe` 접미사가 실행파일 이름과 target-triple 접미사 이름 둘 다에
+  붙어야 함(`agent-handoff-bridge-server.exe` →
+  `agent-handoff-bridge-server-x86_64-pc-windows-msvc.exe`)을 확인하고
+  반영.
+- **`.github/workflows/ci.yml`에 `sidecar-build` job 신설**: `macos-latest`
+  · `windows-latest` · `ubuntu-latest` 3-way 매트릭스로 각 OS에서 실제
+  `scripts/build_sidecars.py`를 돌려 sidecar 4개(× target-triple 접미사
+  버전까지 총 8개 파일)가 만들어지는지 검증하고 `actions/upload-artifact`로
+  보관(7일). 매트릭스의 target triple은 `rustc -vV`를 부르지 않고
+  GitHub 호스팅 러너별로 이미 알려진 값을 명시적으로 지정 —
+  이 job은 Python/PyInstaller 패키징 작업이라 Rust 툴체인 설치 자체가
+  불필요.
+  **로컬에서 재현 불가능한 채 CI에서만 검증 가능한 두 플랫폼(Windows·
+  Linux)이 처음 생기는 지점**이라 다음 두 가지를 미리 반영: (a)
+  `python3`이 아니라 `python`으로 호출 — `actions/setup-python`이
+  Windows에는 `python.exe`만 PATH에 놓고 `python3` alias를 보장하지
+  않는다는 잘 알려진 함정을 실제로 걸리기 전에 미리 회피; (b)
+  `rust-build` job에서 이미 겪은 apt-get/`needrestart` 무한 대기 교훈과
+  동일하게 `timeout-minutes: 10`을 기본으로 둠. 로컬 macOS에서는
+  스크립트 자체(자동 추론 경로 + `--target-triple` 수동 지정 경로 둘
+  다)와 `cargo build`까지 직접 재현해 확인했지만, Windows/Linux
+  러너에서의 실제 성공 여부는 CI 실행 결과로만 최종 확인 가능.
+
 **7a 실제로 한 것**:
 - `src-tauri/`: `cargo tauri init`으로 스캐폴딩(바닐라 JS 템플릿,
   `frontendDist`는 `../webui`를 가리키지만 실제로는 사용되지 않음 —
