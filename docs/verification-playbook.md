@@ -17,7 +17,10 @@ python3 handoff_bridge.py run auto "Preview next handoff prompt"
 failure classification matches `docs/shared-agent-contract.md`, and runs
 `tests/`. See [Quality Gates](quality-gates.md) for the full rule set,
 including branch naming (checked separately, not part of `check` — it is a
-convention for this repo, not for downstream projects that install it).
+convention for this repo, not for downstream projects that install it) and
+the one documented exception (the frozen `agent-handoff-bridge-validate`
+Tauri sidecar from Phase 7a skips the `tests/` step — never the normal
+`python3 handoff_bridge.py check` this playbook actually calls for).
 
 ## Generic Project Checks
 

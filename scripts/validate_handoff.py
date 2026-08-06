@@ -25,6 +25,7 @@ REQUIRED_FILES = [
     "remote_handoff_submit.py",
     "scripts/handoff_hook.py",
     "scripts/package_platforms.py",
+    "scripts/build_phase7a_sidecars.py",
     "scripts/scan_secrets.py",
     "scripts/check_branch_name.py",
     "docs/index.md",
@@ -60,6 +61,7 @@ REQUIRED_FILES = [
     "tests/test_scan_secrets.py",
     "tests/test_check_branch_name.py",
     "tests/test_handoff_webui.py",
+    "tests/test_validate_handoff.py",
     ".handoff/current.md",
     ".handoff/task-template.md",
 ]
@@ -79,6 +81,7 @@ PYTHON_FILES = [
     "scripts/handoff_hook.py",
     "scripts/validate_handoff.py",
     "scripts/package_platforms.py",
+    "scripts/build_phase7a_sidecars.py",
     "scripts/scan_secrets.py",
     "scripts/check_branch_name.py",
     "handoff_webui.py",
@@ -86,6 +89,7 @@ PYTHON_FILES = [
     "tests/test_scan_secrets.py",
     "tests/test_check_branch_name.py",
     "tests/test_handoff_webui.py",
+    "tests/test_validate_handoff.py",
 ]
 
 # Must match HANDOFF_LABELS in handoff_bridge.py and the enum documented in
@@ -168,19 +172,50 @@ def check_failure_classification(root: Path) -> None:
 
 
 def check_secrets(root: Path) -> None:
-    scanner = root / "scripts" / "scan_secrets.py"
-    result = subprocess.run(
-        [sys.executable, str(scanner), "--root", str(root)],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    if getattr(sys, "frozen", False):
+        # Phase 7a (DEC-22, docs/research-phase7-framework.md): frozen as
+        # the Tauri sidecar agent-handoff-bridge-validate, sys.executable
+        # is this binary itself, not a Python interpreter -- passing it
+        # scan_secrets.py's path wouldn't run that script. A sibling
+        # PyInstaller sidecar built from scan_secrets.py
+        # (agent-handoff-bridge-scan) is invoked directly instead,
+        # matching handoff_bridge.py's check()/handoff_webui.py's
+        # bridge_command_prefix().
+        scan_name = "agent-handoff-bridge-scan.exe" if sys.platform == "win32" else "agent-handoff-bridge-scan"
+        command = [str(Path(sys.executable).resolve().parent / scan_name), "--root", str(root)]
+    else:
+        scanner = root / "scripts" / "scan_secrets.py"
+        command = [sys.executable, str(scanner), "--root", str(root)]
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.returncode != 0:
         fail(f"secret scan failed:\n{result.stdout}{result.stderr}")
 
 
 def check_tests(root: Path) -> None:
-    """Run the repo's minimum unit test suite (tests/, stdlib unittest)."""
+    """Run the repo's minimum unit test suite (tests/, stdlib unittest).
+
+    Phase 7a (DEC-22, docs/research-phase7-framework.md): skipped when
+    this script is itself running frozen (PyInstaller, as the Tauri
+    sidecar agent-handoff-bridge-validate). This isn't the same class of
+    fix as check_secrets()'s -- there is no sibling sidecar that could
+    stand in here. This checks whether the *source tree's own dev test
+    suite* passes, which is meaningless without a real dev checkout: the
+    test suite's own integration tests spawn fresh `sys.executable`
+    subprocesses expecting a real Python interpreter (the exact
+    assumption this project's frozen sidecars themselves had to work
+    around -- see bridge_command_prefix()/check()/this file's own
+    check_secrets()), an assumption that only holds for a normal
+    `python3 -m unittest` run, not for a whole test run executing inside
+    an already-frozen interpreter. `handoff_bridge.py check` remains a
+    dev/CI tool run unfrozen against a real checkout (docs/quality-gates.md,
+    .github/workflows/ci.yml's `validate` job) -- the frozen validate
+    sidecar exists for the two checks above (required files, secrets)
+    that make sense to run against an installed app, not for re-running
+    the source tree's own test suite from inside it.
+    """
+    if getattr(sys, "frozen", False):
+        print("skipping unit test suite: running frozen, no dev checkout to test (Phase 7a/DEC-22)")
+        return
     tests_dir = root / "tests"
     if not tests_dir.exists() or not any(tests_dir.glob("test_*.py")):
         fail("tests/ directory has no test_*.py files")
@@ -210,7 +245,22 @@ def main() -> int:
     check_failure_classification(root)
     check_secrets(root)
     check_tests(root)
-    print("PASS: handoff bridge contract and validation files are consistent.")
+    if getattr(sys, "frozen", False):
+        # A review round on Phase 7a (DEC-22) pointed out that
+        # docs/quality-gates.md and docs/verification-playbook.md both
+        # unconditionally document `check` as running the dev test suite
+        # -- printing the exact same unconditional "PASS" line here for
+        # the frozen case (where check_tests() already skipped that
+        # step, by design -- see its own docstring) would silently
+        # understate what was actually verified to anyone reading only
+        # the final line, not the skip notice above it. The message
+        # itself now says so.
+        print(
+            "PASS: handoff bridge contract and validation files are consistent "
+            "(frozen build -- dev unit test suite not run; see docs/quality-gates.md)."
+        )
+    else:
+        print("PASS: handoff bridge contract and validation files are consistent.")
     return 0
 
 

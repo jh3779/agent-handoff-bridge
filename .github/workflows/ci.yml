@@ -26,3 +26,50 @@ jobs:
           python-version: "3.11"
       - name: Run the full no-token validation suite
         run: python3 handoff_bridge.py check
+
+  # Phase 7a (DEC-22): a review round found this repo's new src-tauri/ Rust
+  # code had zero automated verification -- not even "does it compile" --
+  # unlike everything else this project ships. Compile-only (not `cargo
+  # tauri build`/a real bundle, and not scripts/build_phase7a_sidecars.py's
+  # real PyInstaller binaries -- cross-platform packaging is 7b's explicit
+  # scope, not 7a's). Placeholder sidecar files are still required, though:
+  # tauri-build's own build script validates every tauri.conf.json
+  # `bundle.externalBin` path *exists* before it will compile at all --
+  # found the hard way, by this exact job failing on its first real CI run
+  # with "resource path ... doesn't exist" even though nothing here
+  # attempts a real bundle. Empty placeholders are enough to satisfy that
+  # check and prove the Rust source + tauri.conf.json config are both
+  # sound; they are never what a real build/release would ship.
+  rust-build:
+    runs-on: ubuntu-latest
+    # This job's very first real CI run hung indefinitely (13+ minutes,
+    # never even reaching `cargo build`) on the apt-get step below --
+    # ubuntu-latest images ship `needrestart`, which prompts interactively
+    # ("which services should be restarted?") after installing packages
+    # unless told not to, and that prompt just hangs forever with no
+    # terminal attached to answer it. A hard ceiling here means any repeat
+    # of this (or a genuinely new hang) fails loudly in ~10 minutes instead
+    # of silently burning CI time.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri's Linux build prerequisites
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Create placeholder sidecar binaries
+        run: |
+          mkdir -p src-tauri/binaries
+          for name in agent-handoff-bridge-server agent-handoff-bridge-cli agent-handoff-bridge-validate agent-handoff-bridge-scan; do
+            touch "src-tauri/binaries/${name}-x86_64-unknown-linux-gnu"
+            chmod +x "src-tauri/binaries/${name}-x86_64-unknown-linux-gnu"
+          done
+      - name: cargo build (src-tauri)
+        run: cargo build --manifest-path src-tauri/Cargo.toml

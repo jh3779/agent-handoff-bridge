@@ -47,6 +47,31 @@ from handoff_bridge import (
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
+
+def bridge_command_prefix() -> list[str]:
+    """The argv prefix for invoking handoff_bridge.py's CLI as a
+    subprocess -- normally `[sys.executable, str(BRIDGE_SCRIPT)]` (plain
+    `python3 handoff_bridge.py`), same as this project has always done.
+
+    Phase 7a (DEC-22, docs/research-phase7-framework.md): when this
+    module is itself running frozen (PyInstaller, as the Tauri sidecar
+    `agent-handoff-bridge-server`), `sys.executable` is the frozen
+    *server* binary, not a real Python interpreter -- passing it
+    `str(BRIDGE_SCRIPT)` as an argument would not run that script, it
+    would just re-launch the server binary with a nonsense argv. A
+    second, sibling PyInstaller binary built from handoff_bridge.py
+    (`agent-handoff-bridge-cli` in tauri.conf.json's `bundle.externalBin`,
+    Tauri places every declared sidecar in the same directory as this
+    one at runtime) is invoked directly instead, with no `sys.executable`
+    prefix -- it needs no Python interpreter of its own, it *is* one.
+    Only this call-site construction changes; handoff_bridge.py's own
+    code is untouched.
+    """
+    if getattr(sys, "frozen", False):
+        cli_name = "agent-handoff-bridge-cli.exe" if sys.platform == "win32" else "agent-handoff-bridge-cli"
+        return [str(Path(sys.executable).resolve().parent / cli_name)]
+    return [sys.executable, str(BRIDGE_SCRIPT)]
+
 try:
     import webview  # type: ignore[import-not-found]
 except ImportError as exc:  # pragma: no cover - depends on optional local install
@@ -324,7 +349,7 @@ def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Pa
             # flags, e.g. a literal "--no-install" or "-h" -- without it,
             # argparse would consume that as an option instead and fail
             # with "the following arguments are required: task".
-            [sys.executable, str(BRIDGE_SCRIPT), "--workspace", str(new_workspace), "init", "--", task],
+            bridge_command_prefix() + ["--workspace", str(new_workspace), "init", "--", task],
             capture_output=True,
             text=True,
             timeout=30,
@@ -1655,9 +1680,7 @@ def _run_provider_via_bridge_locked(
         with os.fdopen(prompt_fd, "w", encoding="utf-8") as handle:
             handle.write(prompt)
 
-        command = [
-            sys.executable,
-            str(BRIDGE_SCRIPT),
+        command = bridge_command_prefix() + [
             "--workspace",
             str(workspace),
             "run",
@@ -2219,6 +2242,21 @@ def _check_for_update_in_background(state: "AppState") -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Phase 7a (DEC-22): when this process is spawned as a Tauri sidecar
+    # (src-tauri/src/lib.rs), the caller waits for a specific line on
+    # this process's stdout before it will create the app window at
+    # all -- but CPython only line-buffers stdout when it's a real tty;
+    # piped to another process (exactly what a sidecar's stdout is),
+    # it's fully block-buffered by default, so the readiness print below
+    # could sit unflushed in this process's own memory indefinitely
+    # (this is a long-running server that never naturally exits to
+    # trigger an on-exit flush). Setting PYTHONUNBUFFERED=1 on the
+    # sidecar spawn was tried first and empirically did NOT reliably
+    # reach this process through PyInstaller's onefile bootloader when
+    # actually tested against the built binary -- reconfiguring the
+    # stream directly here is unaffected by that and by any other
+    # environment-variable propagation question.
+    sys.stdout.reconfigure(line_buffering=True)
     args = build_parser().parse_args(argv)
     if not is_loopback_host(args.host):
         print(f"refusing to bind to non-loopback host: {args.host!r}", file=sys.stderr)

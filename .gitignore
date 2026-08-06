@@ -3,6 +3,12 @@ __pycache__/
 .DS_Store
 dist/
 
+# Phase 7a (Tauri shell + Python sidecar, DEC-22): build-time-only
+# artifacts, never shipped/committed -- see docs/research-phase7-framework.md.
+.venv-build/
+build/
+src-tauri/binaries/
+
 # Personal work log / retrospective notes for later portfolio use.
 # Local-only by design — never tracked or shared.
 worklog/

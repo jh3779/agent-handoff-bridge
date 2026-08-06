@@ -115,16 +115,36 @@ found by writing `tests/test_check_branch_name.py`, not by inspection.
 Exactly the failure mode this rule exists to catch.
 
 - **Doc**: this section.
-- **CI / no-token check**: `handoff_bridge.py check` runs
+- **CI / no-token check**: `handoff_bridge.py check`, run unfrozen against a
+  real source checkout (CI, `docs/release-process.md`'s step 3), runs
   `python3 -m unittest discover -s tests` and fails the whole check if any
-  test fails or if `tests/` has no `test_*.py` files.
+  test fails or if `tests/` has no `test_*.py` files. This is the
+  authoritative, full validation this project relies on — nothing below
+  changes that.
 - **Script**: `check_tests()` in `scripts/validate_handoff.py`; tests live in
-  `tests/test_handoff_bridge.py`, `tests/test_scan_secrets.py`, and
-  `tests/test_check_branch_name.py`.
+  `tests/test_handoff_bridge.py`, `tests/test_scan_secrets.py`,
+  `tests/test_check_branch_name.py`, `tests/test_handoff_webui.py`, and
+  `tests/test_validate_handoff.py`.
 
 Uses the standard library `unittest` rather than `pytest` deliberately — the
 repo has no dependency file (`requirements.txt`/`pyproject.toml`) and
 `docs/shared-agent-contract.md` favors boring, dependency-free tooling.
+
+**Exception, Phase 7a only (DEC-22)**: `check_tests()` skips this step
+entirely when running frozen — i.e. only when invoked as the
+`agent-handoff-bridge-validate` Tauri sidecar
+(`docs/design-system/roadmap.md`'s Phase 7a), never for the normal
+`python3 handoff_bridge.py check` case CI and the release process actually
+use. A shipped, frozen app has no dev checkout to run `tests/` against in
+the first place — re-running this project's own dev test suite from inside
+an already-frozen interpreter would also hit the exact `sys.executable`
+assumption Phase 7a's other frozen-mode fixes exist to work around, one
+level deeper (`check_tests()`'s own docstring has the full reasoning). Both
+the skip notice and the frozen build's final `PASS` line say so explicitly,
+so this is never silent output — but if you're auditing this rule against
+`agent-handoff-bridge-cli check`/`agent-handoff-bridge-validate` output
+specifically (rather than the normal unfrozen command), read the full
+output, not just the exit code.
 
 ## Rule: Shared State Files Are Written Atomically And Under Lock
 
