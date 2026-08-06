@@ -42,9 +42,21 @@ jobs:
   # sound; they are never what a real build/release would ship.
   rust-build:
     runs-on: ubuntu-latest
+    # This job's very first real CI run hung indefinitely (13+ minutes,
+    # never even reaching `cargo build`) on the apt-get step below --
+    # ubuntu-latest images ship `needrestart`, which prompts interactively
+    # ("which services should be restarted?") after installing packages
+    # unless told not to, and that prompt just hangs forever with no
+    # terminal attached to answer it. A hard ceiling here means any repeat
+    # of this (or a genuinely new hang) fails loudly in ~10 minutes instead
+    # of silently burning CI time.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Install Tauri's Linux build prerequisites
+        env:
+          DEBIAN_FRONTEND: noninteractive
+          NEEDRESTART_MODE: a
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
