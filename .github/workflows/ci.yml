@@ -94,13 +94,37 @@ jobs:
         include:
           - os: macos-latest
             target-triple: aarch64-apple-darwin
+            expected-runner-os: macOS
+            expected-runner-arch: ARM64
           - os: windows-latest
             target-triple: x86_64-pc-windows-msvc
+            expected-runner-os: Windows
+            expected-runner-arch: X64
           - os: ubuntu-latest
             target-triple: x86_64-unknown-linux-gnu
+            expected-runner-os: Linux
+            expected-runner-arch: X64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # Review-bot finding on PR #13: matrix.target-triple is hardcoded per
+      # OS label, but scripts/build_sidecars.py's rename_for_tauri() trusts
+      # whatever triple it's given -- it never checks the PyInstaller
+      # output's actual OS/arch. If GitHub ever changes what a runner label
+      # (e.g. macos-latest) maps to, this job would still go green while
+      # silently naming an ARM64 binary as if it were x86_64 (or vice
+      # versa), producing an artifact Tauri can't actually run. runner.os/
+      # runner.arch are GitHub's own ground truth for the machine actually
+      # running this job, so compare against those before trusting the
+      # hardcoded triple at all.
+      - name: Verify runner OS/arch matches this leg's assumed target triple
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" != "${{ matrix.expected-runner-os }}" ] || [ "${{ runner.arch }}" != "${{ matrix.expected-runner-arch }}" ]; then
+            echo "runner.os/runner.arch is ${{ runner.os }}/${{ runner.arch }}, but ${{ matrix.target-triple }} assumes ${{ matrix.expected-runner-os }}/${{ matrix.expected-runner-arch }}."
+            echo "GitHub changed what '${{ matrix.os }}' maps to -- update this matrix leg's target-triple (and expected-runner-os/arch) to match."
+            exit 1
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -122,6 +146,24 @@ jobs:
             test -f "src-tauri/binaries/${name}-${{ matrix.target-triple }}${suffix}" || { echo "missing src-tauri/binaries/${name}-${{ matrix.target-triple }}${suffix}"; exit 1; }
           done
           echo "all 8 files present for ${{ matrix.os }}"
+      # Review-bot finding on PR #13: file-existence alone doesn't prove the
+      # binaries actually run -- a frozen import error, missing bundled
+      # data, or (Windows-specific) a subtly wrong PyInstaller invocation
+      # would still leave the right *filenames* on disk. Run each
+      # triple-suffixed binary (the exact artifact this job ships) with a
+      # flag argparse always handles before any real subcommand logic:
+      # --version for the CLI (also proves BRIDGE_VERSION reads correctly
+      # out of the frozen bundle), --help for the other three.
+      - name: Smoke test built sidecars actually start and run
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then suffix=".exe"; fi
+          triple="${{ matrix.target-triple }}"
+          "src-tauri/binaries/agent-handoff-bridge-server-${triple}${suffix}" --help
+          "src-tauri/binaries/agent-handoff-bridge-cli-${triple}${suffix}" --version
+          "src-tauri/binaries/agent-handoff-bridge-validate-${triple}${suffix}" --help
+          "src-tauri/binaries/agent-handoff-bridge-scan-${triple}${suffix}" --help
       - uses: actions/upload-artifact@v4
         with:
           name: sidecars-${{ matrix.target-triple }}
