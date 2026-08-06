@@ -1,10 +1,14 @@
-# Claude Code / Codex CLI Handoff Bridge
+# Claude Code / Codex / Gemini CLI Handoff Bridge
 
-Claude Code CLI and Codex CLI do not currently expose a single official
-"share my remaining tokens and continue in the other CLI" switch. This repo is
-a small bridge scaffold for the practical version: keep work state in shared
-files, run either CLI in a scriptable mode, detect quota/rate/context failures,
-then hand the task to the other CLI with the current workspace state.
+Claude Code CLI, Codex CLI, and Gemini CLI do not currently expose a single
+official "share my remaining tokens and continue in the other CLI" switch.
+This repo is a small bridge scaffold for the practical version: keep work
+state in shared files, run any of the three CLIs in a scriptable mode, detect
+quota/rate/context failures, then hand the task to another CLI with the
+current workspace state. Gemini CLI was added as a third provider in Phase 5
+— see [docs/research-gemini-cli.md](docs/research-gemini-cli.md) for the
+practical differences from Codex/Claude (no session resume by real ID, no
+free auth-status check, not yet supported in the web UI's API-key mode).
 
 ## Download
 
@@ -25,9 +29,13 @@ and [docs/release-notes.md](docs/release-notes.md) for what changed.
 
 ## Current Local Status
 
-- Requires `codex`, `claude`, and `gh` for the full local workflow.
+- Requires at least one of `codex`, `claude`, `gemini` installed, plus `gh`
+  for the full local workflow (release update checks, `--auto-fallback`
+  hops to whichever of the three is actually installed).
 - Run `python3 handoff_bridge.py diagnose` to inspect local paths and auth.
 - Run `claude auth login` before using Claude as an automatic fallback.
+  Gemini CLI has no free auth-status command to check, so `diagnose` only
+  reports whether it's installed, not whether it's authenticated.
 
 ## Quick Start
 
@@ -57,7 +65,8 @@ launchers\windows\handoff-bridge.cmd
 
 Try the v0.2 chat-style redesign (file browsing, drag/click attaching,
 VS Code-style Open Folder, local per-folder chat history, real Codex/Claude
-calls with auto-fallback since Phase 1, `--workspace` made optional since
+calls with auto-fallback since Phase 1 (Gemini joined as a third selectable
+provider in Phase 5), `--workspace` made optional since
 Phase 2 (auto-creates a folder under `~/Documents/Agent Handoff Bridge/`
 from your first message if you don't pick one), and — as of Phase 3 — a
 History drawer showing recent activity across every project you've opened,
