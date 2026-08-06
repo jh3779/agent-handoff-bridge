@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
-"""Build the four PyInstaller sidecars Phase 7a's Tauri shell needs
-(docs/design-system/roadmap.md's "7a 실제로 한 것", DEC-22).
+"""Build the four PyInstaller sidecars the Tauri shell needs
+(docs/design-system/roadmap.md's "7a 실제로 한 것"/"7b 계획", DEC-22).
 
-A review round found these builds existed only as interactive shell
-history from whoever first got them working -- no committed script
-captured the exact flags, so nobody else could reproduce a working
-sidecar build. This is that script. It is deliberately dev-only tooling
-(like scripts/package_platforms.py), not something end users run, and
-only targets this machine's own platform -- PyInstaller/Nuitka don't
-cross-compile (docs/research-phase7-framework.md), so a real
-cross-platform release still needs 7b's scope (Windows/Linux builds,
-likely via per-OS CI runners).
+Originally scripts/build_phase7a_sidecars.py, macOS-only (a review round
+found Phase 7a's builds existed only as interactive shell history, no
+committed script). Phase 7b generalized it to run on any of macOS/Windows/
+Linux -- the two platform-specific things PyInstaller/Tauri actually care
+about (the --add-data path separator, and whether executables get a .exe
+suffix) are handled below; everything else about *what* gets bundled is
+identical across platforms (docs/research-phase7-framework.md: PyInstaller/
+Nuitka don't cross-compile, so this script still only ever builds for the
+machine it runs on -- producing all platforms means running it on all
+three, e.g. one CI matrix job per OS).
 
 Reuses handoff_bridge.INSTALL_FILES as the single source of truth for
 which non-Python data files the CLI sidecar needs bundled, rather than
 hardcoding a second copy of that list here -- the two would silently
 drift apart otherwise.
 
-Usage: python3 scripts/build_phase7a_sidecars.py
+Usage: python3 scripts/build_sidecars.py [--target-triple TRIPLE]
+  --target-triple: Rust target triple to name the sidecars for (Tauri's
+    externalBin convention: <name>-<target-triple>[.exe]). Defaults to
+    asking `rustc -vV` for this machine's own host triple -- pass this
+    explicitly in a context where rustc isn't installed or isn't the
+    right source of truth (e.g. a CI job that knows its own target
+    without needing Rust present at all).
 Requires: a venv with `pyinstaller` installed (this project's own
 tests/CI never depend on it -- it's a build-time-only tool, same
 tier of trust as `gh` in docs/release-process.md).
@@ -25,6 +32,9 @@ tier of trust as `gh` in docs/release-process.md).
 
 from __future__ import annotations
 
+import argparse
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -36,10 +46,42 @@ WORK_DIR = ROOT / "build" / "pyinstaller"
 sys.path.insert(0, str(ROOT))
 from handoff_bridge import INSTALL_FILES  # noqa: E402
 
+SIDECAR_NAMES = (
+    "agent-handoff-bridge-server",
+    "agent-handoff-bridge-cli",
+    "agent-handoff-bridge-validate",
+    "agent-handoff-bridge-scan",
+)
+
 
 def run(args: list[str]) -> None:
     print(f"$ {' '.join(args)}")
     subprocess.run(args, cwd=ROOT, check=True)
+
+
+def detect_target_triple() -> str:
+    """`rustc -vV`'s `host:` line -- the same value Tauri's own build
+    script (src-tauri/build.rs, via TAURI_ENV_TARGET_TRIPLE) uses to
+    decide which sidecar filename to look for, confirmed against the
+    real error message a review round hit in CI ("resource path
+    binaries/agent-handoff-bridge-server-x86_64-unknown-linux-gnu
+    doesn't exist"). Requires rustc on PATH -- pass --target-triple
+    explicitly to skip this in a context that doesn't have Rust
+    installed at all (this script itself never needs Rust; only the
+    naming convention it produces does)."""
+    result = subprocess.run(["rustc", "-vV"], capture_output=True, text=True, check=True)
+    for line in result.stdout.splitlines():
+        if line.startswith("host:"):
+            return line.split(":", 1)[1].strip()
+    raise RuntimeError(f"could not find 'host:' in `rustc -vV` output:\n{result.stdout}")
+
+
+def add_data_arg(src: Path, dest_dir: str) -> list[str]:
+    """PyInstaller's --add-data separator is platform-native (';' on
+    Windows, ':' everywhere else -- exactly os.pathsep's definition on
+    both), unlike the plain path arguments elsewhere in this script
+    which PyInstaller/Python handle natively regardless of OS."""
+    return ["--add-data", f"{src}{os.pathsep}{dest_dir}"]
 
 
 def install_files_add_data_args() -> list[str]:
@@ -51,7 +93,7 @@ def install_files_add_data_args() -> list[str]:
     args = []
     for src, dest in INSTALL_FILES:
         dest_dir = str(Path(dest).parent)
-        args += ["--add-data", f"{ROOT / src}:{dest_dir}"]
+        args += add_data_arg(ROOT / src, dest_dir)
     return args
 
 
@@ -72,8 +114,7 @@ def build_server() -> None:
             str(WORK_DIR),
             "--specpath",
             str(WORK_DIR),
-            "--add-data",
-            f"{ROOT / 'webui'}:webui",
+            *add_data_arg(ROOT / "webui", "webui"),
             "--clean",
             "--noconfirm",
             str(ROOT / "handoff_webui.py"),
@@ -188,16 +229,47 @@ def build_scan() -> None:
     )
 
 
+def rename_for_tauri(target_triple: str) -> None:
+    """PyInstaller writes plain <name>[.exe]; Tauri's externalBin
+    convention (docs/research-phase7-framework.md) needs
+    <name>-<target-triple>[.exe] sitting alongside it. Phase 7a did this
+    by hand (`cp binary binary-aarch64-apple-darwin`) once per binary --
+    automated here so a CI matrix job doesn't need a separate shell step
+    per OS to get the naming right."""
+    exe_suffix = ".exe" if sys.platform == "win32" else ""
+    for name in SIDECAR_NAMES:
+        built = BINARIES_DIR / f"{name}{exe_suffix}"
+        target = BINARIES_DIR / f"{name}-{target_triple}{exe_suffix}"
+        if not built.exists():
+            raise FileNotFoundError(f"expected PyInstaller to produce {built}, but it's missing")
+        shutil.copy2(built, target)
+        print(f"  {target.name}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--target-triple",
+        default=None,
+        help="Rust target triple to name the sidecars for (default: this machine's own host triple, via `rustc -vV`).",
+    )
+    return parser
+
+
 def main() -> int:
+    args = build_parser().parse_args()
+    target_triple = args.target_triple or detect_target_triple()
+
     BINARIES_DIR.mkdir(parents=True, exist_ok=True)
     build_server()
     build_cli()
     build_validate()
     build_scan()
-    print(f"\nBuilt 4 sidecars in {BINARIES_DIR}")
-    print("Copy each to <name>-<rust-target-triple> (e.g. `rustc -vV`'s `host:` "
-          "line) before `cargo tauri build` -- Tauri's sidecar naming convention "
-          "(docs/research-phase7-framework.md).")
+
+    print(f"\nRenaming for Tauri's sidecar convention (target triple: {target_triple}):")
+    rename_for_tauri(target_triple)
+
+    print(f"\nBuilt and renamed 4 sidecars in {BINARIES_DIR}")
     return 0
 
 
