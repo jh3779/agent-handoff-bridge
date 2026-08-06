@@ -682,3 +682,106 @@ create a task-specific packet.
   on whether/when to continue to 7b's next milestone (M5/M6), decide the
   Intel Mac question, or actually cut a first real release to exercise
   this runbook.
+
+### 2026-08-06 — Phase 7b M6: sidecar lifecycle fixes (IN PROGRESS, paused before PR)
+
+- **Target**: Claude Code CLI, `src-tauri/src/lib.rs` (Rust). Branch
+  `feature/phase7b-m6-sidecar-lifecycle`, commit `58a3c6e`. **Committed
+  locally only — not pushed to origin, no PR opened.** User said "다음으로
+  진행해줘" (continue) after M4 merged; M5 (code signing) is explicitly
+  deferred to a separate Phase 7c gate per DEC-22, so M6 (verify the two
+  Phase 7a-deferred follow-ups) was next. Partway through addressing a
+  self-review's findings, the user said "일단 여기까지 작업해주고
+  기록해줘" (stop here for now and record it) — this entry is that
+  record. **Not yet done**: fixing the 2 findings below, pushing the
+  branch, opening a PR, the usual review/merge cycle, or updating
+  `docs/design-system/roadmap.md`'s Phase 7 summary table to reflect
+  M6 as complete (it currently says M6 is done, which is optimistic —
+  see below).
+- **Changed**: Both Phase 7a-deferred questions were investigated by
+  actually building and running the real `.app`, not just reading code.
+  - **Sidecar cleanup on app quit — found genuinely broken, fixed.**
+    Discovered by accident: while preparing a port-conflict test,
+    `lsof -i :8787` found a process already squatting on the port whose
+    parent was `launchd` (PID 1) — proof a Tauri app from earlier
+    testing had quit hours ago but its sidecar never died, just got
+    orphaned. Root cause: `sidecar.spawn()`'s returned `CommandChild` was
+    discarded (`_child`) — `tauri-plugin-shell`'s `CommandChild` has no
+    Drop-triggered cleanup. Fixed: the child is now kept in Tauri managed
+    state (`Arc<Mutex<Option<CommandChild>>>`) and killed on app exit.
+    Getting this right took two more rounds of empirical correction: (1)
+    the exit hook was first wired to `RunEvent::ExitRequested` — logging
+    every `RunEvent` during a real quit (via `osascript -e 'tell
+    application ... to quit'`, chosen specifically because Apple Events
+    don't need the Accessibility permissions this dev environment lacks)
+    showed `ExitRequested` never fires on a real quit here, only `Exit`
+    does — hook moved accordingly. (2) Even on the right event,
+    `CommandChild::kill()` (Rust's `Child::kill()`, i.e. SIGKILL) only
+    killed the outer PID — PyInstaller's onefile bootloader re-execs into
+    a second process that survived as a *new* orphan. A manual `kill`
+    (SIGTERM) to the same outer PID was tested separately and did cascade
+    to both, but the fix doesn't rely on that — added
+    `kill_sidecar_tree()`, which explicitly kills descendants first
+    (`pkill -P <pid>` / Windows `taskkill /T /F /PID <pid>`) before the
+    tracked parent, since killing the parent first changes the child's
+    ppid and breaks `-P` matching. Verified twice in a row (launch → quit
+    → check `ps`/`lsof`) that zero processes and zero port-8787 listeners
+    remain afterward.
+  - **Port 8787 conflict — was already non-hanging, message improved.**
+    `handoff_webui.py`'s `ThreadingHTTPServer(...)` has no try/except
+    around the bind call, so a taken port produces an unhandled `OSError:
+    [Errno 48] Address already in use` traceback and a non-zero exit —
+    reproduced for real by pre-binding the port and launching a second
+    instance. The existing `CommandEvent::Terminated` handler already
+    caught this via `fatal_startup_error()` (a blocking dialog +
+    `app.exit(1)`) — it was never actually hanging or silent, just showed
+    a generic "exited before it was ready" message. Fixed by detecting
+    `"Address already in use"` in `CommandEvent::Stderr` and showing a
+    specific message instead. The user directly observed the real native
+    dialog with the correct specific text during a repeat of this test,
+    confirming it end-to-end.
+- **Verified**: `python3 -m unittest discover -s tests -v` — 365 tests
+  passing. `python3 handoff_bridge.py check` passes.
+  `python3 scripts/scan_secrets.py` clean. `cargo build --manifest-path
+  src-tauri/Cargo.toml` (with placeholder sidecars, matching CI's
+  `rust-build` job) clean. All empirical verification above was done on
+  macOS only — this dev machine can't test Windows/Linux, and there is no
+  CI job that launches+quits the actual bundled installer (CI only
+  compile-checks and builds bundles, never runs them interactively).
+- **Remaining / NOT yet fixed** — an adversarial self-review (background
+  agent) ran against this diff before any PR was opened and found 2 real,
+  unaddressed issues:
+  1. **`pkill -P` only reaches one process generation.** The real chain
+     during an in-flight provider run is deeper than what was tested:
+     outer sidecar bootloader → its re-exec'd interpreter (both handled)
+     → a *second* PyInstaller sidecar (`agent-handoff-bridge-cli`,
+     spawned mid-run by `bridge_command_prefix()`) → *its* re-exec'd
+     interpreter → the real `codex`/`claude`/`gemini` subprocess. None of
+     the last three are direct children of the tracked outer PID, so
+     `pkill -P` doesn't reach them — quitting the app while a provider
+     run is active would still orphan that chain, including a live
+     provider CLI. Windows' `taskkill /T` is documented as recursive, so
+     it likely doesn't have this specific gap — a real Unix/Windows
+     asymmetry, unverified on real Windows.
+  2. **The port-conflict message match is POSIX-only.** `"Address already
+     in use"` is the macOS/Linux `OSError` text; Windows' equivalent
+     (`WSAEADDRINUSE`) renders as `"[WinError 10048] Only one usage of
+     each socket address..."`, which doesn't contain that substring — the
+     improved message is currently dead code on Windows (falls back to
+     the generic message there, not a hang/crash, just a missed
+     improvement).
+  Neither is fixed yet. `docs/design-system/roadmap.md`'s "7b M6 실제로
+  한 것" section and its Phase 7 summary table currently describe M6 as
+  fully done ("매번 고아 없이 완전히 정리됨") — that claim is only true
+  for the idle-server case actually tested, not the in-flight-provider-run
+  case finding 1 describes. **That doc needs a correction pass** before
+  M6 is genuinely complete, in addition to fixing the code.
+- **Blocked**: none technically. Paused per explicit user request, not a
+  technical blocker. **Next steps when resumed**: decide whether to fix
+  finding 1 (extend `kill_sidecar_tree()` to reach the full chain — e.g.
+  recursive `pkill`/process-group-based kill on Unix) and finding 2
+  (either broaden the Windows match or accept the degraded-but-safe
+  fallback as good enough), correct the roadmap.md overclaim either way,
+  then push the branch, open a PR, and run it through the same
+  self-review-fix → CI → external-review-fix → merge cycle every other
+  unit of work in this project has gone through.
