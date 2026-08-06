@@ -132,7 +132,18 @@ pub fn run() {
             CommandEvent::Stderr(line) => {
               let text = String::from_utf8_lossy(&line);
               log::warn!("[server] {text}");
-              if text.contains("Address already in use") {
+              // "Address already in use" is macOS/Linux's OSError text
+              // (verified empirically). Windows' equivalent (WSAEADDRINUSE)
+              // renders as "Only one usage of each socket address..." in
+              // English, but Windows error *text* can be localized per
+              // system language while the numeric code (10048) can't --
+              // matching all three so this isn't silently English-only.
+              // Unverified on real Windows (no Windows machine available
+              // here); flagged in docs.
+              if text.contains("Address already in use")
+                || text.contains("Only one usage of each socket address")
+                || text.contains("10048")
+              {
                 port_conflict_detected = true;
               }
             }
@@ -199,33 +210,77 @@ pub fn run() {
   });
 }
 
-/// Kills the sidecar and its PyInstaller onefile bootloader's re-exec'd
-/// inner process. CommandChild::kill() (Rust stdlib's Child::kill(), i.e.
-/// SIGKILL on Unix / TerminateProcess on Windows) only reaches the single
-/// PID Tauri directly spawned -- verified empirically (built the real
-/// .app, quit it, checked `ps`) that this leaves the bootloader's inner
-/// process, which shows up as a separate PID with the outer one as its
-/// ppid, running as a newly-orphaned process still holding port 8787. A
-/// plain SIGTERM sent manually to the outer PID happened to cascade
-/// correctly in manual testing, but relying on the bootloader's own
-/// signal-forwarding behavior isn't something this project controls --
-/// explicitly killing the process tree instead. Descendants have to be
-/// killed *before* the parent: once the parent's dead, the child's ppid
-/// changes (reparented to launchd/init), and `pkill -P <pid>` matching
-/// stops working.
+/// Kills the sidecar and its whole descendant process tree.
+/// CommandChild::kill() (Rust stdlib's Child::kill(), i.e. SIGKILL on Unix
+/// / TerminateProcess on Windows) only reaches the single PID Tauri
+/// directly spawned -- verified empirically (built the real .app, quit it,
+/// checked `ps`) that this leaves the PyInstaller onefile bootloader's
+/// re-exec'd inner process orphaned, still holding port 8787.
+///
+/// A single `pkill -P <pid>` (killing only direct children) is NOT
+/// sufficient either: an in-flight provider run makes the real tree
+/// deeper than "bootloader -> its re-exec'd interpreter" --
+/// handoff_webui.py's bridge_command_prefix() shells out to a *second*
+/// PyInstaller sidecar (agent-handoff-bridge-cli) for init/run, which
+/// itself re-execs and then spawns the real codex/claude/gemini
+/// subprocess. That's 3-4 generations, none of which are a *direct* child
+/// of the outer tracked PID, so a one-hop `pkill -P` misses all of them --
+/// quitting the app mid-run would still orphan a live provider CLI. Fixed
+/// by walking the full descendant tree via `pgrep -P` before killing
+/// anything.
 fn kill_sidecar_tree(child: CommandChild) {
   let pid = child.pid();
   #[cfg(unix)]
   {
-    let _ = std::process::Command::new("pkill").args(["-P", &pid.to_string()]).status();
+    // Discover the whole tree first: once a node is dead, `pgrep -P`
+    // can no longer find its children by ppid (they get reparented to
+    // launchd/init), so killing has to happen only after every PID is
+    // already known. Kill from the deepest generation up (reverse
+    // discovery order) so no intermediate node's children survive it --
+    // a node is always discovered before its own children get explored,
+    // so reversing the discovery order guarantees children are killed
+    // before their parents regardless of traversal order.
+    let mut descendants = descendant_pids_unix(pid);
+    descendants.reverse();
+    for descendant_pid in descendants {
+      let _ = std::process::Command::new("kill").args(["-9", &descendant_pid.to_string()]).status();
+    }
   }
   #[cfg(windows)]
   {
-    // /T: kill the whole tree, not just this PID -- covers the
-    // descendant-before-parent ordering concern above in one call.
+    // /T: kill the whole tree, not just this PID -- Windows' taskkill
+    // handles arbitrary depth in one call (unlike Unix's pgrep/pkill,
+    // which only match direct parent-child, hence the explicit tree-walk
+    // above). Unverified on real Windows -- no Windows machine available
+    // to test this fix on.
     let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).status();
   }
   let _ = child.kill();
+}
+
+/// Direct-and-indirect children of `root`, discovered via repeated
+/// `pgrep -P` calls (a stdlib/libc-free way to walk the process tree on
+/// Unix -- avoids adding a new Cargo dependency for something a system
+/// tool already does correctly). Order is not guaranteed to be strict
+/// breadth/depth-first, but every PID is guaranteed to appear after its
+/// own parent, which is what kill_sidecar_tree's reversed-order kill
+/// relies on.
+#[cfg(unix)]
+fn descendant_pids_unix(root: u32) -> Vec<u32> {
+  let mut discovered = Vec::new();
+  let mut frontier = vec![root];
+  while let Some(parent) = frontier.pop() {
+    let Ok(output) = std::process::Command::new("pgrep").args(["-P", &parent.to_string()]).output() else {
+      continue;
+    };
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+      if let Ok(child_pid) = line.trim().parse::<u32>() {
+        discovered.push(child_pid);
+        frontier.push(child_pid);
+      }
+    }
+  }
+  discovered
 }
 
 /// Shows a blocking native error dialog and quits -- the only reasonable
