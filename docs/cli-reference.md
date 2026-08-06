@@ -424,7 +424,8 @@ checks — cross-project history browsing shipped in Phase 3).
 
 ## Platform Packages
 
-Build macOS and Windows zip packages:
+Build macOS and Windows source zip packages (terminal/CLI use, requires the
+user's own Python 3):
 
 ```bash
 python3 scripts/package_platforms.py
@@ -436,3 +437,9 @@ Build one platform:
 python3 scripts/package_platforms.py --platform macos
 python3 scripts/package_platforms.py --platform windows
 ```
+
+Desktop installers (macOS -- Apple Silicon only for now --/Windows/Linux,
+bundled Python, no user Python install required) are a separate track
+built by CI's `installer-build` job rather than a local script — see
+[Release Process](release-process.md) for
+how to trigger and download them.

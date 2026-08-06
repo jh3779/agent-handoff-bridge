@@ -1,4 +1,4 @@
-# Research: Framework Migration (Phase 7, DEC-01, resolves CFL-09/CFL-14)
+# Research: Framework Migration (Phase 7, DEC-01, resolves CFL-14; CFL-09 later resolved by DEC-23 in Phase 7b M4)
 
 Date: 2026-08-05
 

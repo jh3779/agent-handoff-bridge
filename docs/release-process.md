@@ -1,13 +1,36 @@
 # Release Process
 
-How to cut a downloadable release of this repo. A release is a git tag plus
-a GitHub Release with the macOS/Windows zips attached — nothing more.
+How to cut a tagged release of this repo. Since Phase 7b (DEC-23, resolving
+CFL-09), a release ships **two parallel packaging tracks** attached to the
+same version tag and the same GitHub Release:
+
+1. **Source zips** (`scripts/package_platforms.py`) — git-free, but still
+   requires the user's own Python 3. For terminal/CLI-only use: running
+   `handoff_bridge.py` directly, scripting, headless environments. This is
+   the original distribution model and stays exactly as it was.
+2. **Desktop installers** (Tauri, `cargo tauri build`) — `.dmg`/`.app`
+   (macOS, **Apple Silicon only** — the CI matrix has no
+   `x86_64-apple-darwin` leg, so Intel Macs get no native installer today;
+   this was left open during 7b M1's planning and still is, see
+   `docs/design-system/roadmap.md`'s 7b plan item 2), `.msi`/nsis `.exe`
+   (Windows), `.deb`/`.AppImage`/`.rpm` (Linux). Bundles Python via
+   PyInstaller sidecars, so end users need no Python installation at all.
+   For desktop GUI use. **Currently unsigned** (code signing is Phase 7c,
+   a separate decision gate per DEC-22/DEC-23) — expect Gatekeeper ("could
+   not verify")/SmartScreen ("unknown publisher") warnings until then; see
+   [Security Model](security-model.md).
+
+Neither track replaces the other — see DEC-23
+(`docs/design-system/flutter-mapping.html#s1c`) for why both are kept.
 
 ## 1. Bump The Version
 
-Edit `BRIDGE_VERSION` in `handoff_bridge.py` (single source of truth; read by
-`--version`, `diagnose`, and `scripts/package_platforms.py`'s
-`START_HERE_*.txt`).
+Edit `BRIDGE_VERSION` in `handoff_bridge.py` (single source of truth; read
+by `--version`, `diagnose`, and `scripts/package_platforms.py`'s
+`START_HERE_*.txt`). Also update `"version"` in `src-tauri/tauri.conf.json`
+to match — Tauri doesn't read `BRIDGE_VERSION` automatically, so the two
+have to be kept in sync by hand or the desktop app and the CLI zip will
+report different version numbers for the same release.
 
 ## 2. Update Release Notes
 
@@ -24,7 +47,7 @@ python3 handoff_bridge.py check
 Do not proceed if this fails — it is the same check CI runs on every pull
 request. See [Quality Gates](quality-gates.md).
 
-## 4. Build The Packages
+## 4. Build The Source Zips
 
 ```bash
 python3 scripts/package_platforms.py
@@ -57,15 +80,95 @@ git push origin main
 git push origin vX.Y.Z
 ```
 
-## 6. Publish The GitHub Release
+Do this **before** building the desktop installers (step 6) — the
+`installer-build` job builds whatever commit it's pointed at, so triggering
+it against an unpushed working tree would silently ship installers for the
+*previous* version.
+
+## 6. Build The Desktop Installers
+
+The `installer-build` CI job (`.github/workflows/ci.yml`) produces real,
+per-OS installers, but it's deliberately gated to manual trigger
+(`workflow_dispatch`) only — not on every PR/push like the rest of CI —
+because GitHub bills private-repo Actions minutes at 10x for macOS runners
+and 2x for Windows, and a real bundle build is comparatively expensive
+(WiX/NSIS downloads, DMG creation). Trigger it against the tag just pushed
+in step 5, so the installers are built from exactly the tagged commit:
+
+```bash
+gh workflow run ci.yml --ref vX.Y.Z
+```
+
+`gh workflow run` doesn't print the new run's ID, and it can take a few
+seconds to appear — poll for it rather than grabbing whatever `gh run list`
+returns immediately. `--limit 1` alone isn't safe here: if any *other*
+manual `workflow_dispatch` run (unrelated to this release) landed more
+recently, it would be the only one in a 1-row window and the tag match
+would find nothing, every single poll, forever. Widen the window so this
+release's run is still in it even if something else raced ahead, and bound
+the retry so a genuine miss fails loudly instead of hanging:
+
+```bash
+run_id=""
+for attempt in $(seq 1 30); do
+  run_id=$(gh run list --workflow=ci.yml --event=workflow_dispatch --limit 20 \
+    --json databaseId,headBranch,createdAt \
+    -q '[.[] | select(.headBranch == "vX.Y.Z")] | sort_by(.createdAt) | last | .databaseId // empty')
+  [ -n "$run_id" ] && break
+  sleep 3
+done
+if [ -z "$run_id" ]; then
+  echo "could not find the workflow_dispatch run for tag vX.Y.Z after 30 attempts -- check manually:"
+  gh run list --workflow=ci.yml --event=workflow_dispatch --limit 20
+  exit 1
+fi
+gh run watch "$run_id"
+```
+
+Download the artifacts once it's green:
+
+```bash
+gh run download "$run_id" --dir /tmp/agent-handoff-bridge-installers
+```
+
+`actions/upload-artifact@v4` preserves each format's subdirectory under the
+matched files' common ancestor, so this produces
+`installers-<target-triple>/<format>/<file>` (e.g.
+`installers-aarch64-apple-darwin/dmg/agent-handoff-bridge_X.Y.Z_aarch64.dmg`),
+not a flat directory — the format subdirectory (`dmg`, `macos`, `msi`,
+`nsis`, `deb`, `appimage`, `rpm`) matches `.github/workflows/ci.yml`'s own
+`src-tauri/target/release/bundle/<format>/` upload paths. Sanity-check at
+least one installer by actually running it (install + launch the app,
+confirm the titlebar update-check badge and a basic chat round-trip work)
+— this can't be scripted the way the zip check in step 4 can, so do it
+manually before publishing.
+
+If any matrix leg fails, check the run's logs directly
+(`gh run view "$run_id" --log-failed`) rather than guessing — Windows/Linux
+bundling has real, previously-hit platform-specific failure modes (see
+`docs/design-system/roadmap.md`'s "7b M3 실제로 한 것" for what's already
+been worked around, e.g. a known upstream `linuxdeploy`/AppImage issue on
+`ubuntu-latest`, tauri-apps/tauri#14796).
+
+## 7. Publish The GitHub Release
 
 ```bash
 gh release create vX.Y.Z \
   dist/agent-handoff-bridge-macos.zip \
   dist/agent-handoff-bridge-windows.zip \
+  /tmp/agent-handoff-bridge-installers/installers-aarch64-apple-darwin/dmg/*.dmg \
+  /tmp/agent-handoff-bridge-installers/installers-x86_64-pc-windows-msvc/nsis/*.exe \
+  /tmp/agent-handoff-bridge-installers/installers-x86_64-unknown-linux-gnu/appimage/*.AppImage \
   --title "vX.Y.Z" \
   --notes-file <(sed -n "/## vX.Y.Z/,/## /p" docs/release-notes.md | sed '$d')
 ```
+
+Attaching one installer per OS (`.dmg`, nsis `.exe`, `.AppImage`) keeps the
+release page from being cluttered with near-duplicate formats — `.msi`,
+`.app`, `.deb`, `.rpm` are also produced and can be attached too
+(`gh release upload vX.Y.Z <file>`) if a user specifically asks for one of
+those formats. Note in the release notes that installers are unsigned and
+what warning each OS shows (see step 6's intro above).
 
 The `--notes-file` command extracts just the new version's section out of
 `docs/release-notes.md` so the release body and the changelog never drift
@@ -74,18 +177,30 @@ via `gh release edit vX.Y.Z --notes-file <file>` if the extraction looks
 wrong (the `sed` range match is best-effort, not foolproof — verify before
 trusting it for release notes with unusual heading text).
 
-## 7. Verify
+## 8. Verify
 
 ```bash
 gh release view vX.Y.Z
 ```
 
-Confirm both zip assets are attached and the download links work for an
-account with repo access (this repo is private — see
-[Security Model](security-model.md)).
+Confirm the zip assets and at least one installer per OS are attached, and
+the download links work for an account with repo access (this repo is
+private — see [Security Model](security-model.md)).
 
 ## Notes
 
-- `dist/` is gitignored; only the GitHub Release carries the built zips.
+- `dist/` and `src-tauri/target/` are both gitignored; only the GitHub
+  Release carries the built zips and installers.
 - Never rebuild and re-upload assets under an existing tag — cut a new patch
   version instead, so a version number always means one exact set of files.
+- Both packaging tracks stay supported deliberately (DEC-23) — the source
+  zip for terminal/scriptable use, the installers for desktop GUI use. Do
+  not drop either without a fresh decision recorded the same way.
+- **This runbook's installer track (steps 5-7) has never been run
+  end-to-end** — no tagged release has shipped installer assets yet
+  (`gh release list` is still empty as of this writing). The commands are
+  believed correct against the real `installer-build` job and `gh` CLI
+  behavior, but treat the first real release as the actual test; adjust
+  this doc if anything about `gh run list`'s `headBranch` matching, the
+  artifact directory layout, or the `gh workflow run --ref <tag>` targeting
+  doesn't behave as described here.

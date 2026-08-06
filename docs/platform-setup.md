@@ -72,6 +72,12 @@ Outputs:
 The generated packages include both launcher folders so the validation command
 continues to work after unzipping.
 
+This is the terminal/CLI-first setup path this document covers (git-free
+zip, requires the user's own Python 3). A separate, GUI-first path also
+exists -- native desktop installers with Python already bundled in, no
+separate Python install needed. See [Release Process](release-process.md)
+for how those are built and published (DEC-23).
+
 ## Desktop Controller
 
 The GUI supports:
