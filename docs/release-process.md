@@ -9,12 +9,16 @@ same version tag and the same GitHub Release:
    `handoff_bridge.py` directly, scripting, headless environments. This is
    the original distribution model and stays exactly as it was.
 2. **Desktop installers** (Tauri, `cargo tauri build`) — `.dmg`/`.app`
-   (macOS), `.msi`/nsis `.exe` (Windows), `.deb`/`.AppImage`/`.rpm`
-   (Linux). Bundles Python via PyInstaller sidecars, so end users need no
-   Python installation at all. For desktop GUI use. **Currently unsigned**
-   (code signing is Phase 7c, a separate decision gate per DEC-22/DEC-23) —
-   expect Gatekeeper ("could not verify")/SmartScreen ("unknown publisher")
-   warnings until then; see [Security Model](security-model.md).
+   (macOS, **Apple Silicon only** — the CI matrix has no
+   `x86_64-apple-darwin` leg, so Intel Macs get no native installer today;
+   this was left open during 7b M1's planning and still is, see
+   `docs/design-system/roadmap.md`'s 7b plan item 2), `.msi`/nsis `.exe`
+   (Windows), `.deb`/`.AppImage`/`.rpm` (Linux). Bundles Python via
+   PyInstaller sidecars, so end users need no Python installation at all.
+   For desktop GUI use. **Currently unsigned** (code signing is Phase 7c,
+   a separate decision gate per DEC-22/DEC-23) — expect Gatekeeper ("could
+   not verify")/SmartScreen ("unknown publisher") warnings until then; see
+   [Security Model](security-model.md).
 
 Neither track replaces the other — see DEC-23
 (`docs/design-system/flutter-mapping.html#s1c`) for why both are kept.
@@ -97,15 +101,27 @@ gh workflow run ci.yml --ref vX.Y.Z
 
 `gh workflow run` doesn't print the new run's ID, and it can take a few
 seconds to appear — poll for it rather than grabbing whatever `gh run list`
-returns immediately (a stale run, or one from something else hitting
-`ci.yml` around the same time, could otherwise be picked up by mistake):
+returns immediately. `--limit 1` alone isn't safe here: if any *other*
+manual `workflow_dispatch` run (unrelated to this release) landed more
+recently, it would be the only one in a 1-row window and the tag match
+would find nothing, every single poll, forever. Widen the window so this
+release's run is still in it even if something else raced ahead, and bound
+the retry so a genuine miss fails loudly instead of hanging:
 
 ```bash
 run_id=""
-until [ -n "$run_id" ]; do
+for attempt in $(seq 1 30); do
+  run_id=$(gh run list --workflow=ci.yml --event=workflow_dispatch --limit 20 \
+    --json databaseId,headBranch,createdAt \
+    -q '[.[] | select(.headBranch == "vX.Y.Z")] | sort_by(.createdAt) | last | .databaseId // empty')
+  [ -n "$run_id" ] && break
   sleep 3
-  run_id=$(gh run list --workflow=ci.yml --event=workflow_dispatch --limit 1 --json databaseId,headBranch -q ".[] | select(.headBranch == \"vX.Y.Z\") | .databaseId")
 done
+if [ -z "$run_id" ]; then
+  echo "could not find the workflow_dispatch run for tag vX.Y.Z after 30 attempts -- check manually:"
+  gh run list --workflow=ci.yml --event=workflow_dispatch --limit 20
+  exit 1
+fi
 gh run watch "$run_id"
 ```
 
