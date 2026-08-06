@@ -53,13 +53,43 @@ class ClassifyHandoffTests(unittest.TestCase):
         # authenticated" matched the old auth pattern
         # (not logged in|authentication_failed|unauthorized|forbidden),
         # so this fell all the way through to "unknown" even though
-        # AuthError is a verified, exact Gemini signal
-        # (docs/research-gemini-cli.md), not a guess.
+        # AuthError is a documented Gemini signal
+        # (docs/research-gemini-cli.md).
         parsed = hb.summarize_gemini(
+            "",
             json.dumps({"response": "", "error": {"type": "AuthError", "message": "not authenticated"}}),
             exit_code=41,
         )
         needed, reason = hb.classify_handoff(41, "", "", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("auth:"), msg=reason)
+
+    def test_gemini_real_cli_autherror_shape_is_classified_as_auth(self):
+        # Regression (found via real verification against an actually
+        # installed gemini binary, v0.54.0, 2026-08-06, not a mock): the
+        # unauthenticated-CLI failure writes its JSON error object to
+        # *stderr*, not stdout, and error.type comes back as the generic
+        # "Error" rather than "AuthError"/"FatalAuthenticationError" --
+        # so this real shape must still classify as "auth" through the
+        # message-text match, not the type-name match, and only after
+        # summarize_gemini() is given stderr to fall back to.
+        stderr = json.dumps(
+            {
+                "session_id": "eab3f432-f14a-431d-b976-7ffa1a3b0e1a",
+                "error": {
+                    "type": "Error",
+                    "message": (
+                        "Please set an Auth method in your /Users/x/.gemini/settings.json "
+                        "or specify one of the following environment variables before "
+                        "running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA"
+                    ),
+                    "code": 41,
+                },
+            }
+        )
+        parsed = hb.summarize_gemini("", stderr, exit_code=41)
+        self.assertEqual(len(parsed["errors"]), 1)
+        needed, reason = hb.classify_handoff(41, "", stderr, parsed)
         self.assertTrue(needed)
         self.assertTrue(reason.startswith("auth:"), msg=reason)
 
@@ -583,6 +613,22 @@ class SummarizeGeminiTests(unittest.TestCase):
         self.assertIsNone(summary["session_id"])
         self.assertEqual(summary["final_text"], "")
 
+    def test_falls_back_to_stderr_when_stdout_has_nothing_parseable(self):
+        # The real CLI (confirmed against v0.54.0) writes fatal-error
+        # bodies to stderr, empty stdout -- summarize_gemini() must find
+        # the JSON there instead of giving up after an empty/unparseable
+        # stdout.
+        stderr = json.dumps({"error": {"type": "Error", "message": "boom"}})
+        summary = hb.summarize_gemini("", stderr, exit_code=1)
+        self.assertEqual(summary["errors"], [{"type": "Error", "message": "boom"}])
+
+    def test_prefers_stdout_over_stderr_when_both_are_present(self):
+        # A successful run's real response must never be shadowed by
+        # leftover/unrelated stderr text.
+        stdout = json.dumps({"response": "real reply"})
+        summary = hb.summarize_gemini(stdout, "some unrelated stderr noise", exit_code=0)
+        self.assertEqual(summary["final_text"], "real reply")
+
 
 class GeminiIntegrationTests(unittest.TestCase):
     """Real subprocess, fake `gemini` binary -- same pattern as
@@ -642,6 +688,61 @@ class GeminiIntegrationTests(unittest.TestCase):
             # detection, now saved into state so the *next* gemini call in
             # this workspace resumes instead of starting fresh.
             self.assertEqual(state["sessions"]["gemini"], "latest")
+
+    def test_unauthenticated_gemini_run_end_to_end(self):
+        # Fake binary shaped exactly like the real unauthenticated CLI
+        # (v0.54.0, confirmed 2026-08-06): empty stdout, the JSON error
+        # object on stderr, exit code 41. Exercises the real stdout/stderr
+        # split through the full run_provider() path, not just
+        # summarize_gemini() directly.
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            fake_gemini = fake_bin / "gemini"
+            fake_gemini.write_text(
+                "#!/bin/sh\n"
+                "cat >/dev/null\n"
+                "cat >&2 <<'EOF'\n"
+                '{"session_id": "abc", "error": {"type": "Error", "message": "Please set an Auth method in your settings.json", "code": 41}}\n'
+                "EOF\n"
+                "exit 41\n",
+                encoding="utf-8",
+            )
+            fake_gemini.chmod(0o755)
+
+            prompt_path = workspace / "prompt.txt"
+            prompt_path.write_text("hello", encoding="utf-8")
+
+            env = dict(os.environ)
+            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+            bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(bridge_script),
+                    "--workspace",
+                    str(workspace),
+                    "run",
+                    "gemini",
+                    "--execute",
+                    "--prompt-file",
+                    str(prompt_path),
+                ],
+                text=True,
+                capture_output=True,
+                env=env,
+                check=False,
+                timeout=30,
+            )
+            # run_provider() propagates the provider's own exit code as
+            # the bridge's exit code, so 41 here (not 0) is expected.
+            self.assertEqual(result.returncode, 41, msg=result.stderr)
+            state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+            record = state["history"][0]
+            self.assertTrue(record["handoff_needed"])
+            self.assertTrue(record["reason"].startswith("auth:"), msg=record["reason"])
+            self.assertIsNone(state["sessions"].get("gemini"))
 
     def test_auto_fallback_skips_an_uninstalled_middle_provider_to_reach_gemini(self):
         # The exact scenario a review flagged as reachable only once

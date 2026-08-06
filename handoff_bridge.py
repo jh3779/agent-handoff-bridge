@@ -119,14 +119,24 @@ ERROR_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "auth",
         re.compile(
-            # AuthError/FatalAuthenticationError: Gemini's literal
+            # AuthError/FatalAuthenticationError: Gemini's *documented*
             # error.type/exit-code-41 vocabulary (docs/research-gemini-cli.md)
             # -- added after a review found summarize_gemini()'s error dict
             # (e.g. {"type": "AuthError", "message": "not authenticated"})
             # didn't match any existing pattern and fell through to
-            # "unknown" instead of "auth", even though this is a verified,
-            # exact signal, not a guess.
-            r"\b(not logged in|authentication_failed|unauthorized|forbidden|AuthError|FatalAuthenticationError)\b",
+            # "unknown" instead of "auth".
+            #
+            # "auth method": what a real installed CLI (v0.54.0) actually
+            # emits for this failure, confirmed 2026-08-06 by running the
+            # real unauthenticated binary -- its JSON error.type came back
+            # as the generic "Error", not "AuthError"/"FatalAuthenticationError",
+            # so the type-name match alone does *not* fire for this real,
+            # very-likely-common case (a user who hasn't run gemini's auth
+            # setup yet). The real message text was "Please set an Auth
+            # method in your ...settings.json or specify one of the
+            # following environment variables before running:
+            # GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA".
+            r"\b(not logged in|authentication_failed|unauthorized|forbidden|AuthError|FatalAuthenticationError|auth method)\b",
             re.I,
         ),
     ),
@@ -792,12 +802,23 @@ def summarize_claude(events: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def summarize_gemini(stdout: str, exit_code: int = 0) -> dict[str, Any]:
+def summarize_gemini(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[str, Any]:
     """`gemini --output-format json` returns one JSON object at the end
     of the run, not a JSONL event stream like Codex/Claude
     (docs/research-gemini-cli.md "Bottom Line") -- parse_jsonl() doesn't
-    apply here, so this parses `stdout` directly instead of taking
+    apply here, so this parses the JSON directly instead of taking
     pre-parsed `events` like summarize_codex()/summarize_claude() do.
+
+    Confirmed against a real installed binary (v0.54.0, 2026-08-06): a
+    *successful* response object is written to stdout, but a
+    *fatal-error* response object (auth failure, cancellation,
+    max-turns-exceeded, fatal tool error) is written to stderr instead,
+    via the CLI's internal `UserFeedback` event path -- the two streams
+    are mutually exclusive for this command, never both populated by the
+    same run. `stdout` is tried first, so a successful run's parsing is
+    unaffected; `stderr` is only consulted when `stdout` has nothing
+    parseable, so this can't accidentally prefer stale/interleaved
+    stderr log text over a genuine response.
 
     `session_id` is always the literal sentinel "latest", never a real
     ID (see provider_command()'s Gemini branch for why) -- set only when
@@ -824,7 +845,10 @@ def summarize_gemini(stdout: str, exit_code: int = 0) -> dict[str, Any]:
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError:
-        return summary
+        try:
+            data = json.loads(stderr)
+        except json.JSONDecodeError:
+            return summary
     if not isinstance(data, dict):
         return summary
     summary["final_text"] = data.get("response") or ""
@@ -983,7 +1007,9 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
     elif provider == "claude":
         parsed = summarize_claude(parse_jsonl(stdout))
     else:
-        parsed = summarize_gemini(stdout, exit_code)  # single JSON object, not a JSONL stream
+        # single JSON object, not a JSONL stream; may land on stdout
+        # (success) or stderr (fatal error) -- see summarize_gemini()
+        parsed = summarize_gemini(stdout, stderr, exit_code)
     handoff_needed, handoff_reason = classify_handoff(exit_code, stdout, stderr, parsed)
 
     session_id = parsed.get("session_id")

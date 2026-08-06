@@ -2,6 +2,73 @@
 
 Date: 2026-08-05
 
+## Real CLI Verification (2026-08-06)
+
+Everything below this point (through "Sources") was written before this
+project ever ran a real `gemini` binary — all Phase 5 testing used fake
+mock shell scripts (`tests/test_handoff_bridge.py`,
+`tests/test_handoff_webui.py`). Once a real, unauthenticated `gemini`
+CLI (npm `@google/gemini-cli`, v0.54.0) became available locally, running
+it for real (`echo "..." | gemini --output-format json`, plus reading
+`gemini`'s own bundled JS source under
+`/opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/`) surfaced two
+real gaps between what was assumed and what the CLI actually does, both
+now fixed in `handoff_bridge.py`:
+
+1. **A fatal-error JSON body is written to stderr, not stdout** — the
+   worked JSON example above (`response`/`stats`/`error`) is only
+   confirmed for a *successful* run. Reading the CLI's own source
+   (`packages/cli/src/...`, bundled) traced the actual write path:
+   success output goes through `textOutput.write(...)` to
+   `process.stdout`, but any fatal error (auth failure, cancellation,
+   max-turns-exceeded, fatal tool error) goes through
+   `coreEvents.emitFeedback("error", formattedError)` →
+   `writeToStderr(...)`. The two are mutually exclusive for a single
+   run. `summarize_gemini(stdout, exit_code)` originally only ever
+   looked at `stdout`, so it silently saw nothing (`json.loads("")` →
+   empty summary) on every real fatal error — `classify_handoff()` still
+   caught these via its generic `exit_code != 0` fallback
+   (`tool_failure: provider exited with code N`), just without the
+   specific structured reason. Fixed: `summarize_gemini()` now takes
+   `stderr` too and falls back to it only when `stdout` has nothing
+   parseable, so a real response is never shadowed by unrelated stderr
+   noise.
+2. **`error.type` for a real auth failure is the generic `"Error"`, not
+   `"AuthError"`/`"FatalAuthenticationError"`** — the exit code (41) and
+   overall JSON shape (`session_id`/`error.type`/`error.message`/
+   `error.code`) matched what was documented, but the `type` field
+   itself did not carry either literal name the existing `classify_handoff()`
+   auth pattern matched on. The `FatalAuthenticationError` class does
+   exist in the CLI's source and does set `error.name` to that string,
+   but this real run's exit path evidently didn't construct one — so
+   matching on `error.type` alone is not reliable for this case. The
+   actual message text is stable and specific: *"Please set an Auth
+   method in your `<path>/.gemini/settings.json` or specify one of the
+   following environment variables before running: `GEMINI_API_KEY`,
+   `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_GENAI_USE_GCA`"*. Fixed: the
+   `auth` `ERROR_PATTERNS` regex in `handoff_bridge.py` now also matches
+   the phrase `auth method`, confirmed to catch this real message.
+
+Both fixes were verified against the real binary end-to-end
+(`python3 handoff_bridge.py run gemini --execute ...` against the actual
+unauthenticated CLI), not just against the unit tests added alongside
+them (`tests/test_handoff_bridge.py`'s `SummarizeGeminiTests`,
+`test_gemini_real_cli_autherror_shape_is_classified_as_auth`,
+`GeminiIntegrationTests.test_unauthenticated_gemini_run_end_to_end`) —
+before the fix, the same real run reported
+`tool_failure: provider exited with code 41`; after, it correctly
+reports `auth: provider emitted a machine-readable error event`.
+
+The successful-response path (`--resume latest`, `-o/--output-format
+json`, `-p/--prompt`, stdin-based prompt delivery, the
+`response`/`stats` JSON shape) was independently confirmed consistent
+with `gemini --help`'s real output and the source's success-path write
+(`textOutput.write(...)` to stdout) — no further code changes needed
+there. A real *successful* (authenticated) call was not exercised, since
+no Gemini credentials were available in this environment; if that ever
+happens, it's still worth a quick diff against the `stats` shape
+documented below.
+
 ## Bottom Line
 
 Gemini CLI fits the same "subprocess + parse structured output + detect

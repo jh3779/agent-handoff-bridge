@@ -980,3 +980,70 @@ cost incurred.
   `docs/release-process.md` first.
 - **Blocked**: none. v0.2.0 is live with working download links. No
   further action pending.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-06
+
+- **Task**: user installed a real `gemini` CLI locally and asked for
+  real verification of this project's Gemini support — every prior
+  Gemini test throughout Phase 5 (and the v0.2.0 release) used fake
+  mock shell scripts, never an actual binary.
+- **What changed**:
+  - Ran the real, locally installed `gemini` binary (npm
+    `@google/gemini-cli`, v0.54.0, unauthenticated) directly, and read
+    its own bundled JS source
+    (`/opt/homebrew/lib/node_modules/@google/gemini-cli/bundle/`) to
+    trace exactly where JSON output is written. Found two real gaps
+    between `handoff_bridge.py`'s assumptions and actual CLI behavior
+    — both now fixed and covered by new tests, see
+    `docs/research-gemini-cli.md`'s new "Real CLI Verification"
+    section for the full writeup:
+    1. A fatal-error JSON body (auth failure, cancellation,
+       max-turns-exceeded, fatal tool error) is written to **stderr**,
+       not stdout — `summarize_gemini()` only ever looked at stdout, so
+       it silently missed every real fatal error's structured body
+       (`classify_handoff()`'s generic `exit_code != 0` fallback still
+       caught these as a handoff, just with a less specific reason
+       string). Fixed: `summarize_gemini()` now takes `stderr` too and
+       falls back to it only when stdout has nothing parseable.
+    2. A real auth failure's `error.type` comes back as the generic
+       `"Error"`, not `"AuthError"`/`"FatalAuthenticationError"` as
+       `classify_handoff()`'s `auth` pattern assumed — the type-name
+       match doesn't fire for this real, likely-common case (an
+       unauthenticated `gemini`). Fixed: the `auth` pattern now also
+       matches the real message text's `auth method` phrase.
+  - `handoff_bridge.py`: `summarize_gemini()` signature and body
+    updated (`stdout, stderr="", exit_code=0`, stdout tried first,
+    stderr only as fallback); its one call site in `run_provider()`
+    updated to pass both streams; `ERROR_PATTERNS`' `auth` regex
+    extended.
+  - `tests/test_handoff_bridge.py`: updated the existing
+    `test_gemini_autherror_is_classified_as_auth_not_unknown` to route
+    through stderr; added
+    `test_gemini_real_cli_autherror_shape_is_classified_as_auth`
+    (exact real captured JSON shape),
+    `test_falls_back_to_stderr_when_stdout_has_nothing_parseable`,
+    `test_prefers_stdout_over_stderr_when_both_are_present`, and a full
+    end-to-end `GeminiIntegrationTests.test_unauthenticated_gemini_run_end_to_end`
+    (fake binary shaped exactly like the real one: empty stdout, JSON
+    error on stderr, exit 41).
+  - `docs/research-gemini-cli.md`: new "Real CLI Verification
+    (2026-08-06)" section at the top documenting both findings, the
+    source-tracing method used, and what was and wasn't re-verified
+    (the successful/authenticated response path was **not** exercised
+    — no real Gemini credentials available in this environment; only
+    `--help` output and source-reading confirmed it's still consistent).
+- **Verified**: real unauthenticated `gemini` call before the fix
+  reported `tool_failure: provider exited with code 41` in
+  `.handoff/current.md`/state; the exact same real call after the fix
+  correctly reports `auth: provider emitted a machine-readable error
+  event` — confirmed live via
+  `python3 handoff_bridge.py run gemini --execute ...` against the real
+  binary in a scratch workspace (not just the unit/integration tests).
+  Full suite: `python3 handoff_bridge.py check` → 369 tests, OK, PASS.
+- **Remaining**: the successful/authenticated Gemini response path is
+  still unverified against a real call (no credentials available here)
+  — if Gemini API/OAuth credentials ever become available in this
+  environment, worth a quick real run to confirm the `response`/`stats`
+  shape and `--resume latest` actually round-trip as documented. No
+  other gaps found in this pass.
+- **Blocked**: none.
