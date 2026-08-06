@@ -352,3 +352,115 @@ create a task-specific packet.
   discipline as every prior phase, not be started opportunistically.
 - **Blocked**: none. No further action pending — awaiting user direction
   on whether/when to start Phase 7.
+
+### 2026-08-06 — Phase 7a: Tauri shell + Python sidecar architecture (DEC-22)
+
+- **Target**: Claude Code CLI, first non-Python code in this repo
+  (`src-tauri/`), branch `feature/phase7-tauri-shell`, PR #12
+  (https://github.com/jh3779/agent-handoff-bridge/pull/12), **merged**.
+  User confirmed (explicit yes/no question, given Phase 7's size/
+  irreversibility) to start Phase 7 despite the earlier "stop here"
+  decision.
+- **Changed**: A design interview resolved four architecture forks
+  before any code was written (research:
+  `docs/research-phase7-framework.md`) — **Tauri over Electron**
+  (official first-class Python-sidecar support), **keep
+  `handoff_webui.py` as a PyInstaller sidecar** rather than a Rust
+  rewrite, **keep the existing `gh`-based `check_for_update()`** rather
+  than either framework's own updater (neither cleanly supports a
+  private repo), **carry `webui/` over near-verbatim** this phase
+  (frontend framework deferred). Recorded as **DEC-22**, resolving
+  CFL-14. Phase 7 broken into sub-phases (7a done; 7b cross-platform
+  build/packaging; 7c code signing; 7d frontend framework, separate
+  decision) rather than one giant PR.
+  `src-tauri/`: a Tauri v2 project spawning `handoff_webui.py` (built
+  via PyInstaller as `agent-handoff-bridge-server`) as a sidecar, plus
+  three more sidecars following the real call chain
+  (`agent-handoff-bridge-cli`/`handoff_bridge.py` for `init`/`run`,
+  `agent-handoff-bridge-validate`/`scripts/validate_handoff.py` for
+  `check`, `agent-handoff-bridge-scan`/`scripts/scan_secrets.py` for the
+  secret scan). `scripts/build_phase7a_sidecars.py` is the real build
+  script. Fixed four instances of a pre-existing pattern
+  (`[sys.executable, script_path, ...]`) that breaks once frozen, since
+  `sys.executable` becomes the frozen binary itself — each now detects
+  frozen mode and invokes a sibling sidecar directly.
+  Two real bugs found only by building and launching the actual `.app`:
+  a statically-declared Tauri window navigates before the sidecar is
+  ready (permanently blank window, no retry) — fixed by building the
+  window programmatically only once the sidecar's stdout confirms
+  readiness; CPython fully-buffers stdout once piped, so that readiness
+  print could sit unflushed forever — `PYTHONUNBUFFERED=1` alone did
+  *not* reliably fix this when re-tested against the real binary; the
+  confirmed fix is `handoff_webui.py`'s own
+  `sys.stdout.reconfigure(line_buffering=True)`.
+- **Verified**: `python3 -m unittest discover -s tests -v` — 365 tests
+  passing. `python3 handoff_bridge.py check` passes.
+  `python3 scripts/scan_secrets.py` clean. `cargo build` (src-tauri)
+  clean, locally and in CI. Against the actual built `.app`: sidecar
+  starts, a first chat message creates a real workspace via the CLI
+  sidecar chain, `agent-handoff-bridge-cli check` passes clean, macOS
+  registers the app as `Foreground` with a live WebKit renderer. Direct
+  screenshot confirmation wasn't achieved in this dev environment
+  (Accessibility-permission limits meant automated screenshot targeting
+  kept hitting the wrong window — including once misdirecting a
+  keystroke into an unrelated app, disclosed to the user at the time;
+  further screenshot attempts were stopped after that). In its place,
+  the app's log shows the *webview itself* (not `curl`) requesting `/`,
+  `/app.css`, `/app.js`, `/api/update-check`, `/api/info` in sequence
+  right after window creation — the real request pattern of a browser
+  engine executing the frontend, near-conclusive without a screenshot.
+  Three review rounds before merge (an independent self-review before
+  opening the PR, then two real automated GitHub reviews), each finding
+  real issues:
+  - **Self-review** (5 findings): a sidecar dying before the readiness
+    marker used to leave the app running with no window and no
+    diagnostic trail (logging was debug-build-only) — logging is now
+    always on, `tauri-plugin-dialog` added solely for a
+    fatal-startup-error path. `tests/test_validate_handoff.py` (new,
+    this script had no tests before) wasn't registered in
+    `validate_handoff.py`'s tracked-file lists or `handoff_bridge.py`'s
+    `INSTALL_FILES` — fixed. `docs/security-model.md` had no section on
+    the new architecture — added one. No committed script captured the
+    four PyInstaller builds — added
+    `scripts/build_phase7a_sidecars.py`.
+  - **Review round 1** (2 merge-blocking findings): `docs/quality-gates.md`/
+    `docs/verification-playbook.md` unconditionally documented `check`
+    as running the dev test suite — the frozen CLI's `check` silently
+    skips that step (no dev checkout to test against when shipped).
+    Both docs now document the exception explicitly, and the frozen
+    build's own `PASS` line says so too. The new Rust code had zero CI
+    coverage — added a `rust-build` job (`cargo build`, not a full
+    bundle). This **failed on its first real CI run**: Tauri's own
+    build script validates every `bundle.externalBin` path exists even
+    for a plain `cargo build` — reproduced locally before fixing with
+    placeholder sidecar files in CI. Also: `capabilities/default.json`'s
+    `shell:allow-execute` grant, previously documented as merely
+    "inert," was **actually removed** — verified empirically (rebuilt
+    and relaunched the real `.app` with it gone; sidecar still spawns,
+    window still renders).
+  - **Review round 2** (0 findings, 1 optional cosmetic fix applied): a
+    stray `</content>` tag artifact left at the end of
+    `docs/research-phase7-framework.md` from the original file-write —
+    removed.
+  - **Separately, after review round 1's CI fix**: the new `rust-build`
+    job then hung indefinitely (13+ minutes, confirmed via per-step
+    GitHub API timestamps, never even reaching `cargo build`) on an
+    interactive `apt-get`/`needrestart` service-restart prompt that
+    never gets answered in a non-interactive CI shell — a real,
+    separate CI infrastructure bug, not a code issue. Cancelled the
+    stuck run rather than let it keep burning CI time, fixed with
+    `DEBIAN_FRONTEND=noninteractive`/`NEEDRESTART_MODE=a` plus a
+    10-minute `timeout-minutes` safety net, verified green afterward
+    (1m3s).
+- **Remaining**: **Phase 7b** (cross-platform build/packaging — real
+  Windows/Linux PyInstaller builds, Tauri bundle config for installers,
+  replacing `scripts/package_platforms.py`'s zip model, resolves
+  CFL-09) and **Phase 7c** (code signing — macOS notarization + Windows
+  signing, a new recurring cost/process this project has never had) are
+  the only items left open, both explicitly out of 7a's scope. Two
+  deferred-not-blocking follow-ups noted for before 7b/7c: sidecar
+  process cleanup on app quit, and behavior if port 8787 is already in
+  use — neither verified, both flagged by review round 1 as real but
+  non-blocking for 7a's actual goal (prove the architecture works).
+- **Blocked**: none. No further action pending — awaiting user direction
+  on whether/when to start Phase 7b.
