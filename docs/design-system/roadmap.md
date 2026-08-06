@@ -494,7 +494,9 @@ sidecar 프로세스가 함께 정리되는지, 재실행 시 포트 `8787`이 �
 사용 중이면 어떻게 되는지 둘 다 검증되지 않음. "sidecar 아키텍처가
 동작하는가"라는 7a의 범위 자체는 이미 증명됐고, 이 두 가지는 그
 아키텍처를 실제 운영 가능하게 다듬는 문제(엣지 케이스 견고화)라
-7b/7c의 성격에 더 가까움.
+7b/7c의 성격에 더 가까움. **7b M6에서 실제로 검증·수정됨** — 앞은
+실제로 깨져 있었고(고아 프로세스로 확인), 뒤는 멈추진 않았지만
+메시지가 부실했음. 상세는 아래 "7b M6 실제로 한 것" 참고.
 
 **7b 계획 (착수 전 — 사용자 확인 후 시작, 2026-08-06)**: 7a 실제
 구현 경험에서 나온 구체적 작업 목록. 순서는 의존관계 기준(빌드
@@ -677,6 +679,74 @@ package_platforms.py`의 위치(완전 대체 vs 유지) 결정"을 먼저 사�
   릴리즈가 한 번도 없어서(`gh release list` 확인) 아직 end-to-end로
   실행해본 적이 없다는 점을 문서에 그대로 명시.
 
+**7b M6 실제로 한 것** (2026-08-06, 위 계획의 항목 6, 7a가 남긴 두 후속
+항목 검증): "다음으로 진행해줘"로 착수. M5(코드 서명)는 7c로 분리된
+별도 게이트라 건너뛰고, 순서상 다음인 M6부터 — 실제로 앱을 빌드·실행해
+두 가지를 직접 검증(`src-tauri/src/lib.rs`, 코드 변경 포함).
+- **sidecar 종료 정리: 실제로 깨져 있었음, 수정함.** 검증 도중 실제
+  증거를 우연히 발견 — 포트 충돌 테스트를 준비하며 `lsof -i :8787`을
+  돌렸더니 이미 다른 프로세스가 포트를 쥐고 있었고, 확인해보니 그
+  프로세스의 부모가 `launchd`(PID 1)였다. 즉 이 세션 초반(7a 작업
+  당시로 추정) 실행했던 Tauri 앱은 이미 오래 전에 종료됐는데, 그 앱이
+  띄운 sidecar(`agent-handoff-bridge-server`)는 몇 시간째 고아
+  프로세스로 계속 살아 포트를 쥐고 있었음. 원인: `sidecar.spawn()`이
+  돌려주는 `CommandChild`를 `_child`로 즉시 버렸던 게 문제 —
+  `tauri-plugin-shell`의 `CommandChild`는 drop돼도 프로세스를 죽이지
+  않는다. 고친 방법: `CommandChild`를 Tauri managed state
+  (`Arc<Mutex<Option<CommandChild>>>`)에 보관해두고, 앱 종료 시점에
+  꺼내 죽이도록 훅을 추가. 이 훅을 어디 걸어야 하는지도 실제로
+  틀렸다가 고쳤음 — 처음엔 `RunEvent::ExitRequested`에 걸었는데,
+  실제 `.app`을 빌드해 `osascript -e 'tell application ... to quit'`
+  (Accessibility 권한이 필요한 UI 스크립팅이 아니라 Apple Event 기반
+  quit이라 이 개발 환경의 접근성 권한 제약을 피해갈 수 있었음)로
+  진짜 종료시키면서 발생하는 모든 `RunEvent`를 로그로 찍어보니
+  macOS에서는 `ExitRequested`가 전혀 발생하지 않고 곧바로 `Exit`만
+  발생함을 확인 — 훅을 `RunEvent::Exit`으로 교체. 그 다음 문제:
+  `CommandChild::kill()`(Rust 표준 `Child::kill()`, 즉 SIGKILL)을
+  걸어도 sidecar가 여전히 고아로 남았음 — PyInstaller onefile
+  바이너리는 겉보기엔 프로세스 하나지만 실제로는 바깥쪽
+  부트로더(Tauri가 직접 잡고 있는 PID)가 안쪽에 압축 해제된 실제
+  인터프리터를 별도 자식 프로세스로 재실행하는 2단 구조라(`ps`로
+  ppid 체인 확인), SIGKILL은 바깥쪽만 즉사시키고 안쪽은 아무 신호도
+  못 받은 채 다시 고아가 됨. 흥미로운 대조 실험: 같은 바깥쪽 PID에
+  `kill`(기본 SIGTERM)을 손으로 보냈을 땐 안쪽까지 같이 죽는 걸
+  확인했지만("정상적인" 부트로더의 신호 전달에 의존하는 셈이라
+  안전하지 않다고 판단), 그래서 최종적으로는 명시적 트리 kill로
+  구현: Unix는 `pkill -P <pid>`, Windows는 `taskkill /T /F /PID
+  <pid>`(자식을 부모보다 먼저 죽여야 함 — 부모가 먼저 죽으면 자식의
+  ppid가 launchd/init으로 바뀌어 `-P` 매칭이 깨짐). macOS에서 종료→
+  프로세스 확인을 두 번 반복해 재현성 확인, 매번 고아 없이 완전히
+  정리됨(`ps`/`lsof -i :8787` 둘 다 깨끗).
+- **포트 8787 충돌 처리: 이미 멈추지는 않았지만(제너릭 에러로 뜨긴
+  함), 메시지를 구체화함.** `handoff_webui.py`의
+  `ThreadingHTTPServer(...)` 생성 호출엔 try/except가 없어서, 포트가
+  이미 사용 중이면 처리되지 않은 `OSError: [Errno 48] Address already
+  in use` 트레이스백이 그대로 stderr로 나가고 sidecar가 exit code
+  1로 죽는다 — 실제로 포트를 미리 점유시켜놓고 두 번째 인스턴스를
+  띄워 재현 확인. 이 경우 Rust 쪽은 이미 `CommandEvent::Terminated`
+  분기에서 `fatal_startup_error()`로 대화상자를 띄우고 종료하고
+  있었으므로 **무한 대기/조용한 실패는 원래도 아니었음** — 다만
+  메시지가 "The app's local server exited before it was ready"라는
+  범용 문구뿐이라 사용자가 원인(포트 충돌인지 다른 문제인지)을 알 수
+  없었음. `CommandEvent::Stderr` 라인에서 `"Address already in
+  use"` 문자열을 감지하는 플래그를 추가해, 감지되면 "다른 인스턴스가
+  이미 실행 중일 수 있습니다" 문구로 구체화된 메시지를 보여주도록
+  수정 — 실제 재현 중 화면에 뜬 대화상자 내용을 사용자가 그대로
+  확인해줌.
+- 두 문제가 실전에서는 서로 얽혀 있었다는 점도 기록: #1(정리 안 됨)이
+  고쳐지지 않았다면, 앱을 재실행할 때마다 이전 인스턴스의 orphan이
+  포트를 쥐고 있어 #2(충돌 메시지)가 사실상 매번 발생했을 것 — #1을
+  고친 게 #2의 실질적 발생 빈도도 크게 낮춘다.
+- 로컬 macOS에서 `cargo tauri build --debug`로 실제 `.app` 빌드 →
+  실행 → 종료를 반복 재현해 검증(위 두 항목 모두). `cargo build`
+  컴파일 체크와 `python3 -m unittest discover`(365개)·`handoff_bridge.py
+  check`·`scan_secrets.py` 모두 통과. Windows/Linux에서 동일한
+  2단-프로세스 종료 처리(특히 `taskkill /T`)가 실제로 동작하는지는
+  이 macOS 개발 환경에서 재현 불가 — CI에는 이 시나리오를 실행하는
+  job이 없어(설치형 앱을 실제로 띄우고 종료하는 건 CI에서 자동화하기
+  어려움) 다음 실제 Windows/Linux 설치형 릴리즈 수동 테스트 때
+  확인 필요.
+
 **7a 실제로 한 것**:
 - `src-tauri/`: `cargo tauri init`으로 스캐폴딩(바닐라 JS 템플릿,
   `frontendDist`는 `../webui`를 가리키지만 실제로는 사용되지 않음 —
@@ -771,7 +841,7 @@ package_platforms.py`의 위치(완전 대체 vs 유지) 결정"을 먼저 사�
 | 4 — API 키 모드 | ✅ 완료 | CFL-12 해소, DEC-13~16 적용 (CFL-17 후속 발견 → DEC-21로 별도 해소) |
 | 5 — Gemini + provider 확장성 | ✅ 완료 | CFL-13 해소, DEC-17/18 적용 |
 | 6 — 자동 업데이트 확인 | ✅ 완료 | CFL-11 해소, DEC-19 적용 (CFL-18 후속 발견 → DEC-20으로 별도 해소) |
-| 7 — 프레임워크 전환 | 🚧 진행 중 (7a·7b M1/M3/M4 완료, 7b M5/M6·7c 남음) | CFL-06(실행), CFL-09 해소·DEC-23 적용, CFL-14 해소·DEC-22 적용 |
+| 7 — 프레임워크 전환 | 🚧 진행 중 (7a·7b M1/M3/M4/M6 완료, 7b M5(7c로 분리)만 남음) | CFL-06(실행), CFL-09 해소·DEC-23 적용, CFL-14 해소·DEC-22 적용 |
 
 이 표가 정본은 아니다 — 각 phase가 끝나면 여기 상태만 갱신하고, 실제
 해소 근거는 [flutter-mapping.html Conflict List](flutter-mapping.html#s2)

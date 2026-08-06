@@ -6,9 +6,10 @@
 // docs/research-phase7-framework.md and docs/design-system/
 // flutter-mapping.html's DEC-22 for why (keep the tested Python backend,
 // don't rewrite it).
-use tauri::{WebviewUrl, WebviewWindowBuilder};
+use std::sync::{Arc, Mutex};
+use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use tauri_plugin_shell::process::CommandEvent;
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 // Matches handoff_webui.py's --port default. tauri.conf.json's
@@ -31,11 +32,25 @@ const SERVER_URL: &str = "http://127.0.0.1:8787/";
 // covers both without caring which.
 const SERVER_READY_MARKER: &str = "Agent Handoff Bridge web UI";
 
+// Phase 7b M6: the CommandChild returned by sidecar.spawn() below used to
+// be dropped immediately (bound as `_child`) -- verified empirically
+// (built the real .app, quit it normally, checked `ps`) that dropping it
+// does NOT kill the sidecar: tauri-plugin-shell's CommandChild has no
+// Drop-triggered cleanup, so the process just gets reparented to launchd
+// and keeps running forever, still holding port 8787 -- confirmed as a
+// real, already-hit bug (a leftover orphaned sidecar from earlier local
+// testing was found squatting on the port during this same
+// investigation). Stored here as managed state so the RunEvent::Exit
+// handler in run() below can reach it and kill it before the app actually
+// exits.
+type SidecarChildState = Arc<Mutex<Option<CommandChild>>>;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  tauri::Builder::default()
+  let app = tauri::Builder::default()
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
+    .manage(SidecarChildState::default())
     .setup(|app| {
       // Always on, not just debug_assertions -- a review round pointed
       // out that gating this to debug builds left a release build with
@@ -75,11 +90,21 @@ pub fn run() {
         .expect("failed to create agent-handoff-bridge-server sidecar command")
         .env("PYTHONUNBUFFERED", "1")
         .args(["--no-browser"]);
-      let (mut rx, _child) = sidecar.spawn().expect("failed to spawn agent-handoff-bridge-server sidecar");
+      let (mut rx, child) = sidecar.spawn().expect("failed to spawn agent-handoff-bridge-server sidecar");
+      *app.state::<SidecarChildState>().lock().unwrap() = Some(child);
 
       let app_handle = app.handle().clone();
       tauri::async_runtime::spawn(async move {
         let mut window_created = false;
+        // Phase 7b M6: handoff_webui.py's ThreadingHTTPServer(...) has no
+        // try/except around the bind call, so "port 8787 already taken"
+        // surfaces as a raw Python traceback on stderr followed by a
+        // non-zero exit -- verified empirically (pre-bound the port, then
+        // launched a real second instance, read the actual log). Without
+        // this, that case fell into Terminated's generic "exited before
+        // it was ready" message below, which doesn't tell the user why or
+        // what to do about it.
+        let mut port_conflict_detected = false;
         while let Some(event) = rx.recv().await {
           match event {
             CommandEvent::Stdout(line) => {
@@ -105,7 +130,11 @@ pub fn run() {
               }
             }
             CommandEvent::Stderr(line) => {
-              log::warn!("[server] {}", String::from_utf8_lossy(&line));
+              let text = String::from_utf8_lossy(&line);
+              log::warn!("[server] {text}");
+              if text.contains("Address already in use") {
+                port_conflict_detected = true;
+              }
             }
             CommandEvent::Error(err) => {
               log::error!("[server] sidecar error: {err}");
@@ -123,10 +152,16 @@ pub fn run() {
             CommandEvent::Terminated(payload) => {
               log::warn!("[server] sidecar exited: {:?}", payload);
               if !window_created {
-                fatal_startup_error(
-                  &app_handle,
-                  &format!("The app's local server exited before it was ready (code: {:?}).", payload.code),
-                );
+                let message = if port_conflict_detected {
+                  "Port 8787 is already in use, so the app's local server \
+                   could not start. Another instance of Agent Handoff \
+                   Bridge (or something else) may already be running -- \
+                   quit it and try again."
+                    .to_string()
+                } else {
+                  format!("The app's local server exited before it was ready (code: {:?}).", payload.code)
+                };
+                fatal_startup_error(&app_handle, &message);
               }
             }
             _ => {}
@@ -136,8 +171,61 @@ pub fn run() {
 
       Ok(())
     })
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application");
+
+  app.run(|app_handle, event| {
+    // Phase 7b M6: fires on every exit path this app has (window closed,
+    // Cmd+Q, or fatal_startup_error's own app.exit(1)) -- one hook here
+    // covers all of them instead of duplicating a kill call at each exit
+    // site. If the sidecar already died on its own (e.g. the port-conflict
+    // crash above), the state is already None and this is a no-op.
+    //
+    // RunEvent::Exit, not RunEvent::ExitRequested -- verified empirically
+    // (built the real .app, quit it via a real Apple Event `tell
+    // application ... to quit`, logged every RunEvent variant that
+    // actually fired) that on macOS, ExitRequested does not fire at all
+    // on a normal quit; the sequence observed was ...,
+    // MainEventsCleared, Exit. ExitRequested is documented as
+    // preventable (its `api.prevent_exit()`) and apparently tied to a
+    // different trigger (e.g. the last window's close button) than the
+    // whole-app Quit path this app actually uses -- Exit is the one
+    // event confirmed to fire on every real exit this app has.
+    if let RunEvent::Exit = event {
+      if let Some(child) = app_handle.state::<SidecarChildState>().lock().unwrap().take() {
+        kill_sidecar_tree(child);
+      }
+    }
+  });
+}
+
+/// Kills the sidecar and its PyInstaller onefile bootloader's re-exec'd
+/// inner process. CommandChild::kill() (Rust stdlib's Child::kill(), i.e.
+/// SIGKILL on Unix / TerminateProcess on Windows) only reaches the single
+/// PID Tauri directly spawned -- verified empirically (built the real
+/// .app, quit it, checked `ps`) that this leaves the bootloader's inner
+/// process, which shows up as a separate PID with the outer one as its
+/// ppid, running as a newly-orphaned process still holding port 8787. A
+/// plain SIGTERM sent manually to the outer PID happened to cascade
+/// correctly in manual testing, but relying on the bootloader's own
+/// signal-forwarding behavior isn't something this project controls --
+/// explicitly killing the process tree instead. Descendants have to be
+/// killed *before* the parent: once the parent's dead, the child's ppid
+/// changes (reparented to launchd/init), and `pkill -P <pid>` matching
+/// stops working.
+fn kill_sidecar_tree(child: CommandChild) {
+  let pid = child.pid();
+  #[cfg(unix)]
+  {
+    let _ = std::process::Command::new("pkill").args(["-P", &pid.to_string()]).status();
+  }
+  #[cfg(windows)]
+  {
+    // /T: kill the whole tree, not just this PID -- covers the
+    // descendant-before-parent ordering concern above in one call.
+    let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).status();
+  }
+  let _ = child.kill();
 }
 
 /// Shows a blocking native error dialog and quits -- the only reasonable
