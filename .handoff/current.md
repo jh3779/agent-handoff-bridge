@@ -602,3 +602,83 @@ create a task-specific packet.
 - **Blocked**: none. No further action pending — awaiting user direction
   on whether/when to continue to 7b's next milestone, or to actually
   trigger `installer-build` for its first real run.
+
+### 2026-08-06 — Phase 7b M4: rewrite release-process.md for two packaging tracks (DEC-23)
+
+- **Target**: Claude Code CLI, docs-only work (`docs/release-process.md`
+  and cross-references), branch `feature/phase7b-m4-release-process`,
+  PR #15 (https://github.com/jh3779/agent-handoff-bridge/pull/15),
+  **merged**. User said "계속 진행해줘" (continue) after M3 merged — M4
+  is the next item in the 7b plan (`docs/design-system/roadmap.md`'s
+  "7b 계획").
+- **Changed**: Before writing anything, asked the user (via
+  `AskUserQuestion`) whether the new Tauri installer track should fully
+  replace the old "zip, git-free" source distribution
+  (`scripts/package_platforms.py`) or both should stay — user chose
+  **keep both** (recommended). Recorded as **DEC-23**, resolving the
+  previously-open **CFL-09**, in
+  `docs/design-system/flutter-mapping.html`'s Decision Log (moved out of
+  the Conflict List). `docs/release-process.md` fully rewritten:
+  documents both tracks (source zip for terminal/CLI/scriptable use,
+  unchanged; Tauri installers for desktop GUI use, built by manually
+  triggering CI's `installer-build` job via `gh workflow run`/`gh run
+  watch`/`gh run download`), a new step to keep
+  `src-tauri/tauri.conf.json`'s version field manually in sync with
+  `BRIDGE_VERSION`, and a `gh release create`/`gh release upload` step
+  attaching one representative installer format per OS. Cross-reference
+  updates in `docs/index.md`, `docs/cli-reference.md`, `docs/
+  platform-setup.md` (pointers to the new track) and
+  `docs/security-model.md` (new note: installers are currently unsigned,
+  Gatekeeper/SmartScreen warnings expected, signing deferred to 7c).
+  Several stale CFL-09-as-unresolved references elsewhere (a Phase 7
+  kickoff section, a summary table row, `docs/
+  research-phase7-framework.md`'s title) corrected to reflect the actual
+  "keep both" outcome rather than the original assumption that the zip
+  model would end entirely.
+- **Verified**: `python3 -m unittest discover -s tests -v` — 365 tests
+  passing. `python3 handoff_bridge.py check` passes.
+  `python3 scripts/scan_secrets.py` clean.
+  `docs/design-system/flutter-mapping.html`'s HTML tags verified balanced
+  after the Decision Log/Conflict List edits. Three review rounds, all
+  with real findings, all fixed and re-verified:
+  - **Self-review**: caught a real ordering bug in the runbook — the
+    first draft built desktop installers (`workflow_dispatch` against
+    `main`) *before* committing/tagging/pushing the version bump, which
+    would have silently shipped installers built from the *previous*
+    version. Fixed by reordering (commit/tag/push first, then trigger
+    against the newly-pushed tag) and correcting the release-asset paths
+    to match `actions/upload-artifact@v4`'s real subdirectory-preserving
+    behavior (the first draft assumed a flat artifact directory).
+  - **Review round 1** (risk 중/medium): the run-lookup loop used
+    `--limit 1` with no bound — if any unrelated manual
+    `workflow_dispatch` run landed more recently, the target run would
+    never appear in that 1-row window and the loop would hang forever.
+    Widened to `--limit 20` sorted by `createdAt`, bounded to 30 attempts
+    with a loud failure instead of an infinite wait. Also: the macOS
+    installer description implied general support, but the real CI
+    matrix (verified against `.github/workflows/ci.yml`) only has an
+    `aarch64-apple-darwin` leg — no Intel Mac support at all, a gap left
+    open since 7b M1's planning and never resolved — documented
+    explicitly rather than implied. Low-severity fix applied too:
+    `docs/design-system/README.md`'s "remaining unresolved" CFL list was
+    stale beyond CFL-09 (still listed CFL-11/12/13/14 as open, though
+    each was already resolved by DEC-13/17-19/22) — corrected against
+    the real Conflict List table.
+  - **Review round 2**: risk 하 (low), 0 findings. Applied one optional
+    suggestion anyway: noted the Apple-Silicon-only limitation in
+    `cli-reference.md`'s summary too, not just the fuller explanation in
+    `release-process.md`.
+- **Remaining**: the installer-track runbook (steps 5-7 of
+  `docs/release-process.md`) has never been run end-to-end — no tagged
+  release has ever shipped installer assets yet (`gh release list` is
+  empty). This is flagged directly in the doc itself. The macOS
+  Apple-Silicon-only gap (no `x86_64-apple-darwin` CI leg) also remains
+  open — a real product-scope decision (build Intel too? universal
+  binary? drop Intel deliberately?) that wasn't part of M4's docs-only
+  scope. Per the 7b plan, remaining milestones: M5 (code signing,
+  deferred to 7c per DEC-22), M6 (verify the two Phase 7a-deferred
+  follow-ups: sidecar cleanup on app quit, port 8787 conflict handling).
+- **Blocked**: none. No further action pending — awaiting user direction
+  on whether/when to continue to 7b's next milestone (M5/M6), decide the
+  Intel Mac question, or actually cut a first real release to exercise
+  this runbook.
