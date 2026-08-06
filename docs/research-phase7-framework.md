@@ -212,4 +212,3 @@ behavior.
   2026](https://www.pkgpulse.com/guides/electron-vs-tauri-2026),
   [tech-insider.org — Tauri vs Electron
   2026](https://tech-insider.org/tauri-vs-electron-2026/)
-</content>
