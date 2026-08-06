@@ -93,11 +93,14 @@ git push origin vX.Y.Z
 
 `installer-build` CI job(`.github/workflows/ci.yml`)이 진짜 OS별
 인스톨러를 만들지만, 나머지 CI처럼 모든 PR/push마다가 아니라
-의도적으로 수동 트리거(`workflow_dispatch`)로만 제한돼 있습니다 —
-GitHub이 비공개 저장소 Actions 분을 macOS 러너는 10배, Windows는
-2배로 과금하고, 실제 번들 빌드는 상대적으로 비싸기 때문(WiX/NSIS
-다운로드, DMG 생성). 5단계에서 방금 푸시한 태그를 대상으로 트리거해서,
-인스톨러가 정확히 그 태그된 커밋으로부터 빌드되게 하세요:
+의도적으로 수동 트리거(`workflow_dispatch`)로만 제한돼 있습니다.
+원래는 GitHub의 비공개 저장소 Actions 과금(macOS 러너 10배, Windows
+2배)을 매 push마다 피하기 위한 제한이었습니다 — 저장소가 이제
+공개 전환되어 GitHub 호스팅 러너 분은 무료지만, 실제 번들 빌드는
+여전히 실행 시간이 상대적으로 오래 걸리기 때문에(WiX/NSIS 다운로드,
+DMG 생성) 당분간은 수동 트리거로만 유지합니다. 5단계에서 방금 푸시한
+태그를 대상으로 트리거해서, 인스톨러가 정확히 그 태그된 커밋으로부터
+빌드되게 하세요:
 
 ```bash
 gh workflow run ci.yml --ref vX.Y.Z

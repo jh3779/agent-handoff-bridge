@@ -91,11 +91,14 @@ it against an unpushed working tree would silently ship installers for the
 
 The `installer-build` CI job (`.github/workflows/ci.yml`) produces real,
 per-OS installers, but it's deliberately gated to manual trigger
-(`workflow_dispatch`) only — not on every PR/push like the rest of CI —
-because GitHub bills private-repo Actions minutes at 10x for macOS runners
-and 2x for Windows, and a real bundle build is comparatively expensive
-(WiX/NSIS downloads, DMG creation). Trigger it against the tag just pushed
-in step 5, so the installers are built from exactly the tagged commit:
+(`workflow_dispatch`) only — not on every PR/push like the rest of CI.
+This was originally to avoid GitHub's private-repo Actions billing (10x
+for macOS runners, 2x for Windows) on every push; the repo is public now,
+so GitHub-hosted runner minutes are free, but a real bundle build is
+still comparatively expensive in wall-clock time (WiX/NSIS downloads,
+DMG creation), so it stays manual-trigger-only for now. Trigger it
+against the tag just pushed in step 5, so the installers are built from
+exactly the tagged commit:
 
 ```bash
 gh workflow run ci.yml --ref vX.Y.Z

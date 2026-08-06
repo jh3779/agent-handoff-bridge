@@ -20,12 +20,15 @@ from typing import Any
 
 BRIDGE_VERSION = "0.2.0"
 
-# Phase 6 (docs/design-system/roadmap.md, SCR-07, resolves CFL-11): this
-# repo is private (docs/security-model.md), so an anonymous request can't
-# list its GitHub Releases. check_for_update() below shells out to the
-# user's own local `gh` CLI auth instead of standing up new public
-# infrastructure -- the same tool docs/release-process.md already assumes
-# for cutting releases, just reused for reading them too.
+# Phase 6 (docs/design-system/roadmap.md, SCR-07, resolves CFL-11):
+# written while this repo was still private (docs/security-model.md), when
+# an anonymous request couldn't list its GitHub Releases.
+# check_for_update() below shells out to the user's own local `gh` CLI auth
+# instead of standing up new public infrastructure -- the same tool
+# docs/release-process.md already assumes for cutting releases, just
+# reused for reading them too. The repo is public now, so an anonymous
+# API call would also work, but the `gh`-CLI approach hasn't been revisited
+# since it still works fine and avoids a second code path.
 GITHUB_REPO = "jh3779/agent-handoff-bridge"
 
 BRIDGE_ROOT = Path(__file__).resolve().parent
@@ -126,17 +129,30 @@ ERROR_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
             # didn't match any existing pattern and fell through to
             # "unknown" instead of "auth".
             #
-            # "auth method": what a real installed CLI (v0.54.0) actually
-            # emits for this failure, confirmed 2026-08-06 by running the
-            # real unauthenticated binary -- its JSON error.type came back
-            # as the generic "Error", not "AuthError"/"FatalAuthenticationError",
-            # so the type-name match alone does *not* fire for this real,
-            # very-likely-common case (a user who hasn't run gemini's auth
-            # setup yet). The real message text was "Please set an Auth
-            # method in your ...settings.json or specify one of the
-            # following environment variables before running:
-            # GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA".
-            r"\b(not logged in|authentication_failed|unauthorized|forbidden|AuthError|FatalAuthenticationError|auth method)\b",
+            # "set an auth method": what a real installed CLI (v0.54.0)
+            # actually emits for this failure, confirmed 2026-08-06 by
+            # running the real unauthenticated binary -- its JSON
+            # error.type came back as the generic "Error", not
+            # "AuthError"/"FatalAuthenticationError", so the type-name
+            # match alone does *not* fire for this real, very-likely-common
+            # case (a user who hasn't run gemini's auth setup yet). The
+            # real message text was "Please set an Auth method in your
+            # ...settings.json or specify one of the following environment
+            # variables before running: GEMINI_API_KEY,
+            # GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA". Matching the
+            # fuller imperative phrase "set an auth method" rather than the
+            # bare "auth method" matters: this pattern is also checked
+            # against a *successful* run's raw combined stdout+stderr
+            # (classify_handoff()'s second, unconditional loop, for runs
+            # with no structured `errors`) -- a bare "auth method" match
+            # was found (review) to misfire on a genuinely successful
+            # response that merely discusses auth methods in prose (e.g.
+            # "you can configure the auth method in settings.json"),
+            # wrongly triggering a handoff/auto-fallback and discarding a
+            # good answer. The fuller imperative phrase is Gemini's own
+            # distinctive error wording, not something a normal response
+            # is likely to say verbatim.
+            r"\b(not logged in|authentication_failed|unauthorized|forbidden|AuthError|FatalAuthenticationError|set an auth method)\b",
             re.I,
         ),
     ),
@@ -842,13 +858,15 @@ def summarize_gemini(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[
         "final_text": "",
         "errors": [],
     }
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
+    data: Any = None
+    for candidate in (stdout, stderr):
         try:
-            data = json.loads(stderr)
+            candidate_data = json.loads(candidate)
         except json.JSONDecodeError:
-            return summary
+            continue
+        if isinstance(candidate_data, dict):
+            data = candidate_data
+            break
     if not isinstance(data, dict):
         return summary
     summary["final_text"] = data.get("response") or ""

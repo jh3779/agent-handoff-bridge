@@ -1044,6 +1044,104 @@ cost incurred.
   still unverified against a real call (no credentials available here)
   — if Gemini API/OAuth credentials ever become available in this
   environment, worth a quick real run to confirm the `response`/`stats`
-  shape and `--resume latest` actually round-trip as documented. No
-  other gaps found in this pass.
+  shape and `--resume latest` actually round-trip as documented. (A
+  real bug in this session's own "no other gaps found" claim was later
+  found in review — see the next entry — so treat this kind of claim
+  with appropriate skepticism until an independent review pass confirms
+  it.)
+- **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-06
+
+- **Task**: user asked to switch the GitHub repo to public (a tester was
+  blocked waiting for access), then asked for a full review of
+  everything done in the session so far.
+- **What changed (public-repo switch)**:
+  - Audited for anything unsafe to expose: `scripts/scan_secrets.py`
+    clean on the current tree; a full `git log --all -p` secret-pattern
+    sweep across all 112 commits found only test fixtures (fake AWS-key
+    strings used by the secret-scanner's own tests), no real secrets;
+    no `.env`/credentials file ever committed.
+  - `README.md`, `README.ko.md`, `docs/release-process.md`,
+    `docs/release-process.ko.md`: removed/updated the "this repo is
+    private, you need GitHub account access" wording (both languages).
+  - Ran `gh repo edit jh3779/agent-handoff-bridge --visibility public
+    --accept-visibility-change-consequences` — confirmed via
+    `gh repo view` (`isPrivate: false`) and an anonymous `curl` against a
+    real release asset URL (302 → 200, no auth wall).
+  - No LICENSE file added, by explicit user choice — matches the
+    sibling `file-converter` project's same no-LICENSE precedent.
+  - Verified both Windows installer assets' integrity end-to-end: SHA256
+    of the freshly-downloaded public release assets matches the original
+    CI-build artifact byte-for-byte (`cmp` confirms identical, not just
+    same hash); `.exe` parses as a structurally valid PE32 NSIS
+    self-extracting installer (manually walked the PE/section-table
+    headers, all offsets within file bounds); `.msi` parses as a valid
+    OLE Compound File (WiX-built MSI, correct metadata). Confirmed the
+    CI run that built them (`31079734450`) actually built from the exact
+    commit `v0.2.0` tags. Could not test actual install/run behavior —
+    no Windows environment available here.
+- **What changed (review pass, on the prior Gemini-fix entry)**: a
+  fresh review (via a sub-agent with no context from writing the
+  original fix, then independently re-verified by direct reproduction)
+  found one real, reproducible regression the original fix introduced,
+  plus a few lower-severity gaps. All fixed in this same commit range:
+  - **(High, confirmed via direct repro) False-positive auth
+    misclassification**: the `auth method` phrase added to
+    `ERROR_PATTERNS`'s `auth` pattern is also checked, unconditionally,
+    against a *successful* run's raw combined stdout+stderr
+    (`classify_handoff()`'s second, ungated loop) — a genuinely
+    successful Gemini response that merely discusses "the auth method"
+    in prose got wrongly classified as `auth: matched auth signal`,
+    which would discard a good answer and (with `--auto-fallback`)
+    burn tokens re-running the same prompt on a different provider.
+    Fixed by matching the fuller, distinctive imperative phrase "set an
+    auth method" (Gemini's own real wording) instead of the bare
+    "auth method" -- confirmed the false-positive case now passes and
+    the real auth-failure case still correctly classifies as `auth`.
+    Added `test_successful_response_merely_mentioning_auth_method_is_not_misclassified`.
+  - **(Low, confirmed via direct repro) `summarize_gemini()`'s
+    stdout→stderr fallback gap**: only triggered on a stdout
+    `JSONDecodeError`, not on "stdout parsed fine but wasn't a dict"
+    (e.g. `"null"`, a bare array) — in that case it returned the empty
+    summary immediately without ever trying stderr, contradicting the
+    function's own documented fallback contract. Low real-world
+    likelihood given the real CLI's confirmed mutually-exclusive
+    stdout/stderr behavior, but fixed for correctness: rewrote as a
+    loop trying `(stdout, stderr)` in order, keeping the first
+    dict-shaped parse. Added
+    `test_falls_back_to_stderr_when_stdout_parses_but_is_not_a_dict`.
+  - **(Medium, doc consistency) Missed a second stale "private repo"
+    line**: `docs/release-process.md`/`.ko.md` step 6's rationale for
+    gating `installer-build` to manual trigger cited "GitHub bills
+    private-repo Actions minutes at 10x/2x" — no longer true now that
+    the repo is public. Reworded to note the original reason was
+    billing (now moot) but the manual-trigger gate itself stays for
+    now (build wall-clock time, not cost). Left the actual CI trigger
+    behavior unchanged — that's a separate design call, not something
+    this pass should decide unprompted.
+  - **(Low, doc consistency) Stale rationale comments left as-is by
+    the first pass**: `handoff_bridge.py`'s `GITHUB_REPO` comment and
+    `docs/cli-reference.md`'s update-check description both justified
+    using `gh`-CLI-based (rather than anonymous API) release checks by
+    "this repo is private" — reworded to past tense ("written while
+    this repo was still private") rather than silently changing the
+    actual implementation, since switching to an anonymous API call is
+    a real behavior change out of scope for a docs-consistency pass.
+  - **Not changed, flagged only**: `docs/security-model.md`'s DEC-24
+    (unsigned-installer decision) rationale explicitly cites "a private
+    repo where the real userbase is the operator" as part of its
+    cost/benefit call — a tester is a first step beyond that premise.
+    DEC-24 already documents clear Gatekeeper/SmartScreen bypass
+    instructions, so this isn't blocking, but revisiting DEC-24 itself
+    is a decision for the user, not something to silently rewrite in a
+    review pass.
+- **Verified**: `python3 handoff_bridge.py check` → 371 tests (369 + 2
+  new regression tests from this review), OK, PASS. Both the
+  false-positive fix and the stderr-fallback fix were independently
+  reproduced by hand (not just trusted from the review agent's report)
+  before and after the fix to confirm the bug was real and the fix
+  actually closes it.
+- **Remaining**: DEC-24's premise re-check (above) is a user decision,
+  not done here. Everything else raised by the review is fixed.
 - **Blocked**: none.

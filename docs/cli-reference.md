@@ -305,9 +305,11 @@ HTTP server. What it does:
   [Web UI Chat Storage § Credentials & API-Key Mode](webui-chat-storage.md#credentials--api-key-mode-phase-4).
 - **Update check** (titlebar button, always visible) runs once in the
   background at startup (`handoff_bridge.check_for_update()`, shelling
-  out to the local `gh` CLI — this repo is private, so an anonymous
-  request can't list its releases) and shows a small dot badge only if a
-  newer release exists. The frontend polls `GET /api/update-check` for
+  out to the local `gh` CLI — written while this repo was still private,
+  when an anonymous request couldn't list its releases; the repo is
+  public now, but the `gh`-CLI approach still works and hasn't been
+  revisited) and shows a small dot badge only if a newer release exists.
+  The frontend polls `GET /api/update-check` for
   up to ~15s while the background check is still running, rather than
   asking only once — a real `gh` network call can easily outlast a fast
   page load, and a single-shot check could silently and permanently miss

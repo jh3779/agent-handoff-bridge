@@ -46,6 +46,22 @@ class ClassifyHandoffTests(unittest.TestCase):
         self.assertTrue(needed)
         self.assertTrue(reason.startswith("auth:"))
 
+    def test_successful_response_merely_mentioning_auth_method_is_not_misclassified(self):
+        # Regression (found in review of the "auth method" pattern added
+        # for the real Gemini auth-failure signal): that pattern is also
+        # checked against a *successful* run's raw combined stdout+stderr
+        # in classify_handoff()'s second, unconditional loop -- a bare
+        # "auth method" match wrongly fired on a genuinely successful
+        # response that merely discusses auth methods in prose, discarding
+        # a good answer (and, with --auto-fallback, re-running the prompt
+        # on a different provider for no reason). The pattern must match
+        # Gemini's distinctive imperative error wording ("set an auth
+        # method"), not just any mention of the phrase.
+        stdout = json.dumps({"response": "You can configure the auth method in your settings.json file."})
+        parsed = hb.summarize_gemini(stdout, "", exit_code=0)
+        needed, reason = hb.classify_handoff(0, stdout, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
     def test_gemini_autherror_is_classified_as_auth_not_unknown(self):
         # Regression (found in review): summarize_gemini()'s error dict
         # for an auth failure looks like {"type": "AuthError", "message":
@@ -628,6 +644,17 @@ class SummarizeGeminiTests(unittest.TestCase):
         stdout = json.dumps({"response": "real reply"})
         summary = hb.summarize_gemini(stdout, "some unrelated stderr noise", exit_code=0)
         self.assertEqual(summary["final_text"], "real reply")
+
+    def test_falls_back_to_stderr_when_stdout_parses_but_is_not_a_dict(self):
+        # Regression (found in review): the original stdout/stderr
+        # fallback only tried stderr on a JSONDecodeError from stdout, not
+        # when stdout parsed fine but wasn't the expected object shape
+        # (e.g. "null", a bare array) -- it returned the empty summary
+        # immediately instead of still checking stderr, contradicting this
+        # function's own documented stdout-then-stderr fallback contract.
+        stderr = json.dumps({"error": {"type": "Error", "message": "boom"}})
+        summary = hb.summarize_gemini("null", stderr, exit_code=1)
+        self.assertEqual(summary["errors"], [{"type": "Error", "message": "boom"}])
 
 
 class GeminiIntegrationTests(unittest.TestCase):
