@@ -123,7 +123,8 @@ Exactly the failure mode this rule exists to catch.
   changes that.
 - **Script**: `check_tests()` in `scripts/validate_handoff.py`; tests live in
   `tests/test_handoff_bridge.py`, `tests/test_scan_secrets.py`,
-  `tests/test_check_branch_name.py`, and `tests/test_handoff_webui.py`.
+  `tests/test_check_branch_name.py`, `tests/test_handoff_webui.py`, and
+  `tests/test_validate_handoff.py`.
 
 Uses the standard library `unittest` rather than `pytest` deliberately — the
 repo has no dependency file (`requirements.txt`/`pyproject.toml`) and
