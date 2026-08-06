@@ -533,3 +533,72 @@ create a task-specific packet.
   folded into M1's work already.
 - **Blocked**: none. No further action pending — awaiting user direction
   on whether/when to continue to 7b's next milestone.
+
+### 2026-08-06 — Phase 7b M3: real per-OS installer builds via cargo tauri build
+
+- **Target**: Claude Code CLI, CI work (`.github/workflows/ci.yml`),
+  branch `feature/phase7b-m3-installer-build`, PR #14
+  (https://github.com/jh3779/agent-handoff-bridge/pull/14), **merged**.
+  User asked to proceed with "다음 작업" (the next task) after M1 merged;
+  M2 was already folded into M1, so this is M3 of the 7b plan
+  (`docs/design-system/roadmap.md`'s "7b 계획").
+- **Changed**: New `installer-build` CI job producing real, unsigned
+  installers (`.dmg`+`.app` macOS, `.msi`+nsis `.exe` Windows,
+  `.deb`+`.AppImage`+`.rpm` Linux) via `cargo tauri build`, using genuine
+  sidecars from `scripts/build_sidecars.py` — unlike `rust-build`, which
+  only compile-checks against placeholder (`touch`ed) sidecar files.
+  Reuses `sidecar-build`'s 3-way matrix and runner OS/arch guard, then
+  installs `tauri-cli` (pinned to `2.11.4`) and runs the real bundle,
+  verifying per-OS output files exist (not just filenames) before
+  uploading as artifacts. **Gated to `workflow_dispatch` (manual trigger)
+  only** — confirmed with the user via `AskUserQuestion` before
+  implementing, since GitHub bills private-repo Actions minutes at 10x
+  for macOS runners and 2x for Windows, and a real bundle build is
+  comparatively expensive; running it on every PR/push (like every other
+  job in this file) was explicitly rejected. `validate`/`rust-build`/
+  `sidecar-build` all got `if: github.event_name != 'workflow_dispatch'`
+  so a manual trigger runs only `installer-build`, not the whole file.
+  Unsigned only — code signing stays deferred to 7c per DEC-22.
+- **Verified**: `python3 -m unittest discover -s tests -v` — 365 tests
+  passing. `python3 handoff_bridge.py check` passes.
+  `python3 scripts/scan_secrets.py` clean. Local macOS: ran the exact
+  sequence CI runs (real sidecar build → `cargo tauri build`) and got a
+  genuine `.app`/`.dmg`; the job's verification `find` commands were run
+  against that real output and matched. CI: all existing jobs stayed
+  green on push, and `installer-build` correctly showed "skipping" on
+  both push and PR triggers, confirming the manual-only gate works.
+  Two review rounds, both with real findings, both fixed and
+  re-verified:
+  - **Self-review** before opening the PR: an incorrectly-justified `rpm`
+    apt package (Tauri's rpm bundler is pure Rust, needs no system
+    `rpmbuild` — verified by reading Tauri's actual bundler source)
+    replaced with the packages Tauri's own official CI example for real
+    bundling actually installs (`patchelf`, `xdg-utils`); added
+    `libfuse2` as a preemptive mitigation for a currently-open upstream
+    `linuxdeploy`/AppImage bug on `ubuntu-latest`
+    (tauri-apps/tauri#14796); pinned `tauri-cli` to the exact version
+    used in local verification instead of floating on `^2`.
+  - **External review round 1** (risk 중/medium): `libfuse2` had no
+    fallback — if `ubuntu-latest` moves to a 24.04-based image, Ubuntu's
+    time_t transition may rename it to `libfuse2t64`, failing the whole
+    apt-get step before reaching packages that matter; split into its
+    own step with a non-fatal `libfuse2t64` fallback. Also:
+    `workflow_dispatch` was added workflow-wide but `validate`/
+    `rust-build`/`sidecar-build` had no exclusion, so a manual run meant
+    only to test `installer-build` would also re-run all three,
+    undercutting the explicit cost-consciousness that motivated gating
+    `installer-build` to manual-only — added the exclusion guard.
+  - **External review round 2**: risk 하 (low), 0 findings.
+- **Remaining**: the Windows leg (NSIS/WiX toolchain auto-download) and
+  the Linux leg (AppImage/rpm bundling, including whether the
+  `libfuse2`/`libfuse2t64` fallback actually resolves the known upstream
+  issue) have never been run for real anywhere — neither can be tested
+  on this dev machine (macOS only). First real test is whenever someone
+  actually triggers `installer-build` via `workflow_dispatch`. Per the
+  7b plan, remaining milestones: M4 (`docs/release-process.md` rewrite,
+  CFL-09), M5 (code signing, deferred to 7c per DEC-22), M6 (verify the
+  two Phase 7a-deferred follow-ups: sidecar cleanup on app quit, port
+  8787 conflict handling).
+- **Blocked**: none. No further action pending — awaiting user direction
+  on whether/when to continue to 7b's next milestone, or to actually
+  trigger `installer-build` for its first real run.
