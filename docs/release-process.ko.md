@@ -187,9 +187,9 @@ release view vX.Y.Z --web`으로 렌더링된 노트를 확인하고, 추출이
 gh release view vX.Y.Z
 ```
 
-zip 자산과 OS당 최소 하나의 인스톨러가 첨부됐는지, 저장소 접근 권한이
-있는 계정에서 다운로드 링크가 동작하는지 확인하세요(이 저장소는
-비공개 — [Security Model](security-model.md) 참고).
+zip 자산과 OS당 최소 하나의 인스톨러가 첨부됐는지, 다운로드 링크가
+동작하는지 확인하세요 — 저장소가 공개 전환되어 이제 저장소 접근 권한이
+없어도 됩니다([Security Model](security-model.md) 참고).
 
 ## 참고 사항
 

@@ -186,8 +186,8 @@ gh release view vX.Y.Z
 ```
 
 Confirm the zip assets and at least one installer per OS are attached, and
-the download links work for an account with repo access (this repo is
-private — see [Security Model](security-model.md)).
+the download links work — the repo is public, so this no longer requires
+an account with repo access (see [Security Model](security-model.md)).
 
 ## Notes
 

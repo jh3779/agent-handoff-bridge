@@ -14,8 +14,9 @@ free auth-status check, not yet supported in the web UI's API-key mode).
 
 ## Download
 
-This repo is private, so every link below only resolves for a GitHub account
-with access. Two independent ways to get it (DEC-23) — pick whichever fits:
+This repo is public — the links below work for anyone, no GitHub account or
+repo access required. Two independent ways to get it (DEC-23) — pick
+whichever fits:
 
 ### Desktop installers (GUI, no Python required)
 
