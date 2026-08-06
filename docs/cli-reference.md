@@ -438,7 +438,8 @@ python3 scripts/package_platforms.py --platform macos
 python3 scripts/package_platforms.py --platform windows
 ```
 
-Desktop installers (macOS/Windows/Linux, bundled Python, no user Python
-install required) are a separate track built by CI's `installer-build` job
-rather than a local script — see [Release Process](release-process.md) for
+Desktop installers (macOS -- Apple Silicon only for now --/Windows/Linux,
+bundled Python, no user Python install required) are a separate track
+built by CI's `installer-build` job rather than a local script — see
+[Release Process](release-process.md) for
 how to trigger and download them.
