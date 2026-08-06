@@ -132,15 +132,18 @@ pub fn run() {
             CommandEvent::Stderr(line) => {
               let text = String::from_utf8_lossy(&line);
               log::warn!("[server] {text}");
-              // "Address already in use" is macOS/Linux's OSError text
-              // (verified empirically). Windows' equivalent (WSAEADDRINUSE)
-              // renders as "Only one usage of each socket address..." in
-              // English, but Windows error *text* can be localized per
-              // system language while the numeric code (10048) can't --
-              // matching all three so this isn't silently English-only.
-              // Unverified on real Windows (no Windows machine available
-              // here); flagged in docs.
-              if text.contains("Address already in use")
+              // A review round pointed out that matching raw OSError text
+              // (POSIX's "Address already in use" vs. Windows'
+              // WSAEADDRINUSE wording, which can itself be localized per
+              // system language) was fragile -- handoff_webui.py now
+              // prints a fixed marker itself (PORT_CONFLICT_MARKER)
+              // before re-raising, so this doesn't need to guess at OS/
+              // locale-specific exception text anymore. The free-text
+              // checks stay as a defensive fallback (e.g. an older,
+              // un-rebuilt sidecar binary that predates the marker) --
+              // cheap to keep, never the primary signal now.
+              if text.contains("AHB_PORT_CONFLICT")
+                || text.contains("Address already in use")
                 || text.contains("Only one usage of each socket address")
                 || text.contains("10048")
               {
@@ -210,6 +213,14 @@ pub fn run() {
   });
 }
 
+// How long to wait after a graceful terminate request before force-killing
+// whatever's still alive. Not empirically tuned (no live testing this
+// round -- see the commit/PR this was added in) -- chosen as a bounded,
+// short delay: long enough to plausibly let a provider CLI flush a file
+// write in progress, short enough that quitting the app doesn't feel like
+// it hung.
+const GRACEFUL_KILL_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_millis(1500);
+
 /// Kills the sidecar and its whole descendant process tree.
 /// CommandChild::kill() (Rust stdlib's Child::kill(), i.e. SIGKILL on Unix
 /// / TerminateProcess on Windows) only reaches the single PID Tauri
@@ -228,31 +239,60 @@ pub fn run() {
 /// quitting the app mid-run would still orphan a live provider CLI. Fixed
 /// by walking the full descendant tree via `pgrep -P` before killing
 /// anything.
+///
+/// A review round pointed out that hard-killing unconditionally is itself
+/// a real risk: if a provider CLI is mid-write when the app quits,
+/// SIGKILL/a forced TerminateProcess gives it no chance to flush or clean
+/// up. Graceful-terminate-then-force instead: signal every descendant to
+/// exit cleanly, wait a short grace period, then force-kill only whatever
+/// is still alive. Blocking here (this runs inside the RunEvent::Exit
+/// callback, which is already on the way out) is an accepted, bounded
+/// delay to app shutdown in exchange for not always hard-killing in-flight
+/// work.
 fn kill_sidecar_tree(child: CommandChild) {
   let pid = child.pid();
   #[cfg(unix)]
   {
     // Discover the whole tree first: once a node is dead, `pgrep -P`
     // can no longer find its children by ppid (they get reparented to
-    // launchd/init), so killing has to happen only after every PID is
-    // already known. Kill from the deepest generation up (reverse
-    // discovery order) so no intermediate node's children survive it --
-    // a node is always discovered before its own children get explored,
-    // so reversing the discovery order guarantees children are killed
+    // launchd/init), so discovery has to happen before any killing at
+    // all. Signal from the deepest generation up (reverse discovery
+    // order) so no intermediate node's children survive it -- a node is
+    // always discovered before its own children get explored, so
+    // reversing the discovery order guarantees children are signaled
     // before their parents regardless of traversal order.
     let mut descendants = descendant_pids_unix(pid);
     descendants.reverse();
-    for descendant_pid in descendants {
-      let _ = std::process::Command::new("kill").args(["-9", &descendant_pid.to_string()]).status();
+    for descendant_pid in &descendants {
+      let _ = std::process::Command::new("kill").args(["-TERM", &descendant_pid.to_string()]).status();
+    }
+    std::thread::sleep(GRACEFUL_KILL_GRACE_PERIOD);
+    for descendant_pid in &descendants {
+      // `kill -0`: no signal sent, exit status alone reports whether the
+      // PID still exists -- only escalate to SIGKILL for survivors, not
+      // everything unconditionally.
+      let still_alive = std::process::Command::new("kill")
+        .args(["-0", &descendant_pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+      if still_alive {
+        let _ = std::process::Command::new("kill").args(["-9", &descendant_pid.to_string()]).status();
+      }
     }
   }
   #[cfg(windows)]
   {
-    // /T: kill the whole tree, not just this PID -- Windows' taskkill
-    // handles arbitrary depth in one call (unlike Unix's pgrep/pkill,
-    // which only match direct parent-child, hence the explicit tree-walk
-    // above). Unverified on real Windows -- no Windows machine available
-    // to test this fix on.
+    // Graceful attempt first (no /F -- taskkill sends a close request
+    // rather than forcibly terminating), /T for the whole tree in one
+    // call. Windows console apps (which codex/claude/gemini are) may not
+    // respond to a non-forced taskkill the same way a windowed GUI app
+    // does -- unverified on real Windows, no Windows machine available to
+    // test this fix on -- so this still escalates to a forced /F kill
+    // after the same grace period rather than assuming the graceful
+    // attempt worked.
+    let _ = std::process::Command::new("taskkill").args(["/T", "/PID", &pid.to_string()]).status();
+    std::thread::sleep(GRACEFUL_KILL_GRACE_PERIOD);
     let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &pid.to_string()]).status();
   }
   let _ = child.kill();
