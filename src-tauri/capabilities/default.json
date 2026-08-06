@@ -6,16 +6,6 @@
     "main"
   ],
   "permissions": [
-    "core:default",
-    "shell:allow-execute",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "binaries/agent-handoff-bridge-server",
-          "sidecar": true
-        }
-      ]
-    }
+    "core:default"
   ]
 }

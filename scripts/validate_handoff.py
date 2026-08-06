@@ -25,6 +25,7 @@ REQUIRED_FILES = [
     "remote_handoff_submit.py",
     "scripts/handoff_hook.py",
     "scripts/package_platforms.py",
+    "scripts/build_phase7a_sidecars.py",
     "scripts/scan_secrets.py",
     "scripts/check_branch_name.py",
     "docs/index.md",
@@ -80,6 +81,7 @@ PYTHON_FILES = [
     "scripts/handoff_hook.py",
     "scripts/validate_handoff.py",
     "scripts/package_platforms.py",
+    "scripts/build_phase7a_sidecars.py",
     "scripts/scan_secrets.py",
     "scripts/check_branch_name.py",
     "handoff_webui.py",
@@ -243,7 +245,22 @@ def main() -> int:
     check_failure_classification(root)
     check_secrets(root)
     check_tests(root)
-    print("PASS: handoff bridge contract and validation files are consistent.")
+    if getattr(sys, "frozen", False):
+        # A review round on Phase 7a (DEC-22) pointed out that
+        # docs/quality-gates.md and docs/verification-playbook.md both
+        # unconditionally document `check` as running the dev test suite
+        # -- printing the exact same unconditional "PASS" line here for
+        # the frozen case (where check_tests() already skipped that
+        # step, by design -- see its own docstring) would silently
+        # understate what was actually verified to anyone reading only
+        # the final line, not the skip notice above it. The message
+        # itself now says so.
+        print(
+            "PASS: handoff bridge contract and validation files are consistent "
+            "(frozen build -- dev unit test suite not run; see docs/quality-gates.md)."
+        )
+    else:
+        print("PASS: handoff bridge contract and validation files are consistent.")
     return 0
 
 

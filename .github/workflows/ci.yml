@@ -26,3 +26,27 @@ jobs:
           python-version: "3.11"
       - name: Run the full no-token validation suite
         run: python3 handoff_bridge.py check
+
+  # Phase 7a (DEC-22): a review round found this repo's new src-tauri/ Rust
+  # code had zero automated verification -- not even "does it compile" --
+  # unlike everything else this project ships. Compile-only (not `cargo
+  # tauri build`/a real bundle): that needs the PyInstaller sidecar
+  # binaries in src-tauri/binaries/ (gitignored, built by
+  # scripts/build_phase7a_sidecars.py, deliberately not something CI
+  # produces here -- cross-platform packaging is 7b's explicit scope, not
+  # 7a's). `cargo build` alone needs none of that; it only proves the Rust
+  # source itself is sound, the actual gap this job closes.
+  rust-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri's Linux build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: cargo build (src-tauri)
+        run: cargo build --manifest-path src-tauri/Cargo.toml
