@@ -815,3 +815,24 @@ separately greenlit. No code/doc changes needed beyond this note — DEC-22
 and the roadmap's Phase 7 summary table already correctly describe this
 as a separate, ungated decision. Do not start 7c work without an explicit
 go-ahead.
+
+**2026-08-06, wrap-up**: user asked to "7b마무리 작업 진행해줘" (finish
+up Phase 7b). Direct commit to `main` (docs-only, no PR — matches how
+every other cross-cutting `.handoff`/roadmap bookkeeping commit in this
+project's history has been handled). Found and fixed one real gap while
+doing this: `docs/release-notes.md`'s `## Unreleased` section had a
+detailed Phase 7a entry but **nothing at all** for Phase 7b's substantial
+work (M1/M3/M4/M6) — added a matching entry. Also added inline "✅
+완료" markers to all 6 items of the 7b plan in
+`docs/design-system/roadmap.md`, a wrap-up summary, and updated the
+sub-phase breakdown + Phase 7 status table (was still "🚧 진행 중", now
+"✅ 7a·7b 완료 · 7c는 명시적으로 제외"). **Phase 7b is now formally
+closed out** — nothing further pending on it. Three items explicitly
+carried forward as known-open (not fixed, not forgotten — written down
+in both `roadmap.md` and `release-notes.md`): (1) macOS Intel
+(`x86_64-apple-darwin`) support was never actually decided, only flagged
+as a gap; (2) the installer-build release track has never been exercised
+by a real tagged release; (3) M6's deeper tree-kill/graceful-timing fixes
+remain empirically unverified on real Windows/Linux. None are blocking
+anything — they're the natural entry points whenever this project picks
+Phase 7 back up (or starts 7c, if that gets a separate go-ahead).
