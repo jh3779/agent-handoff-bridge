@@ -12,3 +12,8 @@ src-tauri/binaries/
 # Personal work log / retrospective notes for later portfolio use.
 # Local-only by design — never tracked or shared.
 worklog/
+
+# Cross-session agent state (handoff skill) -- local-only, same reasoning
+# as worklog/: repo is public now, and this is working notes for Claude
+# across sessions on this machine, not project documentation.
+.agent/
