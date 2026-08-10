@@ -18,7 +18,16 @@ jobs:
         with:
           python-version: "3.11"
       - name: Check branch naming convention
-        run: python3 scripts/check_branch_name.py "${{ github.head_ref }}"
+        # github.head_ref is attacker-controlled (a PR author names their own
+        # branch) and GitHub's ${{ }} template expansion happens before bash
+        # parses this line -- interpolating it directly into `run:` would let
+        # a branch name containing shell metacharacters ($(), ;, |, backticks,
+        # all legal in a git ref) execute arbitrary commands on the runner.
+        # Routing it through env: makes it reach the script as an inert
+        # argv value instead.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: python3 scripts/check_branch_name.py "$HEAD_REF"
 
   validate:
     # Review-bot finding on PR #14: workflow_dispatch (added for

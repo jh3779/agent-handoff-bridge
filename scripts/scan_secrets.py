@@ -65,20 +65,42 @@ def list_files(root: Path, staged_only: bool) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def scan_file(root: Path, rel_path: str) -> list[str]:
+def read_staged_text(root: Path, rel_path: str) -> str | None:
+    # `git show :path` reads the git-index (stage 0) blob -- the content that
+    # will actually be committed -- not whatever currently happens to be on
+    # disk. Reading from disk here would let a file be scanned clean after
+    # being staged-then-reverted-on-disk without re-staging, while the secret
+    # staged in the index still gets committed.
+    try:
+        result = subprocess.run(
+            ["git", "show", f":{rel_path}"], cwd=root, text=True, capture_output=True, check=False
+        )
+    except UnicodeDecodeError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def scan_file(root: Path, rel_path: str, staged_only: bool = False) -> list[str]:
     findings: list[str] = []
     name = Path(rel_path).name
     if name in BANNED_FILENAMES:
         findings.append(f"{rel_path}: filename is never allowed in tracked content ({name})")
         return findings
 
-    path = root / rel_path
-    if not path.exists() or not path.is_file():
-        return findings
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (UnicodeDecodeError, OSError):
-        return findings
+    if staged_only:
+        text = read_staged_text(root, rel_path)
+        if text is None:
+            return findings
+    else:
+        path = root / rel_path
+        if not path.exists() or not path.is_file():
+            return findings
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            return findings
 
     for lineno, line in enumerate(text.splitlines(), start=1):
         for label, pattern in SECRET_PATTERNS:
@@ -92,7 +114,7 @@ def scan(root: Path, staged_only: bool) -> list[str]:
     for rel_path in list_files(root, staged_only):
         if is_allowlisted(rel_path):
             continue
-        findings.extend(scan_file(root, rel_path))
+        findings.extend(scan_file(root, rel_path, staged_only))
     return findings
 
 

@@ -1145,3 +1145,119 @@ cost incurred.
 - **Remaining**: DEC-24's premise re-check (above) is a user decision,
   not done here. Everything else raised by the review is fixed.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-07
+
+- **Task**: continuing from the prior checkpoint, asked the user directly
+  whether DEC-24 (no code signing) should be revisited now that its
+  stated trigger condition (real users beyond the operator, or growing
+  distribution scale) is being approached by the 2026-08-06 tester +
+  public-repo changes.
+- **What changed**: user chose to keep the decision as-is (no signing).
+  Updated the decision's paper trail to record the re-review rather than
+  silently leaving it looking untouched since before the public-repo
+  switch:
+  - `docs/security-model.md`: DEC-24 section's rationale no longer calls
+    the repo "private" (stale since the 2026-08-06 public switch) —
+    reworded to "userbase is still the operator plus a small number of
+    known testers" as the actual justification, repo visibility called
+    out as a separate axis. Added a "Re-reviewed 2026-08-07" note:
+    reaffirmed, not re-decided from scratch.
+  - `docs/design-system/flutter-mapping.html` (project's DEC-1~24 source
+    of truth log): appended the same re-review note to the DEC-24 row.
+  - `.agent/DECISIONS.md` DEC-001 (gitignored, local-only session-handoff
+    copy, not committed): status/date updated to match.
+- **Not changed**: no code, tests, or release process — this was a
+  documentation-only decision re-confirmation, no functional change.
+- **Verified**: N/A (docs-only change, no test-affecting code touched).
+- **Remaining**: none from this task. Still-open items from before:
+  Gemini's authenticated/success response path remains unverified
+  against a real call (no credentials available in this environment).
+- **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-07 (full-project review)
+
+- **Task**: user asked for a full-project code review (not just the diff),
+  high effort, correctness/reuse/simplification/efficiency scope. Ran the
+  `/code-review` skill's finder pipeline (6 angles: correctness A/B/C,
+  reuse, simplification+efficiency, altitude+conventions) across the whole
+  repo, then adversarially re-verified every finding with independent
+  agents before trusting any of it (several earlier session entries in
+  this file already show that a first-pass "no issues" claim can miss
+  real regressions — treated this pass the same way).
+- **Result**: 17 findings CONFIRMED after verification (report delivered
+  to the user via ReportFindings, not duplicated here in full — see chat
+  transcript / `docs/retrospectives/` if a write-up gets added later). 4
+  were security-critical; user chose to fix those 4 immediately, deferred
+  the remaining 13 (correctness races, Gemini-provider-missing-in-4-files,
+  and efficiency/reuse items) to a later task.
+- **What changed (the 4 security fixes)**:
+  - `.github/workflows/ci.yml`: the `branch-name` job interpolated
+    `${{ github.head_ref }}` directly into a `run:` shell block — GitHub's
+    template expansion happens before bash parses the line, and git ref
+    names legally permit `$()`, backticks, `;`, `|` (confirmed via
+    `git check-ref-format`), so a malicious fork-PR branch name could run
+    arbitrary shell on the CI runner. Fixed by routing it through an
+    `env:` var first (`HEAD_REF: ${{ github.head_ref }}`, then
+    `"$HEAD_REF"` in the script) — GitHub's own recommended mitigation for
+    this exact class; env-var values aren't re-parsed as shell syntax the
+    way inline `${{ }}` substitution is.
+  - `remote_handoff_server.py`: two fixes.
+    1. `load_or_create_token()` reused an existing-but-empty token file
+       as-is; `authorized()` only guarded `token is None`, not `token ==
+       ""`, so `secrets.compare_digest("", "")` let any request with no
+       Authorization header through — a corrupted/truncated token file
+       silently disabled auth on a server meant for non-local/remote use.
+       Fixed: an empty existing token file is now treated as "no token
+       yet" and a fresh one is generated, same as the missing-file case.
+    2. `run_task()` built `handoff_bridge.py` subprocess argv by appending
+       user-controlled `task["task"]`/`task["prompt"]` as bare positional
+       arguments with no `--` separator. A prompt of literally `"--execute"`
+       would be parsed by argparse as the real `--execute` flag instead of
+       content — bypassing the server's own `--allow-execute` gate (which
+       only checks the JSON `execute` field, never prompt content) and
+       actually invoking the provider. `handoff_webui.py` already fixed
+       this identical bug class elsewhere (`--` separator / `--prompt-file`)
+       but it never propagated here. Fixed: added `--` before both
+       `task["task"]` (in the `init` call) and `task["prompt"]` (in the
+       `run` call).
+  - `scripts/scan_secrets.py`: `--staged` mode's `scan_file()` read file
+    contents off the working-tree disk, not the git index — reproduced
+    end-to-end that staging a secret, then overwriting the working copy
+    with clean text *without re-staging*, made `--staged` (and, sharing
+    the same bug, `.githooks/pre-push`'s full-tree scan on the same
+    working tree) report PASS while the secret was still committed via
+    the index. Fixed: added `read_staged_text()` (`git show :path`, reads
+    the actual staged blob) used only in `--staged` mode; full-tree mode
+    (`git ls-files`) still reads disk, which is correct there since it's
+    meant to represent current tracked content and is what a fresh CI
+    checkout also sees.
+  - `tests/test_scan_secrets.py`: added
+    `test_scan_staged_only_reads_index_not_working_tree` (the exact
+    stage-then-revert-on-disk repro above).
+  - `tests/test_remote_handoff_server.py` (new file — no test file existed
+    for this module before): `LoadOrCreateTokenTests` (empty file not
+    reused vs. non-empty file reused as-is) and `RunTaskArgvSafetyTests`
+    (asserts `--` always precedes `task["task"]`/`task["prompt"]` in the
+    built argv, including the literal `"--execute"`-as-prompt case).
+- **Verified**: `python3 handoff_bridge.py check` → 376 tests (371 + 5 new:
+  1 scan_secrets regression + 4 remote_handoff_server), OK, PASS. Every
+  one of the 4 fixed findings was independently re-verified by a separate
+  agent (not just the finder that first reported it) via direct code
+  reading and, for the scan_secrets/CI findings, live reproduction
+  (`git check-ref-format`, an actual stage-then-revert repro, an actual
+  rename+edit repro) before being trusted as real.
+- **Remaining**: 13 lower/medium-severity findings from the same review
+  deferred by explicit user choice — not silently dropped, just not done
+  in this pass. Notable ones: `remote_handoff_server.py`'s
+  `TimeoutExpired` bytes-vs-str bug (can hang a remote task at "running"
+  forever), `handoff_bridge.py`'s `state.json` non-atomic read-modify-
+  write race under concurrent remote tasks on the same workspace,
+  `classify_handoff()`'s second `ERROR_PATTERNS` loop still misclassifying
+  successful runs for patterns other than `auth` (only `auth` was
+  narrowed in a prior session), and Gemini being excluded from
+  `handoff_control.py`/`handoff_desktop.py`/`remote_handoff_server.py`/
+  `remote_handoff_submit.py` (each hardcodes its own stale provider tuple
+  instead of importing `handoff_bridge.PROVIDERS`). Full list of all 17
+  (with file/line/failure-scenario) was reported to the user in-session.
+- **Blocked**: none.

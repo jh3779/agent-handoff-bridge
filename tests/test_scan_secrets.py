@@ -143,6 +143,26 @@ class ScanIntegrationTests(unittest.TestCase):
             self.assertIn("staged_secret.txt", joined)
             self.assertNotIn("committed_secret.txt", joined)
 
+    def test_scan_staged_only_reads_index_not_working_tree(self):
+        # Regression: scan_file() used to read staged files off disk, not
+        # the git index -- if the working copy is overwritten with clean
+        # content *without* re-staging, the disk-based scan would pass even
+        # though the still-staged (about-to-be-committed) blob has a secret.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(root, "init", "-q")
+            run_git(root, "config", "user.email", "test@example.com")
+            run_git(root, "config", "user.name", "Test")
+            fake_key = _fake("AKIA", "ABCDEFGHIJKLMNOP")
+            (root / "secret.txt").write_text(f"{fake_key}\n", encoding="utf-8")
+            run_git(root, "add", "secret.txt")
+            # Overwrite the working copy with clean content, but do NOT
+            # re-stage -- the index still holds the version with the secret.
+            (root / "secret.txt").write_text("clean now\n", encoding="utf-8")
+
+            findings = ss.scan(root, staged_only=True)
+            self.assertTrue(any("secret.txt" in f for f in findings))
+
     def test_scan_clean_repo_has_no_findings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

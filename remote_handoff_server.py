@@ -57,7 +57,15 @@ def load_or_create_token(token_arg: str | None, token_file: Path) -> str | None:
     if env_token:
         return env_token
     if token_file.exists():
-        return token_file.read_text(encoding="utf-8").strip()
+        existing = token_file.read_text(encoding="utf-8").strip()
+        # A blank existing token file (crash mid-write, full disk, manual
+        # truncation) must not be reused as-is: authorized() would then
+        # compare an empty server token against an unauthenticated
+        # request's empty Authorization header and let it through --
+        # silently disabling auth on a server meant to be reachable
+        # remotely. Treat it the same as "no token file yet" instead.
+        if existing:
+            return existing
     token_file.parent.mkdir(parents=True, exist_ok=True)
     token = secrets.token_urlsafe(32)
     token_file.write_text(token + "\n", encoding="utf-8")
@@ -256,7 +264,15 @@ def run_task(task: dict[str, Any], server: RemoteHandoffServer) -> None:
         if install_code != 0:
             update_task(task, status="failed", exit_code=install_code, error="install failed")
             return
-        init_code = run_command(task, ["init", task["task"], "--primary", task["primary"]], server.task_timeout)
+        # "--" before the user-controlled task/prompt text is required: without
+        # it, a value that happens to look like a flag (e.g. a prompt of
+        # literally "--execute") gets parsed by handoff_bridge.py's argparse
+        # as that flag instead of the positional -- in the worst case letting
+        # a request bypass this server's own --allow-execute gate. See
+        # handoff_webui.py's identical "--" guard for the same bug class.
+        init_code = run_command(
+            task, ["init", "--primary", task["primary"], "--", task["task"]], server.task_timeout
+        )
         if init_code != 0:
             update_task(task, status="failed", exit_code=init_code, error="init failed")
             return
@@ -265,7 +281,7 @@ def run_task(task: dict[str, Any], server: RemoteHandoffServer) -> None:
             run_args.append("--execute")
             if task["auto_fallback"]:
                 run_args.append("--auto-fallback")
-        run_args.append(task["prompt"])
+        run_args.extend(["--", task["prompt"]])
         run_code = run_command(task, run_args, server.task_timeout)
         update_task(task, status="completed" if run_code == 0 else "failed", exit_code=run_code)
     except Exception as exc:
