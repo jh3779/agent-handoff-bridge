@@ -182,13 +182,15 @@ section covers only what's new because a native shell now exists.
   key storage -- a physical HSM or USB token, since file-based
   Authenticode certs alone stopped being accepted industry-wide after
   June 2023 -- or a cloud alternative like Azure Trusted Signing).
-  Neither cost is justified for this project's current scale (a private
-  repo where the real userbase is the operator, same premise DEC-19
-  already uses). A sibling project by the same operator
-  (`file-converter`, a separate repo) hit the identical fork and reached
-  the same conclusion (its own DEC-029): ship both platforms unsigned,
-  invest in clear bypass instructions instead of a signing budget. This
-  project follows the same pattern:
+  Neither cost is justified for this project's current scale (the real
+  userbase is still the operator plus a small number of known testers,
+  same premise DEC-19 already uses -- the repo itself went public on
+  2026-08-06, but that's a visibility change, not a userbase-size one).
+  A sibling project by the same operator (`file-converter`, a separate
+  repo) hit the identical fork and reached the same conclusion (its own
+  DEC-029): ship both platforms unsigned, invest in clear bypass
+  instructions instead of a signing budget. This project follows the
+  same pattern:
   - **macOS**: the first launch, Gatekeeper blocks the app as being from
     an "unidentified developer" -- this is not a malware warning. In
     Finder, **control+click the app → "Open"** once; this bypasses the
@@ -201,7 +203,13 @@ section covers only what's new because a native shell now exists.
     anyway" button appears.
   Revisit this decision only if the premise changes (e.g. real users
   beyond the operator, or the project's distribution scale grows) --
-  not on a fixed timeline. See [Release Process](release-process.md) for
+  not on a fixed timeline.
+  **Re-reviewed 2026-08-07**: a tester appearing and the repo going
+  public (2026-08-06) narrows the gap toward that revisit condition, but
+  the operator judged the userbase still small enough that the decision
+  stands unchanged -- reaffirmed, not re-decided from scratch. Revisit
+  again if the userbase or distribution scale grows further.
+  See [Release Process](release-process.md) for
   how installers are built and published.
 
 ## Workspace Safety
