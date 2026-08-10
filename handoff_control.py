@@ -6,11 +6,18 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS
 
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
-PROVIDERS = ("auto", "codex", "claude")
+# Derived from handoff_bridge.PROVIDERS (the canonical set, currently
+# codex/claude/gemini) instead of a stale local copy -- see handoff_webui.py,
+# which already imports PROVIDERS the same way. "auto" is a menu/CLI-only
+# concept added on top; handoff_bridge.py itself has no "auto" provider.
+PROVIDERS = ("auto",) + BRIDGE_PROVIDERS
 
 
 def resolve_workspace(raw_path: str, create: bool = False) -> Path:
@@ -36,11 +43,12 @@ def ask(prompt: str, default: str = "") -> str:
 
 
 def ask_provider(default: str = "auto") -> str:
+    choices = "/".join(PROVIDERS)
     while True:
-        value = ask("Provider (auto/codex/claude)", default).lower()
+        value = ask(f"Provider ({choices})", default).lower()
         if value in PROVIDERS:
             return value
-        print("Choose one of: auto, codex, claude")
+        print(f"Choose one of: {', '.join(PROVIDERS)}")
 
 
 def ask_model(default: str = "app-selected default") -> str:
@@ -80,15 +88,34 @@ def initialize_task(workspace: Path) -> int:
     return run_bridge(workspace, ["init", task, "--primary", provider, "--target-model", model])
 
 
+def run_with_prompt(workspace: Path, args_prefix: list[str], prompt: str) -> int:
+    """Run the bridge with the turn prompt passed via --prompt-file rather
+    than a trailing argv positional: a bare positional appended after
+    --instruction-type <value> parses inconsistently across argparse/Python
+    versions (works on 3.14, fails as "unrecognized argument" on 3.11) --
+    see handoff_webui.py's --prompt-file invocation for the same fix.
+    """
+    fd, prompt_path_str = tempfile.mkstemp(prefix="handoff-control-prompt-", suffix=".txt")
+    prompt_path = Path(prompt_path_str)
+    try:
+        with open(fd, "w", encoding="utf-8") as handle:
+            handle.write(prompt)
+        return run_bridge(workspace, [*args_prefix, "--prompt-file", str(prompt_path)])
+    finally:
+        prompt_path.unlink(missing_ok=True)
+
+
 def preview_run(workspace: Path) -> int:
     provider = ask_provider("auto")
     model = ask_model("")
     prompt = ask("Turn prompt", "Continue the task")
     args = ["run", provider, "--instruction-type", "continue"]
     if model:
-        args.extend(["--model", model])
-    args.append(prompt)
-    return run_bridge(workspace, args)
+        # "--model=value", not ["--model", value]: with the latter, a model
+        # string that happens to start with "-" would make argparse treat
+        # it as the next flag instead of --model's value.
+        args.append(f"--model={model}")
+    return run_with_prompt(workspace, args, prompt)
 
 
 def execute_run(workspace: Path) -> int:
@@ -100,9 +127,8 @@ def execute_run(workspace: Path) -> int:
         return 0
     args = ["run", provider, "--execute", "--auto-fallback", "--instruction-type", "continue"]
     if model:
-        args.extend(["--model", model])
-    args.append(prompt)
-    return run_bridge(workspace, args)
+        args.append(f"--model={model}")
+    return run_with_prompt(workspace, args, prompt)
 
 
 def menu(workspace: Path) -> int:
@@ -155,16 +181,15 @@ def run_once(args: argparse.Namespace) -> int:
         bridge_args.extend(["--execute", "--auto-fallback"])
     bridge_args.extend(["--instruction-type", "new-task"])
     if args.model:
-        bridge_args.extend(["--model", args.model])
-    bridge_args.append(args.prompt or "Start the task")
-    return run_bridge(workspace, bridge_args)
+        bridge_args.append(f"--model={args.model}")
+    return run_with_prompt(workspace, bridge_args, args.prompt or "Start the task")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Choose a folder and issue a handoff task.")
     parser.add_argument("--workspace", "-W", help="Workspace folder to work in.")
     parser.add_argument("--provider", choices=PROVIDERS, default="auto", help="Provider to run for the task.")
-    parser.add_argument("--primary", choices=("codex", "claude"), default="codex", help="Primary provider for new packets.")
+    parser.add_argument("--primary", choices=BRIDGE_PROVIDERS, default="codex", help="Primary provider for new packets.")
     parser.add_argument("--execute", action="store_true", help="Actually call the provider after creating the task.")
     parser.add_argument("--yes", action="store_true", help="Skip execute confirmation.")
     parser.add_argument("--model", help="Model override or exact app-selected model label.")

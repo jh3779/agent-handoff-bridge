@@ -75,6 +75,59 @@ class ScanFileTests(unittest.TestCase):
             findings = ss.scan_file(root, "config.py")
             self.assertTrue(any("generic_assigned_secret" in f for f in findings))
 
+    def test_generic_assigned_secret_unquoted_is_detected(self):
+        # YAML/.env-style assignments have no surrounding quotes -- the
+        # original pattern required quotes and missed these entirely.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            yaml_line = _fake("password", ": ", "SuperSecretValue123456")
+            env_line = _fake("PASSWORD", "=", "SuperSecretValue123456")
+            (root / "config.yaml").write_text(yaml_line + "\n", encoding="utf-8")
+            (root / ".env.example.txt").write_text(env_line + "\n", encoding="utf-8")
+            self.assertTrue(
+                any("generic_assigned_secret" in f for f in ss.scan_file(root, "config.yaml"))
+            )
+            self.assertTrue(
+                any("generic_assigned_secret" in f for f in ss.scan_file(root, ".env.example.txt"))
+            )
+
+    def test_generic_assigned_secret_underscore_label_is_detected(self):
+        # `\b(...)\b` never matched an underscore-adjacent label like
+        # `db_password` because `_` is a regex word character, so there is
+        # no boundary between it and the label -- even when the value is
+        # quoted. Only bare or hyphenated labels used to match.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            line = _fake("db_password", ': "', "abcdefghijklmnop1234", '"')
+            (root / "settings.py").write_text(line + "\n", encoding="utf-8")
+            findings = ss.scan_file(root, "settings.py")
+            self.assertTrue(any("generic_assigned_secret" in f for f in findings))
+
+    def test_generic_assigned_secret_does_not_flag_ordinary_code(self):
+        # Broadening the pattern to accept unquoted values must not turn it
+        # into "any right-hand-side expression after a label word" -- the
+        # value side still needs to look secret-shaped.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            lines = "\n".join(
+                [
+                    "secret = None",
+                    "token = get_token()",
+                    "SECRET_KEY = os.environ['SECRET_KEY']",
+                    # Regression: a real false positive hit while adding the
+                    # unquoted alternative above -- a dotted attribute-access
+                    # expression is long enough (17 chars) and every
+                    # character was in the unquoted charset, including `.`,
+                    # so it matched as if it were a secret-shaped value.
+                    # Real unquoted secrets (YAML/.env-style) are never
+                    # written as dotted identifiers, so excluding `.` from
+                    # just the unquoted alternative loses no real coverage.
+                    "token = self.server.token",
+                ]
+            )
+            (root / "ordinary.py").write_text(lines + "\n", encoding="utf-8")
+            self.assertEqual(ss.scan_file(root, "ordinary.py"), [])
+
     def test_banned_filename_is_flagged_regardless_of_content(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -162,6 +215,31 @@ class ScanIntegrationTests(unittest.TestCase):
 
             findings = ss.scan(root, staged_only=True)
             self.assertTrue(any("secret.txt" in f for f in findings))
+
+    def test_scan_staged_only_finds_secret_in_renamed_and_edited_file(self):
+        # Regression: list_files() used --diff-filter=ACM (Added/Copied/
+        # Modified), which excludes git status "R" (Renamed) -- so a file
+        # that's renamed and edited in the same staged change was invisible
+        # to the staged scan even though the renamed blob is what gets
+        # committed. Keep the edit small so git's rename-similarity
+        # detection still recognizes it as a rename rather than a delete+add.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(root, "init", "-q")
+            run_git(root, "config", "user.email", "test@example.com")
+            run_git(root, "config", "user.name", "Test")
+            original = "\n".join(f"line{i}" for i in range(1, 11))
+            (root / "old.txt").write_text(original + "\n", encoding="utf-8")
+            run_git(root, "add", "old.txt")
+            run_git(root, "commit", "-q", "-m", "add old.txt")
+
+            run_git(root, "mv", "old.txt", "new.txt")
+            fake_key = _fake("AKIA", "ABCDEFGHIJKLMNOP")
+            (root / "new.txt").write_text(original + f"\n{fake_key}\n", encoding="utf-8")
+            run_git(root, "add", "new.txt")
+
+            findings = ss.scan(root, staged_only=True)
+            self.assertTrue(any("new.txt" in f for f in findings))
 
     def test_scan_clean_repo_has_no_findings(self):
         with tempfile.TemporaryDirectory() as tmp:

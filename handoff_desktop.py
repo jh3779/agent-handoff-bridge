@@ -8,9 +8,12 @@ import platform
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import webbrowser
 from pathlib import Path
+
+from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS
 
 try:
     import tkinter as tk
@@ -29,8 +32,13 @@ else:
 
 BRIDGE_ROOT = Path(__file__).resolve().parent
 BRIDGE_SCRIPT = BRIDGE_ROOT / "handoff_bridge.py"
-PROVIDERS = ("auto", "codex", "claude")
-PRIMARY_PROVIDERS = ("codex", "claude")
+# Derived from handoff_bridge.PROVIDERS (the canonical set, currently
+# codex/claude/gemini) instead of a stale local copy -- see handoff_webui.py,
+# which already imports PROVIDERS the same way. "auto" is a GUI-only concept
+# added on top; handoff_bridge.py itself has no "auto" provider, and its own
+# `init --primary` accepts the full PROVIDERS set with no restricted subset.
+PROVIDERS = ("auto",) + BRIDGE_PROVIDERS
+PRIMARY_PROVIDERS = BRIDGE_PROVIDERS
 INSTRUCTION_TYPES = ("new-task", "continue", "handoff", "review", "verify")
 TK_BASE = tk.Tk if tk is not None else object
 
@@ -183,7 +191,7 @@ class HandoffDesktop(TK_BASE):
     def bridge_command(self, args: list[str]) -> list[str]:
         return [sys.executable, str(BRIDGE_SCRIPT), "--workspace", str(self.workspace()), *args]
 
-    def run_bridge(self, args: list[str], label: str) -> None:
+    def run_bridge(self, args: list[str], label: str, cleanup_path: Path | None = None) -> None:
         command = self.bridge_command(args)
         self.append_log()
         self.append_log(f"## {label}")
@@ -202,6 +210,12 @@ class HandoffDesktop(TK_BASE):
                 self.after(0, self.finish_command, result.returncode, result.stdout, result.stderr)
             except Exception as exc:  # pragma: no cover - defensive GUI path
                 self.after(0, self.finish_command, 1, "", str(exc))
+            finally:
+                # The temp prompt file (see run_args()) must outlive the
+                # subprocess call, which runs on this background thread --
+                # clean it up here rather than right after Popen returns.
+                if cleanup_path is not None:
+                    cleanup_path.unlink(missing_ok=True)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -233,28 +247,51 @@ class HandoffDesktop(TK_BASE):
         ]
         self.run_bridge(args, "Initialize task packet")
 
-    def run_args(self) -> list[str]:
+    def run_args(self) -> tuple[list[str], Path]:
+        # The prompt travels via --prompt-file, not as a trailing argv
+        # positional: a bare positional appended after --instruction-type
+        # <value> parses inconsistently across argparse/Python versions
+        # (works on 3.14, fails as "unrecognized argument" on 3.11) -- see
+        # handoff_webui.py's --prompt-file invocation for the same fix. The
+        # temp file is cleaned up by run_bridge() once the subprocess
+        # finishes on its worker thread.
         prompt = self.text_value(self.prompt_text) or "Continue the task."
-        args = ["run", self.provider_var.get(), "--instruction-type", self.instruction_type_var.get()]
+        prompt_fd, prompt_path_str = tempfile.mkstemp(prefix="handoff-desktop-prompt-", suffix=".txt")
+        prompt_path = Path(prompt_path_str)
+        with os.fdopen(prompt_fd, "w", encoding="utf-8") as handle:
+            handle.write(prompt)
+
+        args = [
+            "run",
+            self.provider_var.get(),
+            "--instruction-type",
+            self.instruction_type_var.get(),
+            "--prompt-file",
+            str(prompt_path),
+        ]
         model = self.model_var.get().strip()
         if model:
-            args.extend(["--model", model])
+            # "--model=value", not ["--model", value]: with the latter, a
+            # model string that happens to start with "-" would make
+            # argparse treat it as the next flag instead of --model's value.
+            args.append(f"--model={model}")
         if self.execute_var.get():
             args.append("--execute")
             if self.auto_fallback_var.get():
                 args.append("--auto-fallback")
-        args.append(prompt)
-        return args
+        return args, prompt_path
 
     def preview_run(self) -> None:
         self.execute_var.set(False)
-        self.run_bridge(self.run_args(), "Preview provider prompt")
+        args, prompt_path = self.run_args()
+        self.run_bridge(args, "Preview provider prompt", cleanup_path=prompt_path)
 
     def execute_run(self) -> None:
         if not messagebox.askyesno("Execute provider", "This may spend provider tokens. Continue?"):
             return
         self.execute_var.set(True)
-        self.run_bridge(self.run_args(), "Execute provider run")
+        args, prompt_path = self.run_args()
+        self.run_bridge(args, "Execute provider run", cleanup_path=prompt_path)
 
     def status(self) -> None:
         self.run_bridge(["status"], "Show status")

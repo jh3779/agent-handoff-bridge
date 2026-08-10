@@ -958,6 +958,21 @@ class ChatStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(webui.read_month_messages(Path(tmp), "2020-01"), [])
 
+    def test_read_tolerates_plain_file_vanishing_between_exists_check_and_read(self):
+        # Regression test: read_month_messages() used to call plain.exists()
+        # then plain.read_text() with no try/except in between. On the real
+        # ThreadingHTTPServer, archive_old_months() can unlink() that same
+        # file (under WriteLock) in that exact window, from another
+        # request's thread -- an uncaught FileNotFoundError used to escape.
+        # Force exists() to report True for a file that isn't actually
+        # there to simulate landing exactly in that TOCTOU gap; the fix
+        # should treat it the same as "never existed" (empty list), not
+        # raise.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("pathlib.Path.exists", return_value=True):
+                self.assertEqual(webui.read_month_messages(root, "2020-01"), [])
+
     def test_list_available_months_sees_both_plain_and_compressed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2819,6 +2834,29 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
             records = webui.run_provider_via_bridge(self.workspace, "codex", "hello", None, "continue")
         spy.assert_not_called()
         self.assertEqual(records[0]["session_id"], "fake-codex-session")
+
+    def test_cli_available_provider_never_reads_credentials_file(self):
+        # Regression test: _run_provider_via_bridge_locked() used to call
+        # read_credentials() (a disk read + JSON parse) unconditionally at
+        # the top of the function, even though the result is only ever
+        # consulted inside the CLI-unavailable branches below. In the
+        # common case -- CLI installed, as here -- that read happened on
+        # every single /api/run request for a value that was discarded
+        # unused. It must now be skipped entirely.
+        _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+        webui.save_credential("codex", "sk-should-be-unused", None)
+        with mock.patch("handoff_webui.read_credentials", wraps=webui.read_credentials) as spy:
+            webui.run_provider_via_bridge(self.workspace, "codex", "hello", None, "continue")
+        spy.assert_not_called()
+
+    def test_auto_with_a_cli_available_never_reads_credentials_file(self):
+        # Same efficiency invariant as above, for the "auto" branch: with at
+        # least one CLI available, credentials.json must not be read at all.
+        _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
+        webui.save_credential("claude", "sk-should-be-unused", "claude-sonnet-5")
+        with mock.patch("handoff_webui.read_credentials", wraps=webui.read_credentials) as spy:
+            webui.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+        spy.assert_not_called()
 
     def test_cli_missing_provider_with_a_saved_key_uses_the_api_path(self):
         webui.save_credential("claude", "sk-x", "claude-sonnet-5")

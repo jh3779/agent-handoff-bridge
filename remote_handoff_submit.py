@@ -13,8 +13,15 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS
 
-PROVIDERS = ("auto", "codex", "claude")
+
+# Derived from handoff_bridge.PROVIDERS (the canonical set, currently
+# codex/claude/gemini) instead of a stale local copy -- see handoff_webui.py,
+# which already imports PROVIDERS the same way. "auto" is a CLI-only concept
+# added on top; handoff_bridge.py itself has no "auto" provider, and its own
+# `init --primary` accepts the full PROVIDERS set with no restricted subset.
+PROVIDERS = ("auto",) + BRIDGE_PROVIDERS
 
 
 def load_token(args: argparse.Namespace) -> str | None:
@@ -81,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace", "-W", default=".", help="Workspace folder on the server machine.")
     parser.add_argument("--prompt", default="Start the task", help="Turn prompt.")
     parser.add_argument("--provider", choices=PROVIDERS, default="auto")
-    parser.add_argument("--primary", choices=("codex", "claude"), default="codex")
+    parser.add_argument("--primary", choices=BRIDGE_PROVIDERS, default="codex")
     parser.add_argument("--execute", action="store_true", help="Request real provider execution.")
     parser.add_argument("--auto-fallback", action="store_true", default=True)
     parser.add_argument("--no-create-workspace", dest="create_workspace", action="store_false")

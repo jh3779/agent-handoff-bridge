@@ -38,6 +38,18 @@ STATE_FILE = HANDOFF_DIR / "state.json"
 CURRENT_FILE = HANDOFF_DIR / "current.md"
 NEXT_PROMPT_FILE = HANDOFF_DIR / "next-prompt.md"
 WRITE_LOCK_FILE = HANDOFF_DIR / ".write.lock"
+# Separate from WRITE_LOCK_FILE on purpose: WRITE_LOCK_FILE is held only for
+# the instant of an atomic file write, but a `run` invocation's
+# load_state()-...-save_state() cycle spans an entire (possibly many-minute)
+# provider subprocess call. Holding WRITE_LOCK_FILE for that whole span would
+# block every unrelated quick write elsewhere (append_current(), other
+# save_state() calls the run itself makes) past their own short timeout.
+# RUN_LOCK_FILE instead serializes only concurrent `run` invocations against
+# the same workspace, found necessary because remote_handoff_server.py can
+# spawn two overlapping `handoff_bridge.py run` subprocesses against the same
+# workspace with nothing else preventing a lost-update race on state.json.
+RUN_LOCK_FILE = HANDOFF_DIR / ".run.lock"
+RUN_LOCK_TIMEOUT_SECONDS = 3600.0
 CONTRACT_FILE = Path("docs/shared-agent-contract.md")
 VERIFICATION_FILE = Path("docs/verification-playbook.md")
 
@@ -889,6 +901,19 @@ def classify_handoff(exit_code: int, stdout: str, stderr: str, parsed: dict[str,
     stay in the vocabulary defined by docs/shared-agent-contract.md.
     """
     combined = "\n".join([stdout, stderr])
+    # The provider's own final answer text (already extracted into
+    # parsed["final_text"] by summarize_gemini()/its counterparts) is cut out
+    # of the text these patterns scan below. Found via review: on a
+    # genuinely successful run, that answer text can legitimately *quote* a
+    # phrase like "command not found" or "set an auth method" (e.g.
+    # summarizing a bug it just fixed), and scanning it wrongly triggered a
+    # handoff/auto-fallback that discarded a good response. This must stay a
+    # substring cut, not an exit_code gate: a provider that exits 0 while
+    # still emitting a real plain-text error signal outside its answer
+    # (verified real case -- see test_rate_limit_signal_in_stdout, exit_code
+    # 0) must still be caught.
+    final_text = parsed.get("final_text") or ""
+    scan_text = combined.replace(final_text, "") if final_text else combined
     if parsed.get("errors"):
         errors_text = json.dumps(parsed["errors"], ensure_ascii=False)
         for label, pattern in ERROR_PATTERNS:
@@ -896,7 +921,7 @@ def classify_handoff(exit_code: int, stdout: str, stderr: str, parsed: dict[str,
                 return True, f"{label}: provider emitted a machine-readable error event"
         return True, "unknown: provider emitted a machine-readable error event"
     for label, pattern in ERROR_PATTERNS:
-        if pattern.search(combined):
+        if pattern.search(scan_text):
             return True, f"{label}: matched {label} signal"
     if exit_code == 127:
         return True, "tool_failure: provider command not found"
@@ -1059,15 +1084,13 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
 
     if handoff_needed:
         fallback = next_available_provider(provider)
-        # Carry the ORIGINAL user_prompt into the fallback, not a generic
-        # placeholder -- the handoff_reason is already conveyed separately
-        # via build_prompt()'s reason_block, so replacing the actual
-        # request/attachments here just means the fallback provider has no
-        # idea what the user actually asked for.
-        next_prompt = build_prompt(fallback, state, user_prompt, handoff_reason)
-        NEXT_PROMPT_FILE.write_text(next_prompt, encoding="utf-8")
-        print(f"Next prompt written to: {NEXT_PROMPT_FILE}")
         if args.auto_fallback:
+            # Don't build/write the fallback prompt here: the recursive
+            # run_provider() call below builds it again from scratch right
+            # after state["instruction_type"] is set to "handoff", so a
+            # prompt built at this point (still "continue"/etc.) would be
+            # stale before it's ever read and cost an extra build_prompt()
+            # (4 doc reads + a git_snapshot() subprocess pair) for nothing.
             print(f"Auto-fallback enabled; switching to {fallback}.")
             next_args = argparse.Namespace(
                 prompt=user_prompt,
@@ -1079,19 +1102,36 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
                 instruction_type="handoff",
             )
             return run_provider(fallback, next_args, state, handoff_reason)
+        # Carry the ORIGINAL user_prompt into the fallback, not a generic
+        # placeholder -- the handoff_reason is already conveyed separately
+        # via build_prompt()'s reason_block, so replacing the actual
+        # request/attachments here just means the fallback provider has no
+        # idea what the user actually asked for.
+        next_prompt = build_prompt(fallback, state, user_prompt, handoff_reason)
+        NEXT_PROMPT_FILE.write_text(next_prompt, encoding="utf-8")
+        print(f"Next prompt written to: {NEXT_PROMPT_FILE}")
 
     return exit_code
 
 
 def run_command(args: argparse.Namespace) -> int:
-    state = load_state()
-    if not STATE_FILE.exists():
-        state["task"] = args.prompt or "Ad-hoc handoff task"
-        state["primary_provider"] = "codex"
-        state["status"] = "ready"
-        save_state(state)
-    provider = choose_auto_provider(state) if args.provider == "auto" else args.provider
-    return run_provider(provider, args, state)
+    try:
+        with WriteLock(RUN_LOCK_FILE, timeout=RUN_LOCK_TIMEOUT_SECONDS):
+            state = load_state()
+            if not STATE_FILE.exists():
+                state["task"] = args.prompt or "Ad-hoc handoff task"
+                state["primary_provider"] = "codex"
+                state["status"] = "ready"
+                save_state(state)
+            provider = choose_auto_provider(state) if args.provider == "auto" else args.provider
+            return run_provider(provider, args, state)
+    except TimeoutError:
+        print(
+            f"error: another `run` is already in progress for this workspace "
+            f"(waited {RUN_LOCK_TIMEOUT_SECONDS:.0f}s for {RUN_LOCK_FILE})",
+            file=sys.stderr,
+        )
+        return 75
 
 
 def status(_: argparse.Namespace) -> int:

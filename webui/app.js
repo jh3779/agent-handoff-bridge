@@ -147,9 +147,11 @@
     }
     attachments = [];
     renderAttachments();
-    await refreshWorkspaceLabel();
-    await renderTree(treeEl, "");
-    await loadChatHistory();
+    // Unlike boot(), nothing here depends on another's result -- none of
+    // the three reads shared mutable state the others set first -- so they
+    // can run concurrently instead of round-tripping to the server one at
+    // a time.
+    await Promise.all([refreshWorkspaceLabel(), renderTree(treeEl, ""), loadChatHistory()]);
   }
 
   function openFolderPrompt() {

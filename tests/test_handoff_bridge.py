@@ -109,6 +109,28 @@ class ClassifyHandoffTests(unittest.TestCase):
         self.assertTrue(needed)
         self.assertTrue(reason.startswith("auth:"), msg=reason)
 
+    def test_successful_response_merely_quoting_tool_failure_text_is_not_misclassified(self):
+        # Regression (full-project review, 2026-08-07): the false-positive
+        # class fixed above for `auth` specifically (narrowing its pattern)
+        # was never fixed for the other ERROR_PATTERNS labels -- a
+        # genuinely successful run (exit_code 0, no structured `errors`)
+        # whose own answer text quotes a phrase like "command not found"
+        # (e.g. summarizing a bug it just fixed) was still wrongly
+        # classified as tool_failure by the second loop, which scanned the
+        # raw combined stdout+stderr including the model's own answer text.
+        # Fixed generally by cutting parsed["final_text"] out of the text
+        # that loop scans, instead of re-narrowing each pattern one at a
+        # time -- a plain exit_code != 0 gate was tried first but rejected:
+        # test_rate_limit_signal_in_stdout (below) intentionally exercises a
+        # real case where exit_code is 0 but a genuine plain-text signal
+        # outside the answer text must still be caught.
+        stdout = json.dumps(
+            {"response": "Fixed it: the script previously failed with command not found."}
+        )
+        parsed = hb.summarize_gemini(stdout, "", exit_code=0)
+        needed, reason = hb.classify_handoff(0, stdout, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
     def test_tool_failure_signal_by_pattern(self):
         needed, reason = hb.classify_handoff(1, "", "bash: codex: command not found", {})
         self.assertTrue(needed)
@@ -302,6 +324,34 @@ class WriteLockTests(unittest.TestCase):
                         pass  # pragma: no cover - should never acquire
 
 
+class RunCommandLockTests(unittest.TestCase):
+    """run_command() (the `run` subcommand's handler) serializes concurrent
+    invocations against the same workspace via RUN_LOCK_FILE, closing a
+    lost-update race on state.json that two overlapping remote-server tasks
+    on the same workspace could otherwise hit (load_state()/save_state()
+    themselves are not locked across the whole read-modify-write cycle)."""
+
+    def test_run_command_fails_fast_instead_of_racing_when_lock_is_held(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".handoff").mkdir()
+            lock_path = workspace / ".handoff" / ".run.lock"
+            lock_path.touch()  # simulate another `run` already holding it
+
+            original_cwd = Path.cwd()
+            os.chdir(workspace)
+            try:
+                with mock.patch.object(hb, "RUN_LOCK_TIMEOUT_SECONDS", 0.2), mock.patch.object(
+                    hb, "run_provider"
+                ) as run_provider_spy:
+                    exit_code = hb.run_command(mock.Mock(provider="codex", prompt="hi"))
+            finally:
+                os.chdir(original_cwd)
+
+            self.assertEqual(exit_code, 75)
+            run_provider_spy.assert_not_called()
+
+
 class DecodeTimeoutOutputTests(unittest.TestCase):
     def test_none_becomes_empty_string(self):
         self.assertEqual(hb.decode_timeout_output(None), "")
@@ -486,6 +536,74 @@ class AutoFallbackPromptPropagationTests(unittest.TestCase):
                 claude_stdin,
                 msg="fallback provider must receive the user's actual prompt, not a placeholder",
             )
+
+
+class RunProviderAutoFallbackBuildPromptCountTests(unittest.TestCase):
+    """Regression test: run_provider()'s --auto-fallback path used to call
+    build_prompt() twice for the same fallback hop -- once just before the
+    recursive run_provider(fallback, ...) call purely to write
+    NEXT_PROMPT_FILE, and again inside that recursive call itself right
+    after state["instruction_type"] is set to "handoff". Nothing reads
+    NEXT_PROMPT_FILE synchronously in between, so the first build_prompt()
+    call (4 doc reads + a git_snapshot() subprocess pair, and built before
+    instruction_type became "handoff") was pure waste and left a stale,
+    superseded prompt on disk. build_prompt() must now run at most once per
+    provider hop."""
+
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(os.chdir, self._orig_cwd)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_auto_fallback_calls_build_prompt_at_most_once_per_hop(self):
+        def fake_subprocess_run(command, **kwargs):
+            if command[0] == "git":
+                # build_prompt() -> git_snapshot() shells out to real git
+                # (status --short / diff --stat) on every call; this test
+                # only cares about codex/claude provider invocations, so
+                # give git calls an empty, successful result.
+                return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+            if command[0] == "codex":
+                return subprocess.CompletedProcess(
+                    command, returncode=1, stdout="", stderr="Error: 429 too many requests"
+                )
+            self.assertEqual(command[0], "claude")
+            stdout = (
+                '{"type": "system", "subtype": "init", "session_id": "s"}\n'
+                '{"type": "result", "session_id": "s", "result": "ok", '
+                '"total_cost_usd": 0.0, "is_error": false}\n'
+            )
+            return subprocess.CompletedProcess(command, returncode=0, stdout=stdout, stderr="")
+
+        args = hb.argparse.Namespace(
+            prompt="hello",
+            prompt_file=None,
+            execute=True,
+            auto_fallback=True,
+            timeout_seconds=30,
+            model=None,
+            instruction_type="continue",
+        )
+        state = {"task": "hello", "primary_provider": "codex", "status": "ready"}
+
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+            hb.subprocess, "run", side_effect=fake_subprocess_run
+        ), mock.patch.object(hb, "build_prompt", side_effect=hb.build_prompt) as build_prompt_spy:
+            exit_code = hb.run_provider("codex", args, state)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(state["history"]), 2)
+        self.assertEqual(state["history"][0]["provider"], "codex")
+        self.assertEqual(state["history"][1]["provider"], "claude")
+        # One call for the failing codex leg, one call for the claude
+        # fallback leg that actually runs -- never two for the same hop.
+        self.assertEqual(
+            build_prompt_spy.call_count,
+            2,
+            msg="build_prompt() must run at most once per fallback hop, not twice for the same fallback",
+        )
 
 
 class NextProviderTests(unittest.TestCase):

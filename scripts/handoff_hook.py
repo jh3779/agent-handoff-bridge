@@ -10,6 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from handoff_bridge import WriteLock, atomic_write_text  # noqa: E402
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -62,9 +65,16 @@ def append_current(root: Path, event: dict[str, Any]) -> None:
         lines.append(f"- Session ID: {event.get('session_id')}")
     if "transcript_path" in event:
         lines.append(f"- Transcript: {event.get('transcript_path')}")
-    current.parent.mkdir(parents=True, exist_ok=True)
-    with current.open("a", encoding="utf-8") as handle:
-        handle.write("\n".join(lines) + "\n")
+    addition = "\n".join(lines) + "\n"
+    # Cross-process lock, matching handoff_bridge.py's own append_current():
+    # this hook runs as a standalone process alongside `handoff_bridge.py run`
+    # (Codex CLI side), and both append to the same .handoff/current.md. A
+    # plain unlocked append here could be silently lost if it lands between
+    # the other process's read-existing and its atomic os.replace().
+    with WriteLock(handoff_dir / ".write.lock"):
+        current.parent.mkdir(parents=True, exist_ok=True)
+        existing = current.read_text(encoding="utf-8") if current.exists() else ""
+        atomic_write_text(current, existing + addition)
 
 
 def write_next_prompt(root: Path, event: dict[str, Any]) -> None:

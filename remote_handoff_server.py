@@ -17,14 +17,29 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+# This module is never frozen/bundled as its own PyInstaller sidecar (only
+# handoff_webui.py, handoff_bridge.py, validate_handoff.py, and
+# scan_secrets.py are -- see scripts/build_sidecars.py), so importing
+# handoff_bridge directly here is safe: it always runs unfrozen, next to
+# handoff_bridge.py, the same way handoff_webui.py already does this.
+from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS, WriteLock, atomic_write_text, decode_timeout_output
 
 BRIDGE_ROOT = Path(__file__).resolve().parent
 BRIDGE_SCRIPT = BRIDGE_ROOT / "handoff_bridge.py"
 REMOTE_DIR = Path(".handoff/remote")
 TASKS_DIR = REMOTE_DIR / "tasks"
 TOKEN_FILE = REMOTE_DIR / "token"
-PROVIDERS = {"auto", "codex", "claude"}
-PRIMARY_PROVIDERS = {"codex", "claude"}
+# "auto" is this server's own accepted value (routed to choose_auto_provider()
+# inside handoff_bridge.py), not one of handoff_bridge.PROVIDERS itself -- kept
+# as a local addition on top of the imported, canonical provider set instead
+# of a second hardcoded copy, so a new provider (e.g. the Gemini addition this
+# constant used to miss) only ever needs to change in one place.
+PROVIDERS = {"auto", *BRIDGE_PROVIDERS}
+# handoff_bridge.py's own `init --primary` argparse choice accepts the full
+# PROVIDERS set (no separate restricted subset exists there) -- this used to
+# hardcode {"codex", "claude"}, the same staleness bug as PROVIDERS above,
+# rejecting a valid --primary gemini before it ever reached handoff_bridge.py.
+PRIMARY_PROVIDERS = set(BRIDGE_PROVIDERS)
 
 
 def utc_now() -> str:
@@ -32,14 +47,24 @@ def utc_now() -> str:
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
+    # Reuses handoff_bridge.py's own atomic (temp file + os.replace, so a
+    # reader never observes a truncated file) and cross-process-locked write
+    # helpers instead of a plain write_text() -- task JSON under
+    # .handoff/remote/tasks/*.json is rewritten from background threads on
+    # every step of a running task, and a crash or a concurrent GET
+    # /tasks/<id> mid-write could otherwise observe a partial file.
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    with WriteLock():
+        atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
 def read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
 
 
 def is_relative_to(path: Path, root: Path) -> bool:
@@ -250,9 +275,15 @@ def run_command(task: dict[str, Any], args: list[str], timeout: int) -> int:
         update_task(task)
         return result.returncode
     except subprocess.TimeoutExpired as exc:
+        # decode_timeout_output(), not a bare `exc.stdout or ""`: CPython's
+        # subprocess.TimeoutExpired.stdout/.stderr can still be `bytes` even
+        # though text=True was passed above -- storing bytes into
+        # command_record then json.dumps()-ing it in write_json() raised an
+        # uncaught TypeError here, silently wedging the task at its last
+        # good status ("running") forever with no failure ever recorded.
         command_record["exit_code"] = 124
-        command_record["stdout"] = (exc.stdout or "")[-8000:]
-        command_record["stderr"] = (exc.stderr or "command timed out")[-8000:]
+        command_record["stdout"] = decode_timeout_output(exc.stdout)[-8000:]
+        command_record["stderr"] = (decode_timeout_output(exc.stderr) or "command timed out")[-8000:]
         update_task(task)
         return 124
 

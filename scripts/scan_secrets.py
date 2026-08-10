@@ -39,8 +39,22 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "generic_assigned_secret",
         re.compile(
-            r"(?i)\b(api[_-]?key|secret|token|password|passwd)\b\s*[:=]\s*"
-            r"['\"][A-Za-z0-9/+_.=-]{12,}['\"]"
+            # Label boundaries use lookaround on alnum chars (not `\b`) so an
+            # underscore- or hyphen-adjacent label variant (db_password,
+            # my_api_key) still matches -- `\b` alone fails there because `_`
+            # is a word character, so `\bpassword\b` never matches inside
+            # `db_password`. The value side accepts either a quoted secret-
+            # shaped run (unchanged, dots allowed -- real secrets can be
+            # dotted, e.g. a JWT) or an unquoted one anchored on whitespace/
+            # end-of-line -- the unquoted alternative excludes `.` from its
+            # charset (unlike the quoted one) specifically so a dotted
+            # attribute-access expression like `token = self.server.token`
+            # can't match; real unquoted secrets (YAML/.env-style) are never
+            # written as dotted identifiers, so this loses no real coverage.
+            r"(?i)(?<![A-Za-z0-9])(?:api[_-]?key|secret|token|password|passwd)(?![A-Za-z0-9])"
+            r"\s*[:=]\s*"
+            r"(?:['\"][A-Za-z0-9/+_.=-]{12,}['\"]"
+            r"|[A-Za-z0-9/+_=-]{12,}(?=\s|$))"
         ),
     ),
 ]
@@ -58,7 +72,12 @@ def is_allowlisted(rel_path: str) -> bool:
 
 
 def list_files(root: Path, staged_only: bool) -> list[str]:
-    command = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"] if staged_only else ["git", "ls-files"]
+    # ACMR: Added/Copied/Modified/Renamed. Without R, a renamed-and-edited
+    # file (git status "R") is invisible to the staged scan even though its
+    # new content is about to be committed -- confirmed empirically that
+    # `--name-only` still prints only the new path per line for a rename
+    # (not "old -> new"), so the line-parsing below needs no changes.
+    command = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"] if staged_only else ["git", "ls-files"]
     result = subprocess.run(command, cwd=root, text=True, capture_output=True, check=False)
     if result.returncode != 0:
         return []

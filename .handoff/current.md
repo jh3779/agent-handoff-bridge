@@ -1261,3 +1261,93 @@ cost incurred.
   instead of importing `handoff_bridge.PROVIDERS`). Full list of all 17
   (with file/line/failure-scenario) was reported to the user in-session.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-07 (remaining 13 findings)
+
+- **Task**: user said to continue; fixed all 13 remaining findings from the
+  full-project review above (all 17 are now closed). Two required design
+  judgment and were done directly (not delegated): the `state.json`
+  concurrency race and the `classify_handoff()` false positive. The other
+  11 were delegated to 5 parallel subagents grouped by file, then
+  integration-verified.
+- **Design-call fixes (done directly)**:
+  - `handoff_bridge.py`: added `RUN_LOCK_FILE` (`.handoff/.run.lock`,
+    distinct from the existing `WRITE_LOCK_FILE` on purpose — that one is
+    held only for an instant per write, this one is held across an entire
+    `run_command()` invocation, which can legitimately run for minutes).
+    `run_command()` now holds it for its whole load_state()-...-save_state()
+    cycle; a second concurrent `run` against the same workspace fails fast
+    (exit 75, clear stderr message) after `RUN_LOCK_TIMEOUT_SECONDS` (3600s)
+    instead of racing and silently losing whichever save happens first.
+  - `handoff_bridge.py`: `classify_handoff()`'s false-positive class (a
+    successful run's own answer text quoting an error-sounding phrase like
+    "command not found" got wrongly classified as a handoff) was only ever
+    patched for the `auth` pattern in a prior session. First tried gating
+    the whole second `ERROR_PATTERNS` loop on `exit_code != 0` — rejected,
+    because `test_rate_limit_signal_in_stdout` is a real, intentional case
+    of `exit_code == 0` with a genuine plain-text signal that must still be
+    caught. Fixed instead by cutting `parsed["final_text"]` (the provider's
+    own extracted answer) out of the text those patterns scan — a
+    substring-exclusion approach that fixes every pattern generally
+    without needing per-pattern phrase-narrowing or breaking the real
+    exit-0-with-signal case.
+- **Delegated fixes (5 parallel subagents, then integration-verified)**:
+  Gemini-provider propagation to `handoff_control.py`/`handoff_desktop.py`/
+  `remote_handoff_submit.py` (+ `remote_handoff_server.py` done directly,
+  see below) plus the fragile-argparse-positional fix (`--prompt-file`/
+  `--model=value`, matching `handoff_webui.py`'s existing pattern) in the
+  first two; `scan_secrets.py`'s generic-regex gaps (unquoted values,
+  underscore-adjacent labels) and renamed-file staged-scan gap
+  (`--diff-filter=ACMR`); `scripts/handoff_hook.py`'s unlocked-append race
+  (now uses `handoff_bridge.WriteLock`/`atomic_write_text`, same lock file
+  as `handoff_bridge.py`'s own `append_current()`); the `build_prompt()`
+  double-call waste on auto-fallback (reordered so the auto-fallback branch
+  never builds/writes a prompt that's about to be superseded); and in
+  `handoff_webui.py`/`webui/app.js` — `read_credentials()` now only reads
+  when a CLI is actually unavailable, `read_month_messages()` now tolerates
+  a `FileNotFoundError` TOCTOU race against `archive_old_months()`, and
+  `switchWorkspaceTo()`'s three independent fetches now run via
+  `Promise.all` instead of sequentially (`boot()` was deliberately left
+  untouched — its fetches are NOT independent).
+  - `remote_handoff_server.py` (done directly, not delegated, since I'd
+    just finished editing it for the earlier security fixes): imports
+    `PROVIDERS`/derives `PRIMARY_PROVIDERS` from `handoff_bridge.PROVIDERS`
+    now (closing its own Gemini gap); `TimeoutExpired.stdout`/`.stderr` now
+    routed through `handoff_bridge.decode_timeout_output()` (was crashing
+    `write_json()`'s `json.dumps()` on raw bytes, silently wedging a timed-
+    out remote task at "running" forever); `write_json()`/`read_json()` now
+    reuse `handoff_bridge.py`'s atomic-write + lock + corrupt-JSON-safe-read
+    helpers instead of a bare `write_text()`/`read_text()`.
+- **Problem encountered and resolved**: running 5 subagents in parallel
+  against the same live working tree (no worktree isolation) meant they
+  observed each other's concurrent file writes and — per this repo's own
+  shared-workspace framing in CLAUDE.md — misinterpreted them as "another
+  session's in-flight work," leading a couple of them to `git stash`
+  defensively mid-task. This caused real churn (one agent's edits briefly
+  vanished from the working tree, `HEAD` even advanced by one commit
+  unexpectedly) but no actual data loss — every agent that hit this
+  recovered its own content and verified it byte-identical before
+  finishing. After all 5 returned, did a full independent audit rather
+  than trusting their individual "tests pass" claims: `git stash list`
+  (empty, confirmed clean), full `python3 -m unittest discover -s tests`
+  (found and fixed one real bug in a new test's own mock — it didn't
+  account for `build_prompt()`'s internal `git status --short` subprocess
+  call — not a production bug), then `python3 handoff_bridge.py check`
+  (found and fixed one real false positive: the new unquoted-secret regex
+  matched `remote_handoff_server.py`'s own `token = self.server.token`
+  line; the intended `.`-exclusion fix an agent described in its report
+  had not actually landed in the file, only in its own retelling — fixed
+  directly and locked in with a regression test). Lesson for next time:
+  don't fan out multiple file-mutating subagents against a live working
+  tree without `isolation: "worktree"` unless their file sets are known to
+  be fully disjoint; here they overlapped by proximity (same repo, same
+  moment) even though their assigned *files* didn't overlap.
+- **Verified**: `python3 -m unittest discover -s tests` → 414 tests, OK.
+  `python3 handoff_bridge.py check` → 414 tests + secret scan + doc-
+  consistency check, PASS. Re-ran both from a clean `git status --short`
+  (nothing stashed, nothing uncommitted left over) as the final gate, not
+  trusting any individual subagent's self-reported result.
+- **Remaining**: none from the original 17-finding review — all fixed.
+  Gemini's authenticated/success response path (from an earlier session)
+  remains unverified against a real call (no credentials available here).
+- **Blocked**: none.

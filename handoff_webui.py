@@ -469,12 +469,20 @@ def read_month_messages(workspace: Path, month: str) -> list[dict]:
     target_dir = chat_dir(workspace)
     plain = target_dir / f"{month}.jsonl"
     archived = target_dir / f"{month}.jsonl.gz"
-    if plain.exists():
-        text = plain.read_text(encoding="utf-8")
-    elif archived.exists():
-        with gzip.open(archived, "rt", encoding="utf-8") as handle:
-            text = handle.read()
-    else:
+    try:
+        if plain.exists():
+            text = plain.read_text(encoding="utf-8")
+        elif archived.exists():
+            with gzip.open(archived, "rt", encoding="utf-8") as handle:
+                text = handle.read()
+        else:
+            return []
+    except FileNotFoundError:
+        # TOCTOU race with archive_old_months(), which compresses and then
+        # unlink()s the plain file under WriteLock while this function reads
+        # it lock-free -- a file that disappeared between exists() and
+        # read_text()/gzip.open() is benign (archival deletion, not a real
+        # error) and should be treated the same as "doesn't exist yet".
         return []
     messages = []
     for line in text.splitlines():
@@ -1640,9 +1648,12 @@ def _run_provider_via_bridge_locked(
     behavior (a CLI-available provider, or a CLI-missing one with no key
     saved) is completely unchanged by this branch.
     """
-    credentials = read_credentials()
     if provider == "auto":
         if not any(cli_available(p) for p in PROVIDERS):
+            # Only read credentials.json once we already know no CLI is
+            # available -- the common case (some CLI installed) never
+            # touches disk for a value it would just discard unused.
+            credentials = read_credentials()
             api_key_provider = next((p for p in PROVIDERS if p in credentials), None)
             if api_key_provider is None:
                 return [
@@ -1667,8 +1678,15 @@ def _run_provider_via_bridge_locked(
         # At least one CLI exists -- fall through to the existing subprocess
         # path, which already does its own choose_auto_provider() and
         # --auto-fallback among CLI-available providers.
-    elif not cli_available(provider) and provider in credentials:
-        return run_provider_via_api_key(workspace, provider, prompt, credentials[provider], instruction_type, model)
+    elif not cli_available(provider):
+        # Same reasoning as above: only read credentials.json once the CLI
+        # is confirmed unavailable, so the common (CLI installed) case
+        # skips the disk read + JSON parse entirely.
+        credentials = read_credentials()
+        if provider in credentials:
+            return run_provider_via_api_key(
+                workspace, provider, prompt, credentials[provider], instruction_type, model
+            )
         # else (a specific provider with no CLI and no saved key): fall
         # through unchanged -- the subprocess call below fails with
         # FileNotFoundError -> exit_code 127, exactly as it did before this

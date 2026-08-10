@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Unit tests for remote_handoff_server.py's argv-safety and token logic.
-
-Focused on the two security-relevant bugs a full-project review found and
-this test file was added to close: an empty/corrupted token file silently
-disabling remote-server auth, and user-controlled task/prompt text being
-appended to handoff_bridge.py's argv with no "--" separator (letting a
-value like "--execute" be parsed as the real flag instead of content).
+"""Unit tests for remote_handoff_server.py's argv-safety, token, and
+task-JSON logic. Covers the findings a full-project review reported for this
+module: an empty/corrupted token file silently disabling remote-server auth,
+user-controlled task/prompt text reaching handoff_bridge.py's argv with no
+"--" separator, TimeoutExpired.stdout/.stderr staying `bytes` and crashing
+the JSON write, non-atomic/unguarded task-JSON reads and writes, and a
+Gemini-excluding stale copy of handoff_bridge.PROVIDERS.
 """
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 import tempfile
 import types
@@ -99,6 +101,61 @@ class RunTaskArgvSafetyTests(unittest.TestCase):
         # Only one real "--execute" flag could ever appear before the "--"
         # separator, and here execute=False means none should.
         self.assertNotIn("--execute", run_args[: run_args.index("--")])
+
+
+class WriteReadJsonTests(unittest.TestCase):
+    def test_read_json_survives_corrupt_file_instead_of_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "task.json"
+            path.write_text('{"id": "t1", "status": "run', encoding="utf-8")  # truncated
+            self.assertEqual(rhs.read_json(path), {})
+
+    def test_write_json_then_read_json_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "task.json"
+            rhs.write_json(path, {"id": "t1", "status": "completed"})
+            self.assertEqual(rhs.read_json(path), {"id": "t1", "status": "completed"})
+
+    def test_write_json_never_leaves_a_partial_file_on_disk(self):
+        # write_json() now routes through handoff_bridge.atomic_write_text()
+        # (temp file + os.replace) instead of a bare write_text(), so a
+        # concurrent reader can never observe a truncated file.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "task.json"
+            rhs.write_json(path, {"id": "t1"})
+            leftover_temp_files = list(Path(tmp).glob(".task.json.*.tmp"))
+            self.assertEqual(leftover_temp_files, [])
+
+
+class RunCommandTimeoutDecodeTests(unittest.TestCase):
+    def test_bytes_timeout_output_does_not_crash_the_json_write(self):
+        # Regression: TimeoutExpired.stdout/.stderr can still be `bytes`
+        # even with text=True on the subprocess.run() call above (CPython
+        # builds the exception from raw pipe buffers on the timeout path).
+        # Storing that bytes value straight into command_record used to
+        # blow up inside write_json()'s json.dumps() call, uncaught, wedging
+        # the task at its last good status forever.
+        task = {"id": "t1", "workspace": "/tmp/ws", "commands": []}
+        timeout_exc = subprocess.TimeoutExpired(cmd=["run"], timeout=1, output=b"partial\xffbytes", stderr=b"stderr\xffbytes")
+        with mock.patch.object(rhs.subprocess, "run", side_effect=timeout_exc), mock.patch.object(rhs, "update_task"):
+            exit_code = rhs.run_command(task, ["run", "codex"], timeout=1)
+
+        self.assertEqual(exit_code, 124)
+        # Must be plain str (json.dumps()-safe), not bytes, and must not
+        # raise decoding invalid UTF-8 either.
+        command_record = task["commands"][-1]
+        self.assertIsInstance(command_record["stdout"], str)
+        self.assertIsInstance(command_record["stderr"], str)
+        json.dumps(command_record)  # must not raise
+
+
+class ProviderListTests(unittest.TestCase):
+    def test_gemini_is_a_valid_provider_and_primary(self):
+        # Regression: PROVIDERS/PRIMARY_PROVIDERS used to be separate
+        # hardcoded copies that never picked up Gemini when it was added to
+        # handoff_bridge.PROVIDERS, silently rejecting it on this server.
+        self.assertIn("gemini", rhs.PROVIDERS)
+        self.assertIn("gemini", rhs.PRIMARY_PROVIDERS)
 
 
 if __name__ == "__main__":
