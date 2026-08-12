@@ -17,7 +17,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -35,7 +35,7 @@ class CheckSecretsCommandTests(unittest.TestCase):
             vh.check_secrets(Path("/some/root"))
         command = run_spy.call_args.args[0]
         self.assertEqual(command[0], vh.sys.executable)
-        self.assertTrue(command[1].endswith("scripts/scan_secrets.py"))
+        self.assertTrue(command[1].endswith(str(Path("scripts") / "scan_secrets.py")))
 
     def test_frozen_uses_a_sibling_scan_sidecar_next_to_sys_executable(self):
         with mock.patch.object(vh.sys, "frozen", True, create=True), mock.patch.object(
@@ -47,13 +47,19 @@ class CheckSecretsCommandTests(unittest.TestCase):
         self.assertEqual(command[0], "/Applications/Agent Handoff Bridge.app/Contents/MacOS/agent-handoff-bridge-scan")
 
     def test_frozen_on_windows_uses_the_exe_suffix(self):
+        # check_secrets() builds this via PureWindowsPath (not the
+        # host-native Path) when sys.platform is "win32", so the result is
+        # genuinely backslash-style regardless of which OS runs this test --
+        # expected value constructed the same way rather than hand-typed, so
+        # it can't drift from what PureWindowsPath actually produces.
         with mock.patch.object(vh.sys, "frozen", True, create=True), mock.patch.object(
             vh.sys, "executable", "/apps/agent-handoff-bridge/agent-handoff-bridge-validate.exe"
         ), mock.patch.object(vh.sys, "platform", "win32"), mock.patch("validate_handoff.subprocess.run") as run_spy:
             run_spy.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
             vh.check_secrets(Path("/some/root"))
         command = run_spy.call_args.args[0]
-        self.assertEqual(command[0], "/apps/agent-handoff-bridge/agent-handoff-bridge-scan.exe")
+        expected = PureWindowsPath("/apps/agent-handoff-bridge") / "agent-handoff-bridge-scan.exe"
+        self.assertEqual(command[0], str(expected))
 
     def test_a_real_failure_is_still_reported(self):
         with mock.patch.object(vh.sys, "frozen", False, create=True), mock.patch(

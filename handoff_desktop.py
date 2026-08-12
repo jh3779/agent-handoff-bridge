@@ -13,6 +13,7 @@ import threading
 import webbrowser
 from pathlib import Path
 
+from handoff_bridge import INSTRUCTION_TYPES
 from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS
 
 try:
@@ -39,7 +40,9 @@ BRIDGE_SCRIPT = BRIDGE_ROOT / "handoff_bridge.py"
 # `init --primary` accepts the full PROVIDERS set with no restricted subset.
 PROVIDERS = ("auto",) + BRIDGE_PROVIDERS
 PRIMARY_PROVIDERS = BRIDGE_PROVIDERS
-INSTRUCTION_TYPES = ("new-task", "continue", "handoff", "review", "verify")
+# INSTRUCTION_TYPES imported directly above (not re-derived like PROVIDERS
+# is) -- handoff_bridge.py has no "auto"-style GUI-only addition on top of
+# it, so there's nothing to compose; the bare import is the whole story.
 TK_BASE = tk.Tk if tk is not None else object
 
 

@@ -9,7 +9,7 @@ import py_compile
 import subprocess
 import sys
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 DEFAULT_ROOT = Path(__file__).resolve().parent.parent
@@ -180,9 +180,11 @@ def check_secrets(root: Path) -> None:
         # PyInstaller sidecar built from scan_secrets.py
         # (agent-handoff-bridge-scan) is invoked directly instead,
         # matching handoff_bridge.py's check()/handoff_webui.py's
-        # bridge_command_prefix().
+        # bridge_command_prefix(). PureWindowsPath/PurePosixPath, not the
+        # host-native Path -- see bridge_command_prefix()'s comment for why.
         scan_name = "agent-handoff-bridge-scan.exe" if sys.platform == "win32" else "agent-handoff-bridge-scan"
-        command = [str(Path(sys.executable).resolve().parent / scan_name), "--root", str(root)]
+        pure_path = PureWindowsPath if sys.platform == "win32" else PurePosixPath
+        command = [str(pure_path(sys.executable).parent / scan_name), "--root", str(root)]
     else:
         scanner = root / "scripts" / "scan_secrets.py"
         command = [sys.executable, str(scanner), "--root", str(root)]

@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -270,6 +270,45 @@ class VersionTests(unittest.TestCase):
         self.assertIn(hb.BRIDGE_VERSION, result.stdout)
 
 
+class InstructionTypeArgparseTests(unittest.TestCase):
+    """Regression coverage: `--instruction-type` previously had no
+    `choices=` restriction on either subcommand, so an arbitrary/typo'd
+    value was silently accepted and written straight into the shared
+    .handoff/current.md/state.json -- `--primary`/`provider` were already
+    correctly validated this way; `--instruction-type` was the one gap."""
+
+    def _run_cli(self, *args: str, workspace: Path) -> subprocess.CompletedProcess:
+        bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
+        return subprocess.run(
+            [sys.executable, str(bridge_script), "--workspace", str(workspace), *args],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_init_rejects_an_unrecognized_instruction_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_cli("init", "a task", "--instruction-type", "totally-bogus", workspace=Path(tmp))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("invalid choice", result.stderr)
+            self.assertFalse((Path(tmp) / ".handoff" / "current.md").exists())
+
+    def test_init_accepts_every_documented_instruction_type(self):
+        for instruction_type in hb.INSTRUCTION_TYPES:
+            with tempfile.TemporaryDirectory() as tmp:
+                result = self._run_cli("init", "a task", "--instruction-type", instruction_type, workspace=Path(tmp))
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_run_preview_rejects_an_unrecognized_instruction_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            init_result = self._run_cli("init", "a task", workspace=workspace)
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+            result = self._run_cli("run", "codex", "--instruction-type", "totally-bogus", workspace=workspace)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("invalid choice", result.stderr)
+
+
 class CheckCommandTests(unittest.TestCase):
     """check()'s subprocess command construction -- Phase 7a (DEC-22):
     when frozen (PyInstaller, as the Tauri sidecar
@@ -286,7 +325,7 @@ class CheckCommandTests(unittest.TestCase):
             hb.check(mock.Mock())
         command = run_spy.call_args.args[0]
         self.assertEqual(command[0], hb.sys.executable)
-        self.assertTrue(command[1].endswith("scripts/validate_handoff.py"))
+        self.assertTrue(command[1].endswith(str(Path("scripts") / "validate_handoff.py")))
 
     def test_frozen_uses_a_sibling_validate_sidecar_next_to_sys_executable(self):
         with mock.patch.object(hb.sys, "frozen", True, create=True), mock.patch.object(
@@ -298,13 +337,19 @@ class CheckCommandTests(unittest.TestCase):
         self.assertEqual(command[0], "/Applications/Agent Handoff Bridge.app/Contents/MacOS/agent-handoff-bridge-validate")
 
     def test_frozen_on_windows_uses_the_exe_suffix(self):
+        # check() now builds this via PureWindowsPath (not the host-native
+        # Path) when sys.platform is "win32", so the result is genuinely
+        # backslash-style regardless of which OS runs this test -- expected
+        # value constructed the same way rather than hand-typed, so it can't
+        # drift from what PureWindowsPath actually produces.
         with mock.patch.object(hb.sys, "frozen", True, create=True), mock.patch.object(
             hb.sys, "executable", "/apps/agent-handoff-bridge/agent-handoff-bridge-cli.exe"
         ), mock.patch.object(hb.sys, "platform", "win32"), mock.patch("handoff_bridge.subprocess.run") as run_spy:
             run_spy.return_value = subprocess.CompletedProcess(args=[], returncode=0)
             hb.check(mock.Mock())
         command = run_spy.call_args.args[0]
-        self.assertEqual(command[0], "/apps/agent-handoff-bridge/agent-handoff-bridge-validate.exe")
+        expected = PureWindowsPath("/apps/agent-handoff-bridge") / "agent-handoff-bridge-validate.exe"
+        self.assertEqual(command[0], str(expected))
 
 
 class WriteLockTests(unittest.TestCase):
@@ -387,6 +432,20 @@ class ShortRunTimeoutTests(unittest.TestCase):
         self.assertEqual(exit_code, 124)
         self.assertEqual(stdout, "")
         self.assertEqual(stderr, "timed out")
+
+    def test_binary_not_found_returns_127_not_a_raised_exception(self):
+        # check_for_update()'s CheckForUpdateTests only ever mock short_run
+        # itself, so this is the one place the actual FileNotFoundError ->
+        # exit 127 translation this whole "gh missing" fallback chain
+        # depends on gets exercised directly, with a real, genuinely
+        # nonexistent command (not a mocked subprocess.run) -- confirmed
+        # for real on a Windows dev machine with no `gh` installed at all
+        # (2026-08-12): check_for_update() returned "unavailable" instantly
+        # rather than raising or hanging, exactly because of this path.
+        exit_code, stdout, stderr = hb.short_run(["definitely-not-a-real-binary-xyz"])
+        self.assertEqual(exit_code, 127)
+        self.assertEqual(stdout, "")
+        self.assertIn("not found", stderr)
 
 
 class RunProviderTimeoutIntegrationTests(unittest.TestCase):
@@ -554,8 +613,13 @@ class RunProviderAutoFallbackBuildPromptCountTests(unittest.TestCase):
         self._orig_cwd = os.getcwd()
         self._tmp = tempfile.TemporaryDirectory()
         os.chdir(self._tmp.name)
-        self.addCleanup(os.chdir, self._orig_cwd)
+        # addCleanup runs LIFO: chdir back to _orig_cwd must be registered
+        # *after* (so it runs *before*) _tmp.cleanup() -- deleting a
+        # directory while it's still the process's cwd raises
+        # PermissionError on Windows (allowed on POSIX, which is why this
+        # was invisible until the suite first ran on Windows).
         self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
 
     def test_auto_fallback_calls_build_prompt_at_most_once_per_hop(self):
         def fake_subprocess_run(command, **kwargs):

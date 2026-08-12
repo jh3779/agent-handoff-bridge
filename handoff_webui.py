@@ -32,7 +32,7 @@ import uuid
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import parse_qs, urlparse
 
 from handoff_bridge import (
@@ -77,8 +77,14 @@ def bridge_command_prefix() -> list[str]:
     code is untouched.
     """
     if getattr(sys, "frozen", False):
+        # PureWindowsPath/PurePosixPath, not the host-native Path: sys.executable
+        # always matches sys.platform's flavor for a real frozen build (this
+        # branch never runs unfrozen), but picking the pure class explicitly
+        # keeps this correct regardless of which OS actually executes the code
+        # -- and lets it be unit-tested for either platform from any dev host.
         cli_name = "agent-handoff-bridge-cli.exe" if sys.platform == "win32" else "agent-handoff-bridge-cli"
-        return [str(Path(sys.executable).resolve().parent / cli_name)]
+        pure_path = PureWindowsPath if sys.platform == "win32" else PurePosixPath
+        return [str(pure_path(sys.executable).parent / cli_name)]
     return [sys.executable, str(BRIDGE_SCRIPT)]
 
 try:
@@ -764,6 +770,10 @@ OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 API_KEY_MODE_TIMEOUT_SECONDS = 120
 API_KEY_MODE_MAX_HISTORY_MESSAGES = 20
 API_KEY_MODE_MAX_TOKENS = 4096
+# Small on purpose: POST /api/provider-key's validation call only needs a
+# single short word back to prove the key/model combination actually
+# works -- it is never a real chat turn.
+API_KEY_VALIDATION_MAX_TOKENS = 16
 
 
 def credentials_path() -> Path:
@@ -1444,6 +1454,59 @@ def call_openai_responses_api(api_key: str, model: str, messages: list[dict], wo
             working_input.append({"type": "function_call_output", "call_id": call.get("call_id"), "output": result_text})
 
 
+def validate_provider_api_key(provider: str, api_key: str, model: str) -> dict:
+    """Makes one real, minimal, tool-free call to the provider's own API
+    with `api_key`/`model` to confirm the key actually works -- POST
+    /api/provider-key calls this before save_credential() ever writes a
+    non-empty key to disk, so a saved-but-wrong key is never trusted on
+    the strength of its shape alone. Same {"ok": True, "text": str} /
+    {"ok": False, "message": str} contract as
+    call_anthropic_messages_api()/call_openai_responses_api() (`message`
+    never contains `api_key`, same invariant), but deliberately skips
+    their tool-use turn loop entirely: this has no workspace to act on
+    and no reason to grant tool access just to check a key, so it is a
+    single HTTP call with no `tools` in the request body at all.
+    """
+    ping = [{"role": "user", "content": "Reply with only the single word: ok"}]
+    if provider == "claude":
+        url = ANTHROPIC_MESSAGES_URL
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_API_VERSION,
+            "content-type": "application/json",
+        }
+        body = {"model": model, "max_tokens": API_KEY_VALIDATION_MAX_TOKENS, "messages": ping}
+    else:
+        url = OPENAI_RESPONSES_URL
+        headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
+        body = {"model": model, "input": ping, "max_output_tokens": API_KEY_VALIDATION_MAX_TOKENS}
+    try:
+        status, data = _http_post_json(url, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        return {"ok": False, "message": f"network error validating {provider} API key: {exc}"}
+    if status != 200:
+        error = data.get("error") if isinstance(data, dict) else None
+        error_type = (error or {}).get("type", "api_error") if isinstance(error, dict) else "api_error"
+        error_message = (
+            (error or {}).get("message", json.dumps(data, ensure_ascii=False))
+            if isinstance(error, dict)
+            else json.dumps(data, ensure_ascii=False)
+        )
+        return {"ok": False, "message": f"{provider} API key validation failed ({status} {error_type}): {error_message}"}
+    text = ""
+    if provider == "claude":
+        content = data.get("content", []) if isinstance(data, dict) else []
+        text = "".join(block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text")
+    else:
+        for item in data.get("output", []) if isinstance(data, dict) else []:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            for block in item.get("content", []):
+                if isinstance(block, dict) and block.get("type") in ("output_text", "text"):
+                    text += block.get("text", "")
+    return {"ok": True, "text": text.strip() or "(empty response)"}
+
+
 def run_provider_via_api_key(
     workspace: Path,
     provider: str,
@@ -2114,6 +2177,29 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     # contract) -- lets the connection panel's same "저장"
                     # action double as "disconnect API key mode".
                     #
+                    # A non-empty key is verified with a real, minimal call
+                    # (validate_provider_api_key()) *before* it is ever
+                    # written to disk -- previously any non-empty string was
+                    # saved unconditionally and only found to be wrong (or
+                    # right) the next time the user actually tried to chat.
+                    # This needs a model to call with, and
+                    # API_KEY_MODE_DEFAULT_MODELS is deliberately empty for
+                    # both providers (no built-in default, DEC-13/15) -- so a
+                    # model is now required in the same request as a
+                    # non-empty key, not merely recommended. Removal (empty
+                    # key) skips validation entirely; there is nothing to
+                    # verify when disconnecting.
+                    confirmation: str | None = None
+                    if key:
+                        if not model:
+                            raise WorkspaceError(
+                                f"a model is required to save and verify a {provider} API key "
+                                "(no built-in default exists for this provider)"
+                            )
+                        result = validate_provider_api_key(provider, key, model)
+                        if not result["ok"]:
+                            raise WorkspaceError(result["message"])
+                        confirmation = result["text"]
                     # Unlike touch_registry() (best-effort, failure only
                     # logged -- always called *after* a real state change it
                     # shouldn't be allowed to desync from), this write IS the
@@ -2130,11 +2216,11 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         save_credential(provider, key, model)
                     except OSError as exc:
                         raise WorkspaceError(f"failed to save API key: {exc}") from exc
-                    resolved_model = model or API_KEY_MODE_DEFAULT_MODELS.get(provider)
-                    self._send_json(
-                        200,
-                        {"provider": provider, "api_key_configured": bool(key), "model": resolved_model if key else None},
-                    )
+                    response = {"provider": provider, "api_key_configured": bool(key), "model": model if key else None}
+                    if confirmation is not None:
+                        response["verified"] = True
+                        response["confirmation"] = confirmation
+                    self._send_json(200, response)
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             else:

@@ -161,6 +161,17 @@ extended to full agentic parity by the CFL-17 follow-up
   tradeoff from DEC-21's design interview, not an oversight. Full
   reasoning: `docs/webui-chat-storage.md`'s "Tool loop" section and
   [flutter-mapping.html DEC-21](design-system/flutter-mapping.html#s1c).
+- **Keys are verified before they're saved.** `POST /api/provider-key`
+  previously wrote any non-empty key string to `credentials.json`
+  unconditionally, trusting its shape alone. It now calls
+  `validate_provider_api_key()` first -- one real, minimal, tool-free call
+  to the provider's own API asking for a one-word reply -- and only saves
+  on success; a bad key, wrong model name, or network failure returns a
+  400 with nothing written. `model` was already required in practice (no
+  built-in default exists per DEC-13); it's now enforced by the endpoint
+  itself, since there is no default to fall back on for the verification
+  call either. See `docs/webui-chat-storage.md`'s "Credentials & API-Key
+  Mode" section for the full contract.
 
 ## Checklist When A Provider Is Actually Added
 

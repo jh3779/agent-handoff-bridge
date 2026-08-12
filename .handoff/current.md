@@ -1351,3 +1351,245 @@ cost incurred.
   Gemini's authenticated/success response path (from an earlier session)
   remains unverified against a real call (no credentials available here).
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-12
+
+- **Target**: Claude Code CLI on a real Windows machine (first time this
+  project's dev test suite has ever been run there), branch
+  `fix/instruction-type-validation`, no PR yet. User first asked to
+  prepare a Windows test environment, then (in manual testing of the
+  running app) reported general CLI-input concern: "아무 키나 혹은 값을
+  입력하였을 때 그냥 저장하는 경우가 존재함" (there are cases where any
+  key/value entered just gets silently saved), then asked to verify
+  further and do supplementary work.
+- **Environment note (important for whoever reads this next)**: this
+  session's working tree started as a genuinely fresh `git clone` (its
+  own `git reflog` has exactly one entry: the clone itself) — an earlier
+  part of the *same conversation* had already investigated a Windows-prep
+  scope, gotten user answers via AskUserQuestion, and (per the
+  conversation's own compacted history) apparently made real edits
+  (`scripts/dev_shell.ps1`, `tests/fake_provider.py`, WriteLock/POSIX-path/
+  run_shell fixes, an instruction-type fix) — none of which exist in this
+  actual clone. That earlier local state was not this repository's real,
+  committed history; it appears to have been some other/stale workspace.
+  Re-verified everything from scratch against the real repo before
+  redoing anything, rather than trusting the earlier conversation's
+  self-report. One specific earlier claim was **wrong and is retracted
+  here**: a claimed Gemini/`PROVIDERS` gap in `handoff_control.py`/
+  `handoff_desktop.py` does not exist in this repo -- both already
+  correctly derive `PROVIDERS` from `handoff_bridge.PROVIDERS` (includes
+  gemini). `scripts/dev_shell.ps1`/`tests/fake_provider.py` and the
+  broader "make all 35 POSIX-shell-skipped tests run on Windows" effort
+  described in that earlier conversation turn were **not** redone here —
+  no reliable diff survived to redo them from, and this session scoped
+  itself to what could be freshly, directly verified.
+- **Changed (real, verified bug)**: `handoff_bridge.py`'s
+  `--instruction-type` (on both `init` and `run`) had no `choices=`
+  restriction at all -- unlike its sibling `--primary`/`provider`
+  arguments, which already validate correctly. Reproduced directly:
+  `python handoff_bridge.py init "task" --instruction-type
+  totally-bogus-value` exited 0 and wrote the garbage string straight
+  into `.handoff/current.md`'s "Instruction type:" line, the shared
+  source-of-truth file both providers read, no warning.
+  `handoff_desktop.py`'s GUI already restricts the same field to a fixed
+  5-value set via a readonly Combobox -- the CLI was the one unvalidated
+  path. Fix: new `INSTRUCTION_TYPES = ("new-task", "continue", "handoff",
+  "review", "verify")` constant in `handoff_bridge.py`; both
+  `--instruction-type` arguments now use `choices=INSTRUCTION_TYPES`;
+  `handoff_desktop.py` now imports this constant directly from
+  `handoff_bridge` instead of keeping its own separate literal (matches
+  the existing `PROVIDERS`-import pattern already used there for the same
+  no-drift reason). `docs/cli-reference.md` documents the valid set.
+  Audited but confirmed **not** in scope: `--model`/`--target-model`
+  (intentionally free text), `--primary`/`provider` (already validated),
+  `handoff_control.py`'s `ask_provider()`/`ask_model()` (already correct),
+  `handoff_webui.py`'s `/api/run` and `/api/chat` (both already validate
+  `provider`/`role` against fixed sets server-side; `instruction_type` is
+  always a hardcoded literal there, never user-controlled).
+- **Changed (found during the Windows-verification pass itself, not from
+  the CLI-input report)**: running the real dev suite on Windows for the
+  first time surfaced further real, Windows-specific bugs, all fixed:
+  1. `handoff_webui.py`'s `bridge_command_prefix()`, `handoff_bridge.py`'s
+     `check()`, and `scripts/validate_handoff.py`'s `check_secrets()` all
+     built a frozen sibling-sidecar path via `Path(sys.executable).resolve()`
+     -- host-native `pathlib.Path`, not tied to the `sys.platform` these
+     functions were already branching on for the `.exe` suffix. In
+     production this never actually diverges (a real frozen build's
+     `sys.executable` always matches the real host OS), but it made the
+     unit tests for the *other* platform's frozen behavior fail whenever
+     the suite ran on a real Windows host (the darwin-simulation tests
+     used a POSIX-style mocked path that a native `WindowsPath` parses
+     differently). Fixed by switching all three to explicit
+     `PureWindowsPath`/`PurePosixPath` (selected by `sys.platform`,
+     dropping the now-unnecessary `.resolve()`) -- genuinely more correct
+     and host-independent, not just a test workaround. Updated the 3
+     corresponding `test_frozen_on_windows_uses_the_exe_suffix` tests
+     (`test_handoff_bridge.py`, `test_handoff_webui.py`,
+     `test_validate_handoff.py`) to build their expected value the same
+     way instead of a hand-typed forward-slash literal, and the 2
+     `test_unfrozen_shells_out_to_sys_executable_and_the_script` tests'
+     `.endswith(...)` checks to use an OS-native separator.
+  2. `tests/test_handoff_webui.py::LiveServerTests`'s fixture files were
+     written with plain `write_text(...)` (default newline translation),
+     so on Windows they landed on disk as CRLF even though the test
+     asserted plain `\n` -- `read_file_preview()` itself is correct
+     (deliberately binary-mode, preserving real on-disk bytes for a file
+     browser); the fixture write needed `newline=""` to pin exact bytes
+     across hosts, not the production code.
+  3. `tests/test_handoff_bridge.py::RunProviderAutoFallbackBuildPromptCountTests.setUp()`
+     registered `addCleanup(os.chdir, orig)` *before*
+     `addCleanup(tmp.cleanup)` -- LIFO order made `tmp.cleanup()` run
+     first, deleting a directory that was still the process's cwd.
+     Allowed on POSIX (invisible until now), a hard `PermissionError` on
+     Windows. Fixed by swapping the registration order.
+- **Verified**: reproduced the instruction-type bug directly before the
+  fix (bad value: exit 0, garbage written) and the fix after (bad value:
+  exit 2, clear error, nothing written; all 5 valid values: exit 0). New
+  `tests/test_handoff_bridge.py::InstructionTypeArgparseTests` (3 tests).
+  Full suite run directly on Windows via the real local Python 3.12.10
+  install (`C:\Users\Admin\AppData\Local\Programs\Python\Python312`) and
+  real Git (`C:\Program Files\Git`) -- neither is on this machine's
+  default PATH; `python`/`git` resolve correctly through Git Bash, used
+  for every command this session. `python -m unittest discover -s
+  tests`: 417 tests, 0 failures, 0 errors, 35 skipped (all legitimately
+  platform-gated: POSIX-shell-only fake-provider integration tests,
+  symlink tests, POSIX-permission tests -- none newly skipped by this
+  session's changes). Repeated 5x back-to-back with no flakiness (the
+  fresh-clone anomaly note above means any earlier "the concurrency test
+  is flaky" observation from this conversation's history is unverified
+  against this real repo and should not be trusted either way).
+  `python handoff_bridge.py check` -- PASS (tests + secret scan +
+  failure-classification-sync all green). `python scripts/scan_secrets.py`
+  -- clean. `python -m py_compile` clean on all 8 changed files.
+- **Remaining**: this was a targeted CLI-input audit plus whatever the
+  Windows-verification pass itself surfaced, not an exhaustive
+  input-validation or Windows-portability sweep. Specifically NOT done
+  this session (would need a fresh, explicit ask, given the earlier
+  conversation's self-report about this work turned out to be
+  unreliable): a `scripts/dev_shell.ps1`-style PATH-setup convenience
+  script for this machine; making the 35 currently-skipped POSIX-shell
+  tests runnable on Windows (would need a real cross-platform fake-
+  provider-script harness, a nontrivial addition); `docs/platform-setup.md`
+  updates for the Windows dev-test path. Still on branch
+  `fix/instruction-type-validation`, uncommitted -- no commit/PR
+  requested this session.
+- **Blocked**: none.
+
+**2026-08-12, same session, follow-up**: user asked (still in Korean,
+after the above): "cli키 저장시에 자동 검증 해줘 키를 읽는것이 아닌 그
+키값으로 관련된 에이전트를 호출하여 최소한의 확인 답변을 받을 수 있도록
+해줘" (auto-validate on CLI-key save — not by reading the key, but by
+calling the related agent/API with that key to get at least a minimal
+confirmation reply). Scoped this to the API-key-mode connection panel
+(`webui/index.html`'s Diagnose panel, `POST /api/provider-key`,
+`handoff_webui.py`), the only "save a CLI key" surface in this project.
+- **Changed**: `POST /api/provider-key` previously wrote any non-empty
+  `key` string to `credentials.json` unconditionally, trusting its shape
+  alone — a typo'd or revoked key was only discovered the next time the
+  user actually tried to chat. New `validate_provider_api_key(provider,
+  api_key, model)` in `handoff_webui.py`: one real, minimal, tool-free
+  HTTP call to the provider's own API (Anthropic Messages / OpenAI
+  Responses, deliberately no `tools`/`tool_choice` in the request body at
+  all, small `API_KEY_VALIDATION_MAX_TOKENS = 16`) asking for a one-word
+  reply — same `{"ok": True, "text": ...}` / `{"ok": False, "message":
+  ...}` contract as `call_anthropic_messages_api()`/
+  `call_openai_responses_api()` (message never contains the key, same
+  invariant) but skips their tool-use turn loop entirely: no workspace,
+  no reason to grant tool access just to check a key. The endpoint now
+  calls this before `save_credential()` ever runs for a non-empty key; a
+  failure (bad key, wrong model, network error) returns 400 with nothing
+  written. On success the response gains `verified: true` and
+  `confirmation: "<actual reply text>"`. This required making `model`
+  a hard requirement whenever a non-empty key is saved (400 otherwise) —
+  `API_KEY_MODE_DEFAULT_MODELS` is deliberately empty for both providers
+  (DEC-13), so there was never a model to validate *or* actually chat
+  with without one anyway; this closes that gap at save time instead of
+  leaving it to surface later as a chat-log error. Key removal (empty
+  `key`) skips validation entirely, unchanged. `webui/app.js`'s save
+  handler now shows the real confirmation text in its success toast
+  instead of an unconditional "저장되었습니다." Docs updated:
+  `docs/webui-chat-storage.md`'s "Credentials & API-Key Mode" section
+  (new paragraph + `model` field note), `docs/provider-extensibility.md`
+  (new changelog bullet), `docs/release-notes.md`'s `## Unreleased`.
+- **Verified**: new `ValidateProviderApiKeyTests` (5 tests: Claude
+  success, Codex success, invalid-key error message never echoes the
+  key, network error doesn't raise, empty reply still counts as ok; two
+  of these also assert no `tools`/`tool_choice` is ever sent). Updated
+  `ProviderApiLiveServerTests` (real `ThreadingHTTPServer`, `_http_post_json`
+  mocked at the same seam `CallProviderApiTests` already uses) — fixed 3
+  tests broken by the new validation call, added 2 new ones (key without
+  model → 400 + not saved; key that fails validation → 400 + not saved).
+  Full suite: `python -m unittest discover -s tests` → 424 tests (417 +
+  7 new), 0 failures, 0 errors, skipped=35 (unchanged). `python
+  handoff_bridge.py check` → PASS. `python scripts/scan_secrets.py` →
+  clean. `python -m py_compile` clean on both changed `.py` files.
+  `node --check webui/app.js` could not be run (no `node` on this
+  machine) — reviewed the diff by hand instead; kept small and
+  template-literal-only.
+- **Remaining**: not independently verified against a real Anthropic/
+  OpenAI account (no real API key available in this environment) — every
+  test here mocks `_http_post_json`, the same seam this project's
+  existing API-key-mode tests already rely on for the same reason (no
+  real credentials in CI or this dev environment either). Whoever next
+  has a real key should do one real save/verify round-trip through the
+  actual running app before treating this as fully proven end-to-end.
+- **Blocked**: none. Still on branch `fix/instruction-type-validation`,
+  uncommitted — no commit/PR requested this session.
+
+**2026-08-12, same session, follow-up 2**: user asked "업데이트 확인도
+추가 확인해줘" (also additionally verify/check the update-check feature)
+-- Phase 6's `check_for_update()`/`/api/update-check` badge. This
+project's entire prior verification history for this feature is
+macOS-based (per this file's Phase 6/CFL-18 entries); this machine
+confirmed earlier this session has no `gh` CLI installed at all, which
+made this a genuine, never-before-exercised real-environment case rather
+than a re-check of already-proven ground.
+- **What was verified (no code changes to the feature's own logic —
+  extensive existing review/tests already cover it, see Phase 6/CFL-18
+  entries above)**:
+  1. Direct call: `python -c "import handoff_bridge as hb;
+     print(hb.check_for_update())"` on this real, `gh`-less machine
+     returned `{'status': 'unavailable', 'current_version': '0.2.0'}` in
+     0.003s -- instant, no hang, no exception. Confirms `short_run()`'s
+     `FileNotFoundError` → exit-127 handling actually fires for a truly
+     absent binary, not just a mocked one.
+  2. Full end-to-end smoke test: started the real `handoff_webui.py`
+     server (`--no-browser`) against a scratch workspace, polled `GET
+     /api/update-check` twice a few seconds apart. Both real HTTP
+     responses: `{"checked": true, "status": "unavailable",
+     "current_version": "0.2.0"}` -- the background thread completed and
+     the read-order-safe handler served the real result, matching the
+     documented contract exactly. Server log had zero errors/warnings.
+  3. Read `webui/app.js`'s polling logic (`checkForUpdate()`/
+     `scheduleUpdateCheckRetry()`) end-to-end and manually traced the
+     `UPDATE_CHECK_MAX_POLLS` bound (attempt 0..9 = exactly 10 fetches,
+     confirming the earlier documented off-by-one fix still holds) --
+     no new issue found, matches the extensively-reviewed Phase 6 design.
+  4. Reviewed existing test coverage
+     (`tests/test_handoff_bridge.py::CheckForUpdateTests`,
+     `tests/test_handoff_webui.py::CheckForUpdateInBackgroundTests`/
+     `UpdateCheckLiveServerTests`, including a real-thread race test using
+     a `threading.Event`) -- thorough, no gaps in the status-classification
+     or race-condition logic itself.
+- **Changed (the one real, small gap this pass found)**: `short_run()`'s
+  own `FileNotFoundError` → exit-127 translation -- the exact mechanism
+  that makes "gh not installed" degrade gracefully -- had no direct unit
+  test; every existing test mocked `short_run` itself rather than
+  exercising this specific branch with a genuinely nonexistent command.
+  Added `ShortRunTimeoutTests::test_binary_not_found_returns_127_not_a_raised_exception`
+  (calls `short_run(["definitely-not-a-real-binary-xyz"])` for real, no
+  mocking) so this behavior — which this session just confirmed by hand
+  on a real `gh`-less machine — has a permanent regression test that
+  doesn't require a `gh`-less machine to re-verify in the future.
+- **Verified**: `python -m unittest discover -s tests` → 425 tests (424 +
+  1 new), 0 failures, skipped=35 (unchanged). `python handoff_bridge.py
+  check` → PASS. `python scripts/scan_secrets.py` → clean.
+- **Remaining**: none — this was a verification pass, not a feature
+  change; the one gap found (missing direct `short_run()` test) is fixed.
+  The "genuinely available update" (`status: "available"`) response path
+  is well-covered by mocked tests but was not re-confirmed against a real
+  newer GitHub release in this pass (would require `gh` installed and
+  authenticated, plus a real newer tag existing — neither available in
+  this environment).
+- **Blocked**: none. Still on branch `fix/instruction-type-validation`,
+  uncommitted — no commit/PR requested this session.

@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- API-key mode: `POST /api/provider-key` now verifies a key with a real,
+  minimal, tool-free call to the provider's own API before ever saving
+  it — a bad key, wrong model name, or network failure returns a 400
+  with nothing written, instead of silently saving an unchecked string.
+  `model` is now a hard requirement whenever a non-empty key is saved
+  (no built-in default exists for either provider, and the verification
+  call needs one). The connection panel's success toast now shows the
+  actual confirmation reply. See `docs/webui-chat-storage.md`'s
+  "Credentials & API-Key Mode" section.
+
 ## v0.2.0 — 2026-08-06
 
 - Web UI MVP:

@@ -42,6 +42,14 @@ python3 handoff_bridge.py --workspace /path/to/project init \
 
 Creates `.handoff/current.md` and `.handoff/state.json` for a new task.
 
+`--instruction-type` (on both `init` and `run`, below) accepts one of
+`new-task`, `continue`, `handoff`, `review`, `verify` -- enforced by
+argparse `choices` (`handoff_desktop.py`'s GUI restricts the same field to
+this exact set via a readonly dropdown; both import the same
+`handoff_bridge.INSTRUCTION_TYPES` constant). Any other value is rejected
+with a clear CLI error before anything is written, rather than being
+silently accepted into the shared `.handoff/current.md` state.
+
 ### Preview A Run
 
 ```bash

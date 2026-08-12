@@ -249,7 +249,22 @@ one set of saved keys applies regardless of which workspace is open:
 | Field | Type | Notes |
 |---|---|---|
 | `key` | string | the raw API key, as pasted into the connection panel (SCR-06/`components.html` §14) |
-| `model` | string \| null | **required** in practice — `API_KEY_MODE_DEFAULT_MODELS` (`handoff_webui.py`) is deliberately empty for both providers (a hardcoded Claude default existed briefly but was removed: no externally-citable, dated source could back a specific model ID, and a wrong one would silently break every CLI-less Claude user). Without a saved `model`, `run_provider_via_api_key()` returns a clear "model not configured" chat-log error instead of guessing (see [DEC-13](design-system/flutter-mapping.html#s1c)) |
+| `model` | string \| null | **required**, enforced by `POST /api/provider-key` itself (not just "in practice" as before) — `API_KEY_MODE_DEFAULT_MODELS` (`handoff_webui.py`) is deliberately empty for both providers (a hardcoded Claude default existed briefly but was removed: no externally-citable, dated source could back a specific model ID, and a wrong one would silently break every CLI-less Claude user), and `validate_provider_api_key()` (below) has no model to make its verification call with. Without a saved `model`, `run_provider_via_api_key()` returns a clear "model not configured" chat-log error instead of guessing (see [DEC-13](design-system/flutter-mapping.html#s1c)) |
+
+**Saved keys are verified, not just accepted.** `POST /api/provider-key`
+previously wrote any non-empty `key` string to disk unconditionally — a
+typo or revoked key was only ever discovered the next time the user
+actually tried to chat. It now calls `validate_provider_api_key(provider,
+key, model)` first: one real, minimal, tool-free HTTP call to the
+provider's own API (Anthropic Messages / OpenAI Responses, no `tools` in
+the request body at all — no workspace, so no tool access is granted just
+to check a key) asking for a one-word reply. Only on a real `200` does
+`save_credential()` ever run; a failure (bad key, wrong model name,
+network error) is returned as a `400` and nothing is written. On success
+the response carries `verified: true` and `confirmation: "<the actual
+reply text>"`, which the connection panel now shows in its success toast
+instead of an unconditional "저장되었습니다." A key removal (empty `key`)
+skips validation entirely — there is nothing to verify when disconnecting.
 
 **Never in git**: same posture as the chat log, but stronger — this file
 lives entirely outside any workspace, so it is never even reachable by
@@ -262,14 +277,15 @@ must not break the save the user just triggered).
 
 **Never logged or echoed**: the raw key value necessarily flows through
 `save_credential()`/`read_credentials()` and on into
-`run_provider_via_api_key()`/`call_anthropic_messages_api()`/
-`call_openai_responses_api()`/`_http_post_json()` to actually send it — but
-every function that builds a chat-log-visible error string
-(`call_anthropic_messages_api()`, `call_openai_responses_api()`,
+`validate_provider_api_key()`/`run_provider_via_api_key()`/
+`call_anthropic_messages_api()`/`call_openai_responses_api()`/
+`_http_post_json()` to actually send it — but every function that builds a
+user-visible error string (`validate_provider_api_key()`,
+`call_anthropic_messages_api()`, `call_openai_responses_api()`,
 `_api_key_mode_error_record()`) constructs its message only from the HTTP
 response body or exception text. The key itself is never interpolated into
 anything that could end up in `.handoff/webui/chat/*.jsonl`, the history
-drawer, or a toast.
+drawer, a `POST /api/provider-key` error response, or a toast.
 
 One exception text is deliberately **not** forwarded: `http.client` raises
 a bare `ValueError` (not `HTTPError`/`URLError`) if a header value

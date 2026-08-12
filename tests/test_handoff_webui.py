@@ -25,7 +25,7 @@ import urllib.request
 from unittest import mock
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -109,18 +109,17 @@ class BridgeCommandPrefixTests(unittest.TestCase):
         )
 
     def test_frozen_on_windows_uses_the_exe_suffix(self):
-        # Deliberately POSIX-style (forward slashes), not a real Windows
-        # path -- pathlib.Path is platform-native, so a backslash path
-        # mocked in on a POSIX test runner would not split into
-        # components the way it does on real Windows (Path("C:\\a\\b")
-        # is one opaque POSIX filename, not a 3-part path); this only
-        # needs to prove the ".exe" suffix is added when sys.platform is
-        # "win32", not exercise real Windows path parsing.
+        # bridge_command_prefix() builds this via PureWindowsPath (not the
+        # host-native Path) when sys.platform is "win32", so the result is
+        # genuinely backslash-style regardless of which OS runs this test --
+        # expected value constructed the same way rather than hand-typed, so
+        # it can't drift from what PureWindowsPath actually produces.
         with mock.patch.object(webui.sys, "frozen", True, create=True), mock.patch.object(
             webui.sys, "executable", "/apps/agent-handoff-bridge/agent-handoff-bridge-server.exe"
         ), mock.patch.object(webui.sys, "platform", "win32"):
             prefix = webui.bridge_command_prefix()
-        self.assertEqual(prefix, ["/apps/agent-handoff-bridge/agent-handoff-bridge-cli.exe"])
+        expected = PureWindowsPath("/apps/agent-handoff-bridge") / "agent-handoff-bridge-cli.exe"
+        self.assertEqual(prefix, [str(expected)])
 
 
 class SafeJoinTests(unittest.TestCase):
@@ -245,9 +244,14 @@ class LiveServerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         root = Path(cls.tmp.name)
-        (root / "README.md").write_text("# hello\n", encoding="utf-8")
+        # newline="": read_file_preview() reads in binary mode (preserving
+        # the file's real on-disk bytes, by design -- see its own
+        # docstring), so the fixture must pin exact bytes too; the default
+        # write_text() newline translation would otherwise write "\r\n" on
+        # Windows and desync from what this test asserts.
+        (root / "README.md").write_text("# hello\n", encoding="utf-8", newline="")
         (root / "src").mkdir()
-        (root / "src" / "app.py").write_text("print(1)\n", encoding="utf-8")
+        (root / "src" / "app.py").write_text("print(1)\n", encoding="utf-8", newline="")
 
         cls.state = webui.AppState(root)
         handler = webui.build_handler(cls.state)
@@ -2301,6 +2305,62 @@ class CallProviderApiTests(unittest.TestCase):
         self.assertNotIn("sk-super-secret-value", result["message"])
 
 
+class ValidateProviderApiKeyTests(unittest.TestCase):
+    """validate_provider_api_key() -- the real, minimal call POST
+    /api/provider-key now makes before ever saving a non-empty key. Unlike
+    call_anthropic_messages_api()/call_openai_responses_api(), this never
+    runs the tool-use loop -- it has no workspace and no reason to grant
+    tool access just to check a key."""
+
+    def test_claude_success_returns_the_reply_text(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(200, {"content": [{"type": "text", "text": "ok"}]}),
+        ) as spy:
+            result = webui.validate_provider_api_key("claude", "sk-secret", "claude-sonnet-5")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "ok")
+        # No tools/tool_choice at all -- a validation ping must never grant
+        # tool access, unlike a real chat turn.
+        sent_body = spy.call_args.args[2]
+        self.assertNotIn("tools", sent_body)
+        self.assertNotIn("tool_choice", sent_body)
+        self.assertEqual(sent_body["max_tokens"], webui.API_KEY_VALIDATION_MAX_TOKENS)
+
+    def test_codex_success_returns_the_reply_text(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(200, {"output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}]}),
+        ) as spy:
+            result = webui.validate_provider_api_key("codex", "sk-secret", "gpt-5.1-codex")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "ok")
+        sent_body = spy.call_args.args[2]
+        self.assertNotIn("tools", sent_body)
+
+    def test_invalid_key_is_reported_and_never_echoes_the_key(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(401, {"error": {"type": "authentication_error", "message": "invalid x-api-key"}}),
+        ):
+            result = webui.validate_provider_api_key("claude", "sk-super-secret-value", "claude-sonnet-5")
+        self.assertFalse(result["ok"])
+        self.assertIn("authentication_error", result["message"])
+        self.assertNotIn("sk-super-secret-value", result["message"])
+
+    def test_network_error_does_not_raise(self):
+        with mock.patch("handoff_webui._http_post_json", side_effect=urllib.error.URLError("boom")):
+            result = webui.validate_provider_api_key("claude", "sk-secret", "claude-sonnet-5")
+        self.assertFalse(result["ok"])
+        self.assertIn("network error", result["message"])
+
+    def test_empty_reply_still_counts_as_ok(self):
+        with mock.patch("handoff_webui._http_post_json", return_value=(200, {"content": []})):
+            result = webui.validate_provider_api_key("claude", "sk-secret", "claude-sonnet-5")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "(empty response)")
+
+
 class ToolCallTranscriptTests(unittest.TestCase):
     """_escape_fence()/_tool_call_transcript_block() -- the fenced-
     code-block audit trail DEC-21 relies on for post-hoc visibility in
@@ -2981,21 +3041,41 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         self.assertTrue(by_name["claude"]["api_key_mode_supported"])
         self.assertFalse(by_name["gemini"]["api_key_mode_supported"])
 
+    def _mock_valid_key_response(self):
+        # POST /api/provider-key now calls validate_provider_api_key()
+        # (a real HTTP call) before saving any non-empty key -- mocked
+        # here at the same _http_post_json seam CallProviderApiTests
+        # already uses, so these HTTP-server tests never hit the network.
+        return mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(200, {"content": [{"type": "text", "text": "ok"}]}),
+        )
+
     def test_saving_a_key_never_echoes_it_back(self):
-        status, data = self._post("/api/provider-key", {"provider": "claude", "key": "sk-secret-value", "model": "claude-sonnet-5"})
+        with self._mock_valid_key_response():
+            status, data = self._post(
+                "/api/provider-key", {"provider": "claude", "key": "sk-secret-value", "model": "claude-sonnet-5"}
+            )
         self.assertEqual(status, 200)
         self.assertNotIn("key", data)
-        self.assertEqual(data, {"provider": "claude", "api_key_configured": True, "model": "claude-sonnet-5"})
+        self.assertEqual(
+            data,
+            {"provider": "claude", "api_key_configured": True, "model": "claude-sonnet-5", "verified": True, "confirmation": "ok"},
+        )
 
     def test_saved_key_is_reflected_in_the_providers_list(self):
-        self._post("/api/provider-key", {"provider": "claude", "key": "sk-secret-value", "model": "claude-sonnet-5"})
+        with self._mock_valid_key_response():
+            self._post("/api/provider-key", {"provider": "claude", "key": "sk-secret-value", "model": "claude-sonnet-5"})
         _, data = self._get("/api/providers")
         claude = next(p for p in data["providers"] if p["provider"] == "claude")
         self.assertTrue(claude["api_key_configured"])
         self.assertEqual(claude["model"], "claude-sonnet-5")
 
     def test_empty_key_removes_a_previously_saved_one(self):
-        self._post("/api/provider-key", {"provider": "claude", "key": "sk-secret-value"})
+        with self._mock_valid_key_response():
+            self._post("/api/provider-key", {"provider": "claude", "key": "sk-secret-value", "model": "claude-sonnet-5"})
+        # Removal (empty key) skips validation entirely -- no mock needed
+        # for this second call, and none is active here.
         status, data = self._post("/api/provider-key", {"provider": "claude", "key": ""})
         self.assertEqual(status, 200)
         self.assertFalse(data["api_key_configured"])
@@ -3017,6 +3097,35 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("error", data)
 
+    def test_a_key_without_a_model_is_rejected_with_400_and_not_saved(self):
+        # A non-empty key has nothing to validate against without a
+        # model, and no built-in default exists for either provider
+        # (API_KEY_MODE_DEFAULT_MODELS is deliberately empty) -- so this
+        # must fail loudly instead of silently saving an unusable
+        # credential, exactly the "no key stored on the strength of an
+        # unchecked string alone" gap this whole feature closes.
+        status, data = self._post("/api/provider-key", {"provider": "claude", "key": "sk-x"})
+        self.assertEqual(status, 400)
+        self.assertIn("model", data["error"])
+        _, providers = self._get("/api/providers")
+        claude = next(p for p in providers["providers"] if p["provider"] == "claude")
+        self.assertFalse(claude["api_key_configured"])
+
+    def test_a_key_that_fails_validation_is_rejected_with_400_and_not_saved(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(401, {"error": {"type": "authentication_error", "message": "invalid x-api-key"}}),
+        ):
+            status, data = self._post(
+                "/api/provider-key", {"provider": "claude", "key": "sk-wrong-value", "model": "claude-sonnet-5"}
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("authentication_error", data["error"])
+        self.assertNotIn("sk-wrong-value", data["error"])
+        _, providers = self._get("/api/providers")
+        claude = next(p for p in providers["providers"] if p["provider"] == "claude")
+        self.assertFalse(claude["api_key_configured"])
+
     def test_a_write_failure_is_a_clean_400_not_a_crashed_request(self):
         # save_credential() doesn't catch OSError itself -- unlike
         # touch_registry() (best-effort, logged not raised), the write
@@ -3027,7 +3136,10 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         # JSON reply at all.
         self.base_dir.parent.mkdir(parents=True, exist_ok=True)
         self.base_dir.write_text("a file, not a directory", encoding="utf-8")
-        status, data = self._post("/api/provider-key", {"provider": "claude", "key": "sk-x"})
+        with self._mock_valid_key_response():
+            status, data = self._post(
+                "/api/provider-key", {"provider": "claude", "key": "sk-x", "model": "claude-sonnet-5"}
+            )
         self.assertEqual(status, 400)
         self.assertIn("error", data)
 

@@ -343,8 +343,13 @@
       }
       const model = modelInput.value.trim();
       try {
-        await postJSON("/api/provider-key", { provider: info.provider, key, model });
-        showToast(`${PROVIDER_LABEL[info.provider]} API 키가 저장되었습니다.`);
+        const result = await postJSON("/api/provider-key", { provider: info.provider, key, model });
+        // Server now makes a real, minimal call with the key before ever
+        // saving it (result.verified/result.confirmation) -- surface that
+        // actual reply, not just "저장됨", so the user sees real proof the
+        // key works rather than an unconditional success message.
+        const suffix = result.verified ? ` (확인 응답: "${result.confirmation}")` : "";
+        showToast(`${PROVIDER_LABEL[info.provider]} API 키가 확인되어 저장되었습니다.${suffix}`);
         await refreshProviderPanel();
       } catch (err) {
         showToast(`저장 실패: ${err.message}`);
