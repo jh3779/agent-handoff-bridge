@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.3.0 — 2026-08-14
+
 - `handoff_bridge.py`'s `--instruction-type` (on both `init` and `run`)
   now rejects any value outside `new-task`/`continue`/`handoff`/`review`/
   `verify` instead of silently accepting and persisting arbitrary text
