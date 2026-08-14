@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -270,6 +270,45 @@ class VersionTests(unittest.TestCase):
         self.assertIn(hb.BRIDGE_VERSION, result.stdout)
 
 
+class InstructionTypeArgparseTests(unittest.TestCase):
+    """Regression coverage: `--instruction-type` previously had no
+    `choices=` restriction on either subcommand, so an arbitrary/typo'd
+    value was silently accepted and written straight into the shared
+    .handoff/current.md/state.json -- `--primary`/`provider` were already
+    correctly validated this way; `--instruction-type` was the one gap."""
+
+    def _run_cli(self, *args: str, workspace: Path) -> subprocess.CompletedProcess:
+        bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
+        return subprocess.run(
+            [sys.executable, str(bridge_script), "--workspace", str(workspace), *args],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def test_init_rejects_an_unrecognized_instruction_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_cli("init", "a task", "--instruction-type", "totally-bogus", workspace=Path(tmp))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("invalid choice", result.stderr)
+            self.assertFalse((Path(tmp) / ".handoff" / "current.md").exists())
+
+    def test_init_accepts_every_documented_instruction_type(self):
+        for instruction_type in hb.INSTRUCTION_TYPES:
+            with tempfile.TemporaryDirectory() as tmp:
+                result = self._run_cli("init", "a task", "--instruction-type", instruction_type, workspace=Path(tmp))
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_run_preview_rejects_an_unrecognized_instruction_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            init_result = self._run_cli("init", "a task", workspace=workspace)
+            self.assertEqual(init_result.returncode, 0, msg=init_result.stderr)
+            result = self._run_cli("run", "codex", "--instruction-type", "totally-bogus", workspace=workspace)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("invalid choice", result.stderr)
+
+
 class CheckCommandTests(unittest.TestCase):
     """check()'s subprocess command construction -- Phase 7a (DEC-22):
     when frozen (PyInstaller, as the Tauri sidecar
@@ -286,7 +325,7 @@ class CheckCommandTests(unittest.TestCase):
             hb.check(mock.Mock())
         command = run_spy.call_args.args[0]
         self.assertEqual(command[0], hb.sys.executable)
-        self.assertTrue(command[1].endswith("scripts/validate_handoff.py"))
+        self.assertTrue(command[1].endswith(str(Path("scripts") / "validate_handoff.py")))
 
     def test_frozen_uses_a_sibling_validate_sidecar_next_to_sys_executable(self):
         with mock.patch.object(hb.sys, "frozen", True, create=True), mock.patch.object(
@@ -298,13 +337,19 @@ class CheckCommandTests(unittest.TestCase):
         self.assertEqual(command[0], "/Applications/Agent Handoff Bridge.app/Contents/MacOS/agent-handoff-bridge-validate")
 
     def test_frozen_on_windows_uses_the_exe_suffix(self):
+        # check() now builds this via PureWindowsPath (not the host-native
+        # Path) when sys.platform is "win32", so the result is genuinely
+        # backslash-style regardless of which OS runs this test -- expected
+        # value constructed the same way rather than hand-typed, so it can't
+        # drift from what PureWindowsPath actually produces.
         with mock.patch.object(hb.sys, "frozen", True, create=True), mock.patch.object(
             hb.sys, "executable", "/apps/agent-handoff-bridge/agent-handoff-bridge-cli.exe"
         ), mock.patch.object(hb.sys, "platform", "win32"), mock.patch("handoff_bridge.subprocess.run") as run_spy:
             run_spy.return_value = subprocess.CompletedProcess(args=[], returncode=0)
             hb.check(mock.Mock())
         command = run_spy.call_args.args[0]
-        self.assertEqual(command[0], "/apps/agent-handoff-bridge/agent-handoff-bridge-validate.exe")
+        expected = PureWindowsPath("/apps/agent-handoff-bridge") / "agent-handoff-bridge-validate.exe"
+        self.assertEqual(command[0], str(expected))
 
 
 class WriteLockTests(unittest.TestCase):
@@ -387,6 +432,33 @@ class ShortRunTimeoutTests(unittest.TestCase):
         self.assertEqual(exit_code, 124)
         self.assertEqual(stdout, "")
         self.assertEqual(stderr, "timed out")
+
+    def test_binary_not_found_returns_127_not_a_raised_exception(self):
+        # check_for_update()'s CheckForUpdateTests only ever mock short_run
+        # itself, so this is the one place the actual FileNotFoundError ->
+        # exit 127 translation this whole "gh missing" fallback chain
+        # depends on gets exercised directly, with a real, genuinely
+        # nonexistent command (not a mocked subprocess.run) -- confirmed
+        # for real on a Windows dev machine with no `gh` installed at all
+        # (2026-08-12): check_for_update() returned "unavailable" instantly
+        # rather than raising or hanging, exactly because of this path.
+        exit_code, stdout, stderr = hb.short_run(["definitely-not-a-real-binary-xyz"])
+        self.assertEqual(exit_code, 127)
+        self.assertEqual(stdout, "")
+        self.assertIn("not found", stderr)
+
+    def test_pins_utf8_encoding_not_the_locale_default(self):
+        # Regression coverage for a real crash (2026-08-14): without an
+        # explicit encoding, subprocess.run() falls back to
+        # locale.getpreferredencoding() -- cp949, not UTF-8, on a
+        # Korean-locale Windows machine -- to decode a git/gh call's
+        # stdout/stderr, which can easily contain non-ASCII characters.
+        with mock.patch.object(
+            hb.subprocess, "run", return_value=subprocess.CompletedProcess(["fake"], returncode=0, stdout="", stderr="")
+        ) as run_spy:
+            hb.short_run(["fake"])
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
 
 
 class RunProviderTimeoutIntegrationTests(unittest.TestCase):
@@ -554,8 +626,13 @@ class RunProviderAutoFallbackBuildPromptCountTests(unittest.TestCase):
         self._orig_cwd = os.getcwd()
         self._tmp = tempfile.TemporaryDirectory()
         os.chdir(self._tmp.name)
-        self.addCleanup(os.chdir, self._orig_cwd)
+        # addCleanup runs LIFO: chdir back to _orig_cwd must be registered
+        # *after* (so it runs *before*) _tmp.cleanup() -- deleting a
+        # directory while it's still the process's cwd raises
+        # PermissionError on Windows (allowed on POSIX, which is why this
+        # was invisible until the suite first ran on Windows).
         self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
 
     def test_auto_fallback_calls_build_prompt_at_most_once_per_hop(self):
         def fake_subprocess_run(command, **kwargs):
@@ -604,6 +681,79 @@ class RunProviderAutoFallbackBuildPromptCountTests(unittest.TestCase):
             2,
             msg="build_prompt() must run at most once per fallback hop, not twice for the same fallback",
         )
+
+
+class RunProviderSubprocessEncodingTests(unittest.TestCase):
+    """Regression coverage for a real crash (2026-08-14): run_provider()'s
+    subprocess.run() call had no explicit `encoding`, so Python fell back
+    to locale.getpreferredencoding() to encode `input=prompt` for the
+    provider's stdin -- cp949 on a Korean-locale Windows machine, not
+    UTF-8. `prompt` folds in this project's own docs
+    (docs/shared-agent-contract.md, docs/verification-playbook.md), which
+    contain literal em dashes -- cp949 can't encode U+2014, so a plain
+    "테스트" prompt still crashed with UnicodeEncodeError before this
+    fix, reproduced directly on a real cp949-locale Windows machine (not
+    just inferred): even the simplest possible run crashed, because the
+    offending character came from the *folded-in doc content*, not the
+    user's own text."""
+
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
+
+    def test_provider_subprocess_call_pins_utf8_encoding(self):
+        args = hb.argparse.Namespace(
+            prompt="hello",
+            prompt_file=None,
+            execute=True,
+            auto_fallback=False,
+            timeout_seconds=30,
+            model=None,
+            instruction_type="continue",
+        )
+        state = {"task": "hello", "primary_provider": "codex", "status": "ready"}
+        stdout = (
+            '{"type": "system", "subtype": "init", "session_id": "s"}\n'
+            '{"type": "result", "session_id": "s", "result": "ok", '
+            '"total_cost_usd": 0.0, "is_error": false}\n'
+        )
+        with mock.patch.object(
+            hb.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(["codex"], returncode=0, stdout=stdout, stderr=""),
+        ) as run_spy:
+            hb.run_provider("codex", args, state)
+        provider_call = next(call for call in run_spy.call_args_list if call.args[0][0] == "codex")
+        self.assertEqual(provider_call.kwargs["encoding"], "utf-8")
+        self.assertEqual(provider_call.kwargs["errors"], "replace")
+
+    def test_a_prompt_containing_an_em_dash_does_not_raise_on_a_real_subprocess_call(self):
+        # Not mocked: a real subprocess.run() with a real child process
+        # (`cmd /c more` on Windows, `cat` on POSIX) reading real stdin --
+        # the exact boundary that crashed. This em dash is standing in for
+        # the ones already present in docs/shared-agent-contract.md and
+        # docs/verification-playbook.md, which build_prompt() always
+        # folds into every real prompt regardless of user input.
+        command = ["cmd", "/c", "more"] if os.name == "nt" else ["cat"]
+        args = hb.argparse.Namespace(
+            prompt="hello — world",
+            prompt_file=None,
+            execute=True,
+            auto_fallback=False,
+            timeout_seconds=15,
+            model=None,
+            instruction_type="continue",
+        )
+        state = {"task": "hello", "primary_provider": "codex", "status": "ready"}
+        with mock.patch.object(hb, "provider_command", return_value=command):
+            exit_code = hb.run_provider("codex", args, state)
+        # A crash here would surface as an uncaught UnicodeEncodeError
+        # propagating out of run_provider() -- reaching this assertion at
+        # all is the actual regression check.
+        self.assertIsInstance(exit_code, int)
 
 
 class NextProviderTests(unittest.TestCase):

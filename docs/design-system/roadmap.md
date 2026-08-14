@@ -339,14 +339,25 @@ List에서 제거됨.
   감지 자체는 기존 `PROVIDERS` 순회 루프가 자동으로 커버.
 - `handoff_webui.py`: `API_KEY_MODE_PROVIDERS = ("codex", "claude")`를
   기존 `PROVIDERS`와 별도로 신설 — Phase 4의 API 키 모드가 Gemini로
-  자동 확장되지 않도록(DEC-15는 여전히 codex/claude만 대상). `/api/run`은
+  자동 확장되지 않도록(DEC-15는 여전히 codex/claude만 대상, "Gemini도
+  지원할지"는 별개의 열린 질문으로 명시). `/api/run`은
   `PROVIDERS` 전체를 인식하도록 검증 완화, `/api/providers`는 Gemini의
   CLI 감지 배지는 보여주되(SCR-06이 원래 "미확인"으로 뒀던 자리가 이제
   실제 값으로 채워짐) 키 입력 UI는 노출하지 않음
-  (`api_key_mode_supported` 플래그).
+  (`api_key_mode_supported` 플래그). **(이후 DEC-25로 뒤집힘 — 아래
+  참고.)**
 - `webui/index.html`/`app.js`: provider-select에 `gemini` 옵션 추가,
   연결 패널이 `api_key_mode_supported`를 확인해 Gemini에는 키 필드를
-  숨김.
+  숨김. **(이후 DEC-25로 뒤집힘 — 아래 참고.)**
+
+**DEC-25 후속 (API 키 모드 대상 확장)**: DEC-15가 열어뒀던 질문이
+나중에 해소됨 — `API_KEY_MODE_PROVIDERS`가 `("codex", "claude",
+"gemini")`로 확장되어 Gemini도 API 키 모드를 지원. 새
+`call_gemini_api()`가 다른 두 provider와 동일한 계약으로 구현. 자세한
+내용은
+[flutter-mapping.html DEC-25](flutter-mapping.html#s1c)와
+[provider-extensibility.md](../provider-extensibility.md)의 "Adding An
+API-Key-Based Provider" 절 참고.
 
 **검증**: `next_provider()`(순서·랩어라운드·tried 스킵), `provider_command()`
 gemini 분기, `summarize_gemini()`(성공·에러·malformed 입력), 가짜 `gemini`

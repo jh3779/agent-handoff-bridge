@@ -103,6 +103,57 @@ API" path — it exists, but doesn't fit this project's shape:
   continuation is the same "client resends prior turns/response ID" shape
   as Anthropic's Messages API, not a persistent server-side session file.
 
+## Gemini: generateContent API (DEC-25 follow-up, added after Phase 4)
+
+Researched later than the Anthropic/OpenAI sections above -- DEC-15
+originally scoped API-key mode to Codex/Claude only and left "should
+Gemini get it too" as an explicitly open, separate question. DEC-25
+resolves it: yes, via the same real-docs-first discipline as the other
+two.
+
+- REST endpoint: `POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent`
+  (bare model ID, e.g. `gemini-2.5-flash`, no `models/` prefix in
+  `{model}` itself -- it's already part of the path template).
+- Auth: the `x-goog-api-key` header, not the alternative `?key=`
+  query-string form the same docs also document -- this project uses the
+  header for consistency with Anthropic (`x-api-key`) and OpenAI
+  (`Authorization: Bearer`), and to avoid ever putting the secret in a
+  URL a proxy or log line could capture.
+- Request body: `contents[]` (`Content` objects: `{"role": "user"|"model",
+  "parts": [...]}` -- **not** the `{"role", "content": "..."}` shape
+  Anthropic/OpenAI's Responses API both accept, so
+  `build_api_message_history()`'s shared output needs translating, not
+  reusing directly), optional `tools[]`/`generationConfig`/
+  `systemInstruction`/`safetySettings`.
+- Function calling: `tools[]` holds Tool objects, each with a
+  `functionDeclarations[]` array (this project puts every tool in one
+  Tool object, not one Tool per function -- matches the documented
+  example shape). A model turn's function call appears as a
+  `functionCall` part (`{"name", "args"}`, plus an `"id"` field --
+  confirmed as *always* present for Gemini 3 models, implied optional on
+  earlier ones). The result is sent back as a `functionResponse` part in
+  a `Content` with **`role: "user"`** (not `"function"` -- some
+  secondary sources suggested a `"function"` role exists, but the
+  official function-calling walkthrough's own literal example request
+  body uses `"user"`, which this project followed): `{"functionResponse":
+  {"name", "response": {...}, "id": "..."}}`, where `response` must
+  itself be a JSON *object* (unlike Anthropic's/OpenAI's plain-string
+  tool-result shapes) -- `call_gemini_api()` wraps the shared
+  `execute_tool_call()`'s plain-text return as `{"result": <text>}` to
+  satisfy this without changing that shared, provider-agnostic executor
+  contract.
+- Response body: `candidates[]` (each with a `content.parts[]`, same
+  shape as a request `Content`), `promptFeedback.blockReason` when a
+  prompt is blocked instead of any candidate ever being produced,
+  `usageMetadata` for token counts. Error responses use `error.status`
+  (a string enum like `INVALID_ARGUMENT`/`PERMISSION_DENIED`), not
+  `error.type` the way Anthropic/OpenAI's error shapes do.
+- Did not find (and did not need) a Gemini equivalent of a resumable
+  server-side session for this path -- same "client resends prior turns"
+  shape as the other two, consistent with `docs/research-gemini-cli.md`'s
+  separate finding that the *CLI*'s own JSON output has no real session
+  ID either (DEC-17).
+
 ## Credential Storage (stdlib-only constraint)
 
 No option here needs a new pip dependency; this project already treats
@@ -190,3 +241,15 @@ scoping the decision:
 - OpenAI: [Function calling](https://developers.openai.com/api/docs/guides/function-calling)
   -- `tools[].type="function"`/`parameters`/`strict`, `function_call`
   output items, `function_call_output` input items.
+
+### DEC-25 follow-up (Gemini added to API-key mode)
+
+- Google: [Generating content](https://ai.google.dev/api/generate-content)
+  -- `generateContent` REST endpoint, auth (`x-goog-api-key` header vs.
+  `?key=` query param), `Content`/`Part` shapes, `generationConfig`,
+  error response shape (`error.status`).
+- Google: [Function calling with the Gemini API](https://ai.google.dev/gemini-api/docs/generate-content/function-calling)
+  -- the literal example request/response bodies this project's
+  `functionCall`/`functionResponse` handling in `call_gemini_api()` was
+  built against, including the confirmed `role: "user"` for a
+  `functionResponse` turn and the `id`-echoing requirement.

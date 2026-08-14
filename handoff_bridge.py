@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -68,6 +68,15 @@ HANDOFF_LABELS = (
 )
 
 PROVIDERS = ("codex", "claude", "gemini")
+
+# The canonical instruction-type vocabulary. handoff_desktop.py's GUI
+# already restricts its Instruction combobox to exactly this set (its own
+# INSTRUCTION_TYPES constant -- keep both in sync); this CLI's
+# `--instruction-type` previously had no such restriction at all --
+# `--instruction-type anything-you-want` was silently accepted and written
+# straight into the shared .handoff/current.md/state.json that both
+# providers read as their source of truth, no warning.
+INSTRUCTION_TYPES = ("new-task", "continue", "handoff", "review", "verify")
 
 INSTALL_FILES = [
     ("handoff_bridge.py", "handoff_bridge.py"),
@@ -305,6 +314,18 @@ def short_run(args: list[str], timeout: int = 10) -> tuple[int, str, str]:
         result = subprocess.run(
             args,
             text=True,
+            # encoding/errors: without an explicit encoding, subprocess
+            # falls back to locale.getpreferredencoding() for both
+            # directions -- on a non-UTF-8-locale Windows machine (e.g.
+            # cp949 on Korean Windows) that raises UnicodeEncodeError the
+            # instant a git/gh call's output contains a character the
+            # locale codec can't represent (an em dash in a commit
+            # message is enough). Every git/gh call this project makes
+            # can plausibly hit non-ASCII output, and errors="replace"
+            # matches decode_timeout_output()'s own established
+            # never-crash-on-decode posture below.
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=timeout,
             check=False,
@@ -1025,6 +1046,24 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
             command,
             input=prompt,
             text=True,
+            # encoding/errors: `prompt` folds in this project's own docs
+            # (docs/shared-agent-contract.md etc., liberally using em
+            # dashes and other Unicode punctuation) plus arbitrary user
+            # text -- without an explicit encoding, subprocess falls back
+            # to locale.getpreferredencoding() for the stdin write, which
+            # is cp949 (not UTF-8) on a Korean-locale Windows machine and
+            # raises UnicodeEncodeError on the very first non-cp949
+            # character, before the provider CLI is ever actually run.
+            # Reproduced directly (2026-08-14): a plain "테스트" prompt
+            # still crashed here, since the *doc content* folded into
+            # `prompt`, not the user's own text, contained the offending
+            # character. errors="replace" also covers the read-back
+            # direction (a provider's real stdout/stderr) so a stray
+            # malformed byte can't crash an otherwise-successful run --
+            # the same never-crash-on-decode posture as
+            # decode_timeout_output() elsewhere in this file.
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             cwd=Path.cwd(),
             timeout=None if args.timeout_seconds == 0 else args.timeout_seconds,
@@ -1152,8 +1191,11 @@ def check(_: argparse.Namespace) -> int:
         # (agent-handoff-bridge-validate, Tauri places every declared
         # sidecar in the same directory as this one) is invoked directly
         # instead, matching handoff_webui.py's bridge_command_prefix().
+        # PureWindowsPath/PurePosixPath, not the host-native Path -- see
+        # bridge_command_prefix()'s comment for why.
         validate_name = "agent-handoff-bridge-validate.exe" if sys.platform == "win32" else "agent-handoff-bridge-validate"
-        command = [str(Path(sys.executable).resolve().parent / validate_name), "--root", str(Path.cwd())]
+        pure_path = PureWindowsPath if sys.platform == "win32" else PurePosixPath
+        command = [str(pure_path(sys.executable).parent / validate_name), "--root", str(Path.cwd())]
     else:
         validator = BRIDGE_ROOT / "scripts/validate_handoff.py"
         command = [sys.executable, str(validator), "--root", str(Path.cwd())]
@@ -1186,7 +1228,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("task", help="Task description to preserve for handoff.")
     p_init.add_argument("--primary", choices=PROVIDERS, default="codex")
     p_init.add_argument("--target-model", default="app-selected default", help="Model label to record for the active work target.")
-    p_init.add_argument("--instruction-type", default="new-task", help="Instruction type to record in the packet.")
+    p_init.add_argument(
+        "--instruction-type", choices=INSTRUCTION_TYPES, default="new-task", help="Instruction type to record in the packet."
+    )
     p_init.add_argument("--no-install", action="store_true", help="Do not install support files first.")
     p_init.set_defaults(func=init_handoff)
 
@@ -1198,7 +1242,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--auto-fallback", action="store_true", help="Invoke the other provider on handoff signals.")
     p_run.add_argument("--timeout-seconds", type=int, default=0, help="0 means no timeout.")
     p_run.add_argument("--model", help="Model label to record; exact model strings are also passed to the provider.")
-    p_run.add_argument("--instruction-type", default="continue", help="Instruction type for this run.")
+    p_run.add_argument(
+        "--instruction-type", choices=INSTRUCTION_TYPES, default="continue", help="Instruction type for this run."
+    )
     p_run.set_defaults(func=run_command)
 
     p_status = sub.add_parser("status", help="Print bridge state.")

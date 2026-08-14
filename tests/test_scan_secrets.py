@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -156,6 +157,35 @@ class AllowlistTests(unittest.TestCase):
 
     def test_regular_source_file_is_not_allowlisted(self):
         self.assertFalse(ss.is_allowlisted("handoff_bridge.py"))
+
+
+class GitSubprocessEncodingTests(unittest.TestCase):
+    """Regression coverage for a real crash class (2026-08-14, see
+    handoff_bridge.py's run_provider() fix): without an explicit
+    encoding, subprocess.run() falls back to
+    locale.getpreferredencoding() -- not UTF-8 on a non-UTF-8-locale
+    Windows machine -- to decode a git call's stdout/stderr, and file
+    paths/content in a real repo can be non-ASCII (this repo's own
+    Korean docs/README variants)."""
+
+    def test_list_files_pins_utf8_encoding(self):
+        with mock.patch.object(
+            ss.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ) as run_spy:
+            ss.list_files(Path("/some/root"), staged_only=False)
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
+
+    def test_read_staged_text_pins_utf8_encoding(self):
+        with mock.patch.object(
+            ss.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="content", stderr=""),
+        ) as run_spy:
+            ss.read_staged_text(Path("/some/root"), "a.txt")
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
 
 
 class ScanIntegrationTests(unittest.TestCase):

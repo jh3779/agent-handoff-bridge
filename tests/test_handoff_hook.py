@@ -18,6 +18,7 @@ Run with: python3 -m unittest discover -s tests -v
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -29,6 +30,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import handoff_bridge as hb  # noqa: E402
 import handoff_hook as hh  # noqa: E402
+
+
+class RepoRootSubprocessEncodingTests(unittest.TestCase):
+    def test_pins_utf8_encoding(self):
+        # Regression coverage for a real crash class (2026-08-14, see
+        # handoff_bridge.py's run_provider() fix): without an explicit
+        # encoding, subprocess.run() falls back to
+        # locale.getpreferredencoding() -- not UTF-8 on a non-UTF-8-locale
+        # Windows machine. A repo path can plausibly contain non-ASCII
+        # characters (a Windows username, a localized folder name).
+        with mock.patch.object(
+            hh.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="/some/root\n", stderr=""),
+        ) as run_spy:
+            hh.repo_root()
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
 
 
 class AppendCurrentLockingTests(unittest.TestCase):

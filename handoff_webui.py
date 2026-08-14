@@ -32,7 +32,7 @@ import uuid
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from urllib.parse import parse_qs, urlparse
 
 from handoff_bridge import (
@@ -77,8 +77,14 @@ def bridge_command_prefix() -> list[str]:
     code is untouched.
     """
     if getattr(sys, "frozen", False):
+        # PureWindowsPath/PurePosixPath, not the host-native Path: sys.executable
+        # always matches sys.platform's flavor for a real frozen build (this
+        # branch never runs unfrozen), but picking the pure class explicitly
+        # keeps this correct regardless of which OS actually executes the code
+        # -- and lets it be unit-tested for either platform from any dev host.
         cli_name = "agent-handoff-bridge-cli.exe" if sys.platform == "win32" else "agent-handoff-bridge-cli"
-        return [str(Path(sys.executable).resolve().parent / cli_name)]
+        pure_path = PureWindowsPath if sys.platform == "win32" else PurePosixPath
+        return [str(pure_path(sys.executable).parent / cli_name)]
     return [sys.executable, str(BRIDGE_SCRIPT)]
 
 try:
@@ -361,6 +367,15 @@ def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Pa
             bridge_command_prefix() + ["--workspace", str(new_workspace), "init", "--", task],
             capture_output=True,
             text=True,
+            # Without an explicit encoding, subprocess falls back to
+            # locale.getpreferredencoding() to decode stdout/stderr -- not
+            # UTF-8 on a non-UTF-8-locale Windows machine (e.g. cp949 on
+            # Korean Windows) -- and `task` is the user's own first
+            # message, arbitrary Unicode text. See run_provider()'s
+            # matching fix in handoff_bridge.py for the confirmed crash
+            # this class of bug produces.
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             check=False,
         )
@@ -734,17 +749,20 @@ def build_history_drawer(current_workspace: Path | None) -> list[dict]:
 
 _CREDENTIALS_LOCK = threading.Lock()
 
-# DEC-15: both providers that existed at the time got API-key mode
-# symmetrically. Deliberately its own tuple, not an alias for the
-# `PROVIDERS` imported from handoff_bridge above -- Phase 5 grew that one
-# to `("codex", "claude", "gemini")` for CLI dispatch, but API-key mode's
-# scope was never revisited to include Gemini (a real, separate design
-# decision this project hasn't made), so it must not silently inherit a
-# new entry just because the shared tuple grew. `cli_available()`-based
-# dispatch and the Diagnose panel's CLI-detection badges use the full
-# `PROVIDERS` (Gemini included); credential storage, `/api/provider-key`,
-# and `API_KEY_MODE_DEFAULT_MODELS` use this one instead.
-API_KEY_MODE_PROVIDERS = ("codex", "claude")
+# DEC-15 (Phase 4) deliberately scoped this to codex/claude only,
+# explicitly leaving "should Gemini get API-key mode too" as its own,
+# separately-decided question (not silently inherited from PROVIDERS
+# growing to include Gemini in Phase 5) -- see flutter-mapping.html's
+# DEC-15 row. DEC-25 resolves that question: yes, via call_gemini_api()
+# below. Kept as its own tuple rather than an alias for `PROVIDERS`
+# (imported from handoff_bridge above) even though the two now happen to
+# be equal -- a *future* provider added to PROVIDERS for CLI dispatch
+# must not silently gain API-key mode without its own deliberate decision
+# the same way Gemini just did. `cli_available()`-based dispatch and the
+# Diagnose panel's CLI-detection badges use the full `PROVIDERS`;
+# credential storage, `/api/provider-key`, and `API_KEY_MODE_DEFAULT_MODELS`
+# use this one instead.
+API_KEY_MODE_PROVIDERS = ("codex", "claude", "gemini")
 
 # Deliberately empty for *both* providers, not just OpenAI/Codex: an
 # earlier version hardcoded a Claude default on the reasoning that model
@@ -761,9 +779,21 @@ API_KEY_MODE_DEFAULT_MODELS: dict[str, str] = {}
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_API_VERSION = "2023-06-01"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+# {model} is the bare model ID (e.g. "gemini-2.5-flash"), no "models/"
+# prefix -- confirmed against https://ai.google.dev/api/generate-content.
+# Auth via the `x-goog-api-key` header (also confirmed there), not the
+# `?key=` query-string form the same docs mention as an alternative --
+# a header keeps this consistent with the other two providers (both
+# header-based) and never puts the secret in a URL that could end up in
+# a proxy/log line.
+GEMINI_GENERATE_CONTENT_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 API_KEY_MODE_TIMEOUT_SECONDS = 120
 API_KEY_MODE_MAX_HISTORY_MESSAGES = 20
 API_KEY_MODE_MAX_TOKENS = 4096
+# Small on purpose: POST /api/provider-key's validation call only needs a
+# single short word back to prove the key/model combination actually
+# works -- it is never a real chat turn.
+API_KEY_VALIDATION_MAX_TOKENS = 16
 
 
 def credentials_path() -> Path:
@@ -1098,6 +1128,27 @@ def openai_tool_definitions() -> list[dict]:
     ]
 
 
+def gemini_tool_definitions() -> list[dict]:
+    # One Tool object holding every functionDeclaration, not one Tool per
+    # function -- confirmed against https://ai.google.dev/api/generate-content
+    # (a request's `tools` array example groups all declarations under a
+    # single `functionDeclarations` list). No `additionalProperties`/
+    # `strict` here -- those are OpenAI-specific "strict mode" fields
+    # Gemini's function-calling schema doesn't define.
+    return [
+        {
+            "functionDeclarations": [
+                {
+                    "name": spec["name"],
+                    "description": spec["description"],
+                    "parameters": {"type": "object", "properties": spec["params"], "required": spec["required"]},
+                }
+                for spec in _TOOL_SPECS
+            ]
+        }
+    ]
+
+
 def _tool_read_file(workspace: Path, tool_input: dict) -> str:
     path = tool_input.get("path")
     if not isinstance(path, str) or not path:
@@ -1193,6 +1244,15 @@ def _tool_run_shell(workspace: Path, tool_input: dict) -> str:
             cwd=workspace,
             capture_output=True,
             text=True,
+            # Without an explicit encoding, subprocess falls back to
+            # locale.getpreferredencoding() to decode stdout/stderr -- not
+            # UTF-8 on a non-UTF-8-locale Windows machine -- and a model's
+            # shell command (or the workspace files it reads) can easily
+            # produce non-ASCII output. See run_provider()'s matching fix
+            # in handoff_bridge.py for the confirmed crash this class of
+            # bug produces elsewhere in this project.
+            encoding="utf-8",
+            errors="replace",
             timeout=TOOL_EXEC_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
@@ -1444,6 +1504,178 @@ def call_openai_responses_api(api_key: str, model: str, messages: list[dict], wo
             working_input.append({"type": "function_call_output", "call_id": call.get("call_id"), "output": result_text})
 
 
+def _gemini_contents_from_messages(messages: list[dict]) -> list[dict]:
+    # Gemini's Content shape ({"role", "parts": [{"text": ...}]}) is not
+    # the {"role", "content": "..."} shape build_api_message_history()
+    # builds for Anthropic/OpenAI -- translated here rather than changing
+    # that shared function, since Anthropic and OpenAI's Responses API
+    # both genuinely do accept {"role", "content"} directly. Gemini has
+    # no "assistant" role; "model" is the equivalent (confirmed against
+    # https://ai.google.dev/api/generate-content).
+    return [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]} for m in messages]
+
+
+def call_gemini_api(api_key: str, model: str, messages: list[dict], workspace: Path) -> dict:
+    """Same {"ok": True, "text": str} / {"ok": False, "message": str}
+    contract and the same tool-use turn loop shape as
+    call_anthropic_messages_api()/call_openai_responses_api() -- see
+    that function's docstring for the shared MAX_TOOL_ITERATIONS/
+    defensive-every-call-block reasoning, which applies here unchanged.
+
+    Request/response shapes (contents[].role/parts, tools[].
+    functionDeclarations, a model turn's functionCall part, sending a
+    result back as a functionResponse part with role "user", auth via
+    the x-goog-api-key header) confirmed against
+    https://ai.google.dev/api/generate-content and
+    https://ai.google.dev/gemini-api/docs/generate-content/function-calling
+    before implementing, not assumed -- DEC-25
+    (docs/design-system/flutter-mapping.html#s1c), resolving DEC-15's
+    deliberately-left-open "should Gemini get API-key mode too" question.
+
+    Unlike a functionCall's `args` (already a plain object per Gemini's
+    schema), a functionResponse's `response` field must itself be a JSON
+    *object*, not a bare string -- execute_tool_call() returns plain text
+    (the shared, provider-agnostic executor contract all three providers
+    use), so it is wrapped as {"result": <text>} here rather than
+    changing that shared contract for one provider's stricter schema.
+    """
+    url = GEMINI_GENERATE_CONTENT_URL_TEMPLATE.format(model=model)
+    headers = {"x-goog-api-key": api_key, "content-type": "application/json"}
+    working_contents = _gemini_contents_from_messages(messages)
+    transcript_parts: list[str] = []
+    tools = gemini_tool_definitions()
+    tool_calls_executed = 0
+    while True:
+        body = {"contents": working_contents, "tools": tools}
+        try:
+            status, data = _http_post_json(url, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            return _error_with_transcript(transcript_parts, f"network error calling Gemini API: {exc}")
+        if status != 200:
+            error = data.get("error") if isinstance(data, dict) else None
+            error_status = (error or {}).get("status", "api_error") if isinstance(error, dict) else "api_error"
+            error_message = (
+                (error or {}).get("message", json.dumps(data, ensure_ascii=False))
+                if isinstance(error, dict)
+                else json.dumps(data, ensure_ascii=False)
+            )
+            return _error_with_transcript(transcript_parts, f"Gemini API error ({status} {error_status}): {error_message}")
+        candidates = data.get("candidates", []) if isinstance(data, dict) else []
+        if not candidates:
+            # No candidate at all -- most commonly a blocked prompt
+            # (promptFeedback.blockReason), never something to silently
+            # treat as an empty-but-successful reply.
+            block_reason = (data.get("promptFeedback") or {}).get("blockReason") if isinstance(data, dict) else None
+            if block_reason:
+                return _error_with_transcript(transcript_parts, f"Gemini blocked the prompt: {block_reason}")
+            return {"ok": True, "text": "\n\n".join(transcript_parts)}
+        content = candidates[0].get("content", {}) if isinstance(candidates[0], dict) else {}
+        parts = content.get("parts", []) if isinstance(content, dict) else []
+        text = "".join(p.get("text", "") for p in parts if isinstance(p, dict) and "text" in p)
+        if text:
+            transcript_parts.append(text)
+        function_calls = [p["functionCall"] for p in parts if isinstance(p, dict) and "functionCall" in p]
+        if not function_calls:
+            return {"ok": True, "text": "\n\n".join(transcript_parts)}
+        working_contents.append({"role": "model", "parts": parts})
+        response_parts: list[dict] = []
+        for call in function_calls:
+            if tool_calls_executed >= MAX_TOOL_ITERATIONS:
+                transcript_parts.append(
+                    f"(stopped after {MAX_TOOL_ITERATIONS} tool calls in one turn -- send another message to continue)"
+                )
+                return {"ok": True, "text": "\n\n".join(transcript_parts)}
+            name = call.get("name", "")
+            args = call.get("args") or {}
+            result_text = execute_tool_call(workspace, name, args)
+            tool_calls_executed += 1
+            transcript_parts.append(_tool_call_transcript_block(name, json.dumps(args, ensure_ascii=False), result_text))
+            function_response = {"name": name, "response": {"result": result_text}}
+            if "id" in call:
+                # Only some models/responses include this (confirmed:
+                # "now always returned... for Gemini 3 models," implying
+                # earlier models may omit it) -- echoed back only when
+                # present, never fabricated.
+                function_response["id"] = call["id"]
+            response_parts.append({"functionResponse": function_response})
+        working_contents.append({"role": "user", "parts": response_parts})
+
+
+def validate_provider_api_key(provider: str, api_key: str, model: str) -> dict:
+    """Makes one real, minimal, tool-free call to the provider's own API
+    with `api_key`/`model` to confirm the key actually works -- POST
+    /api/provider-key calls this before save_credential() ever writes a
+    non-empty key to disk, so a saved-but-wrong key is never trusted on
+    the strength of its shape alone. Same {"ok": True, "text": str} /
+    {"ok": False, "message": str} contract as
+    call_anthropic_messages_api()/call_openai_responses_api() (`message`
+    never contains `api_key`, same invariant), but deliberately skips
+    their tool-use turn loop entirely: this has no workspace to act on
+    and no reason to grant tool access just to check a key, so it is a
+    single HTTP call with no `tools` in the request body at all.
+    """
+    ping_message = [{"role": "user", "content": "Reply with only the single word: ok"}]
+    if provider == "claude":
+        url = ANTHROPIC_MESSAGES_URL
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_API_VERSION,
+            "content-type": "application/json",
+        }
+        body = {"model": model, "max_tokens": API_KEY_VALIDATION_MAX_TOKENS, "messages": ping_message}
+    elif provider == "gemini":
+        url = GEMINI_GENERATE_CONTENT_URL_TEMPLATE.format(model=model)
+        headers = {"x-goog-api-key": api_key, "content-type": "application/json"}
+        body = {
+            "contents": _gemini_contents_from_messages(ping_message),
+            "generationConfig": {"maxOutputTokens": API_KEY_VALIDATION_MAX_TOKENS},
+        }
+    else:
+        url = OPENAI_RESPONSES_URL
+        headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
+        body = {"model": model, "input": ping_message, "max_output_tokens": API_KEY_VALIDATION_MAX_TOKENS}
+    try:
+        status, data = _http_post_json(url, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        return {"ok": False, "message": f"network error validating {provider} API key: {exc}"}
+    if status != 200:
+        error = data.get("error") if isinstance(data, dict) else None
+        # Gemini's error shape uses `status` (a string enum like
+        # "INVALID_ARGUMENT"/"PERMISSION_DENIED"), not `type` --
+        # confirmed against https://ai.google.dev/api/generate-content's
+        # error examples.
+        error_type = (
+            (error or {}).get("status" if provider == "gemini" else "type", "api_error")
+            if isinstance(error, dict)
+            else "api_error"
+        )
+        error_message = (
+            (error or {}).get("message", json.dumps(data, ensure_ascii=False))
+            if isinstance(error, dict)
+            else json.dumps(data, ensure_ascii=False)
+        )
+        return {"ok": False, "message": f"{provider} API key validation failed ({status} {error_type}): {error_message}"}
+    text = ""
+    if provider == "claude":
+        content = data.get("content", []) if isinstance(data, dict) else []
+        text = "".join(block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text")
+    elif provider == "gemini":
+        candidates = data.get("candidates", []) if isinstance(data, dict) else []
+        if candidates:
+            content = candidates[0].get("content", {}) if isinstance(candidates[0], dict) else {}
+            for part in content.get("parts", []) if isinstance(content, dict) else []:
+                if isinstance(part, dict) and "text" in part:
+                    text += part["text"]
+    else:
+        for item in data.get("output", []) if isinstance(data, dict) else []:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            for block in item.get("content", []):
+                if isinstance(block, dict) and block.get("type") in ("output_text", "text"):
+                    text += block.get("text", "")
+    return {"ok": True, "text": text.strip() or "(empty response)"}
+
+
 def run_provider_via_api_key(
     workspace: Path,
     provider: str,
@@ -1485,8 +1717,12 @@ def run_provider_via_api_key(
             )
         ]
     messages = build_api_message_history(workspace, prompt, utc_now())
-    caller = call_anthropic_messages_api if provider == "claude" else call_openai_responses_api
-    result = caller(credential["key"], model, messages, workspace)
+    callers = {
+        "claude": call_anthropic_messages_api,
+        "codex": call_openai_responses_api,
+        "gemini": call_gemini_api,
+    }
+    result = callers[provider](credential["key"], model, messages, workspace)
     if not result["ok"]:
         return [_api_key_mode_error_record(provider, model, instruction_type, result["message"])]
     return [
@@ -1738,6 +1974,15 @@ def _run_provider_via_bridge_locked(
                 command,
                 capture_output=True,
                 text=True,
+                # Without an explicit encoding, subprocess falls back to
+                # locale.getpreferredencoding() to decode stdout/stderr --
+                # not UTF-8 on a non-UTF-8-locale Windows machine -- and
+                # the bridge subprocess's own output can reflect arbitrary
+                # provider/prompt content. See run_provider()'s matching
+                # fix in handoff_bridge.py for the confirmed crash this
+                # class of bug produces.
+                encoding="utf-8",
+                errors="replace",
                 timeout=OUTER_SUBPROCESS_TIMEOUT_SECONDS,
                 check=False,
             )
@@ -1916,11 +2161,10 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 # Covers the full (Gemini-included) PROVIDERS for CLI
                 # detection -- Phase 5 finally resolves what SCR-06
                 # originally shipped as a "미확인" placeholder badge for
-                # Gemini into a real one. `api_key_mode_supported` is
-                # False for Gemini: API_KEY_MODE_PROVIDERS wasn't extended
-                # to it (a separate, unmade design decision), so the
-                # frontend knows not to offer a key field for it even
-                # though its CLI status is now real.
+                # Gemini into a real one. `api_key_mode_supported` is now
+                # True for Gemini too (DEC-25) -- API_KEY_MODE_PROVIDERS
+                # was extended to include it, so the frontend offers a key
+                # field for it exactly like codex/claude.
                 credentials = read_credentials()
                 providers = []
                 for provider in PROVIDERS:
@@ -2114,6 +2358,29 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     # contract) -- lets the connection panel's same "저장"
                     # action double as "disconnect API key mode".
                     #
+                    # A non-empty key is verified with a real, minimal call
+                    # (validate_provider_api_key()) *before* it is ever
+                    # written to disk -- previously any non-empty string was
+                    # saved unconditionally and only found to be wrong (or
+                    # right) the next time the user actually tried to chat.
+                    # This needs a model to call with, and
+                    # API_KEY_MODE_DEFAULT_MODELS is deliberately empty for
+                    # both providers (no built-in default, DEC-13/15) -- so a
+                    # model is now required in the same request as a
+                    # non-empty key, not merely recommended. Removal (empty
+                    # key) skips validation entirely; there is nothing to
+                    # verify when disconnecting.
+                    confirmation: str | None = None
+                    if key:
+                        if not model:
+                            raise WorkspaceError(
+                                f"a model is required to save and verify a {provider} API key "
+                                "(no built-in default exists for this provider)"
+                            )
+                        result = validate_provider_api_key(provider, key, model)
+                        if not result["ok"]:
+                            raise WorkspaceError(result["message"])
+                        confirmation = result["text"]
                     # Unlike touch_registry() (best-effort, failure only
                     # logged -- always called *after* a real state change it
                     # shouldn't be allowed to desync from), this write IS the
@@ -2130,11 +2397,11 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         save_credential(provider, key, model)
                     except OSError as exc:
                         raise WorkspaceError(f"failed to save API key: {exc}") from exc
-                    resolved_model = model or API_KEY_MODE_DEFAULT_MODELS.get(provider)
-                    self._send_json(
-                        200,
-                        {"provider": provider, "api_key_configured": bool(key), "model": resolved_model if key else None},
-                    )
+                    response = {"provider": provider, "api_key_configured": bool(key), "model": model if key else None}
+                    if confirmation is not None:
+                        response["verified"] = True
+                        response["confirmation"] = confirmation
+                    self._send_json(200, response)
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             else:

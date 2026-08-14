@@ -280,7 +280,10 @@
 
   // ---------- provider connection panel (Phase 4, SCR-06/components.html §14) ----------
 
-  const PROVIDER_LABEL = { codex: "Codex", claude: "Claude Code", gemini: "Gemini CLI" };
+  // "Gemini", not "Gemini CLI" (its label before DEC-25): it can now
+  // also be reached via API-key mode, so a CLI-specific label would read
+  // oddly in the connection panel's save/delete toasts.
+  const PROVIDER_LABEL = { codex: "Codex", claude: "Claude Code", gemini: "Gemini" };
 
   function renderProviderRow(info) {
     const row = el("div", { class: "pp-row" }, []);
@@ -297,9 +300,11 @@
       return row; // SCR-06: API 키 입력은 "CLI 없음" 상태에서만 노출
     }
     if (!info.api_key_mode_supported) {
-      // Gemini (Phase 5): CLI 감지 로직은 있지만 API 키 모드는 아직
-      // 지원 대상이 아님(DEC-15가 codex/claude로만 한정) -- 키 입력
-      // UI 없이 상태만 보여준다.
+      // 현재는 codex/claude/gemini 전부 API 키 모드를 지원하므로(DEC-25)
+      // 이 분기는 실제로는 도달하지 않지만, 미래에 새 provider가
+      // PROVIDERS에는 추가되고 API_KEY_MODE_PROVIDERS에는 아직
+      // 추가되지 않은 과도기(같은 패턴이 DEC-15 당시 Gemini에서
+      // 실제로 있었음)를 위해 그대로 남겨둔다.
       row.appendChild(
         el("div", { class: "pp-note", text: "로컬에 CLI가 설치되어 있지 않습니다. 이 provider는 아직 API 키 모드를 지원하지 않습니다." }, [])
       );
@@ -343,8 +348,13 @@
       }
       const model = modelInput.value.trim();
       try {
-        await postJSON("/api/provider-key", { provider: info.provider, key, model });
-        showToast(`${PROVIDER_LABEL[info.provider]} API 키가 저장되었습니다.`);
+        const result = await postJSON("/api/provider-key", { provider: info.provider, key, model });
+        // Server now makes a real, minimal call with the key before ever
+        // saving it (result.verified/result.confirmation) -- surface that
+        // actual reply, not just "저장됨", so the user sees real proof the
+        // key works rather than an unconditional success message.
+        const suffix = result.verified ? ` (확인 응답: "${result.confirmation}")` : "";
+        showToast(`${PROVIDER_LABEL[info.provider]} API 키가 확인되어 저장되었습니다.${suffix}`);
         await refreshProviderPanel();
       } catch (err) {
         showToast(`저장 실패: ${err.message}`);

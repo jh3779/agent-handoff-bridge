@@ -78,7 +78,15 @@ def list_files(root: Path, staged_only: bool) -> list[str]:
     # `--name-only` still prints only the new path per line for a rename
     # (not "old -> new"), so the line-parsing below needs no changes.
     command = ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"] if staged_only else ["git", "ls-files"]
-    result = subprocess.run(command, cwd=root, text=True, capture_output=True, check=False)
+    # encoding/errors: without an explicit encoding, subprocess falls
+    # back to locale.getpreferredencoding() to decode stdout/stderr -- not
+    # UTF-8 on a non-UTF-8-locale Windows machine -- and file paths in
+    # this repo can be non-ASCII (the Korean docs/README variants).
+    # errors="replace" here (unlike read_staged_text() below): this is
+    # just a list of paths, not content whose "not really UTF-8 text"
+    # status needs detecting, so there's no reason to let a single
+    # unusual path crash the whole scan.
+    result = subprocess.run(command, cwd=root, text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
     if result.returncode != 0:
         return []
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -90,9 +98,16 @@ def read_staged_text(root: Path, rel_path: str) -> str | None:
     # disk. Reading from disk here would let a file be scanned clean after
     # being staged-then-reverted-on-disk without re-staging, while the secret
     # staged in the index still gets committed.
+    #
+    # encoding="utf-8": without it, subprocess falls back to
+    # locale.getpreferredencoding() (not UTF-8 on a non-UTF-8-locale
+    # Windows machine) -- the UnicodeDecodeError guard below now only
+    # ever fires for a genuinely non-UTF-8 file (binary, legacy encoding),
+    # its actual intended scope, instead of every non-ASCII file on the
+    # wrong locale.
     try:
         result = subprocess.run(
-            ["git", "show", f":{rel_path}"], cwd=root, text=True, capture_output=True, check=False
+            ["git", "show", f":{rel_path}"], cwd=root, text=True, encoding="utf-8", capture_output=True, check=False
         )
     except UnicodeDecodeError:
         return None
