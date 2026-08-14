@@ -1817,3 +1817,78 @@ risk" (not a session retrospective, not an architecture explainer).
   are all real candidates for a future fix pass, not yet actioned.
 - **Blocked**: none. Still on branch `fix/instruction-type-validation`,
   uncommitted -- no commit/PR requested yet.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-14 (v0.3.0 release finished + PR #18→#19)
+
+- **Task**: user asked to check the uploaded PR and prepare to work on it.
+  Found PR #18 (a small README doc fix) plus, via `git fetch`, that a
+  prior session (this repo's dual-CLI handoff, likely Codex) had already
+  cut most of a v0.3.0 release directly on `main` (merged PR #17 first)
+  and paused mid-flow per the PR #18 body's own handoff record.
+- **PR #18 -> #19 (accidental-close incident)**: PR #18's branch
+  (`docs/v0.3.0-release-followup`) failed the `branch-name` CI check --
+  dots aren't allowed in the kebab-case description part
+  (`scripts/check_branch_name.py`'s `BRANCH_PATTERN`). Fixed via GitHub's
+  branch-rename API (`POST .../branches/<old>/rename`), expecting it to
+  transparently retarget the open PR's head ref (that's the documented
+  behavior). It did NOT: the rename silently auto-closed PR #18 instead
+  (`gh pr reopen` then failed with "Could not open the pull request" --
+  the old head ref genuinely no longer existed for GitHub to reopen
+  against). No data was lost (the commit survived on the renamed branch),
+  but recovery required opening a fresh PR (**#19**, same commit
+  `44f5b688`, branch `docs/v0-3-0-release-followup`) and leaving a
+  pointer comment on the closed #18. **Lesson for next time**: don't use
+  the branch-rename API on a branch with an open PR as a way to fix a
+  failing branch-name check -- delete-and-recreate under the right name
+  (or open a fresh PR directly) is safer than trusting the rename to
+  carry the PR forward.
+- **v0.3.0 release, finished per `docs/release-process.md`'s runbook**
+  (steps 1-5 were already done by the prior session; this session did
+  6-8 plus the follow-up README update the runbook doesn't number):
+  - Step 6: confirmed the tag's `installer-build` CI run (`31778457384`)
+    had finished -- all three OS legs `completed`/`success` (was still
+    `in_progress` when the prior session paused). Downloaded all three
+    artifacts (`gh run download`, ~460MB total, ran long enough to need
+    backgrounding + polling via `TaskOutput`).
+  - Step 4 redux: the prior session's `dist/*.zip` files were stale
+    (built Aug 6, for v0.2.0) -- rebuilt via
+    `scripts/package_platforms.py` and re-ran the standalone sanity check
+    (extract outside the repo, no git present, `--version` + `check` both
+    pass -- 418 tests, since the zip includes `tests/`).
+  - Step 7: published `v0.3.0` via `gh release create` with the 3
+    "one-per-OS" installers (dmg/nsis-exe/AppImage) + both source zips,
+    title `v0.3.0`, notes extracted from `docs/release-notes.md` via the
+    documented `sed` range (verified the extraction looked right before
+    trusting it) plus an added unsigned-installer note (short, pointing
+    at `docs/security-model.md` -- matches what the README already says
+    near its own download table, so no need to duplicate the full
+    Gatekeeper/SmartScreen explanation here).
+  - Found v0.2.0's actual release had all 8 installer formats attached
+    (dmg/exe/msi/AppImage/deb/rpm/.app is not a separate asset), not just
+    the runbook's documented "3 one-per-OS" minimum -- uploaded the
+    remaining msi/deb/rpm via `gh release upload` to match precedent and
+    keep `README.md`/`README.ko.md`'s existing links (which reference all
+    of them) valid.
+  - Step 8: verified via `gh release view` (all 8 assets listed) and a
+    real anonymous `curl -sL -o /dev/null -w "%{http_code}"` against
+    every one of the 8 download URLs -- all returned 200.
+  - Follow-up (not in the runbook's numbered steps, but the prior
+    session's PR #18/#19 body flagged it as still open):
+    `README.md`/`README.ko.md`'s desktop-installer download table
+    updated from hardcoded `v0.2.0` asset URLs to the real `v0.3.0` ones,
+    re-verified all three (msi/deb/rpm) with the same curl check.
+- **Verified**: `python3 handoff_bridge.py check` on `main` after the
+  fast-forward pull from the prior session's work -> 452 tests, PASS
+  (the 418 count above is the standalone extracted-zip run, a smaller
+  but still passing count -- not independently root-caused which test
+  file(s) `scripts/package_platforms.py`'s `COMMON_FILES` excludes vs.
+  the full repo checkout, but both runs pass, which is what step 4
+  actually requires). `python3 scripts/scan_secrets.py` clean on the
+  README changes. All 8 release asset URLs return HTTP 200 anonymously
+  (repo is public, no auth needed).
+- **Remaining**: PR #19 (the README Gemini API-key-mode doc fix) is open,
+  CI running as of this entry (branch-name already passed) -- not yet
+  merged, left for the user to merge when ready. PR #18 stays closed with
+  a pointer comment, not deleted (keeps the accidental-close incident
+  visible in the repo's history rather than erasing it).
+- **Blocked**: none.

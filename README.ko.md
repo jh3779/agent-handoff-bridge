@@ -25,9 +25,9 @@ ID로 세션 재개 불가, 무료 인증 상태 확인 없음, 웹 UI의 API �
 
 | 플랫폼 | 다운로드 |
 |---|---|
-| 🪟 **Windows** | **[v0.2.0 인스톨러 (.exe)](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge_0.2.0_x64-setup.exe)** · [.msi](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge_0.2.0_x64_en-US.msi) |
-| 🍎 **macOS** (Apple Silicon 전용) | **[v0.2.0 dmg](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge_0.2.0_aarch64.dmg)** — Intel Mac은 아직 미지원 |
-| 🐧 **Linux** | **[.AppImage](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge_0.2.0_amd64.AppImage)** · [.deb](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge_0.2.0_amd64.deb) · [.rpm](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.2.0/agent-handoff-bridge-0.2.0-1.x86_64.rpm) |
+| 🪟 **Windows** | **[v0.3.0 인스톨러 (.exe)](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge_0.3.0_x64-setup.exe)** · [.msi](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge_0.3.0_x64_en-US.msi) |
+| 🍎 **macOS** (Apple Silicon 전용) | **[v0.3.0 dmg](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge_0.3.0_aarch64.dmg)** — Intel Mac은 아직 미지원 |
+| 🐧 **Linux** | **[.AppImage](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge_0.3.0_amd64.AppImage)** · [.deb](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge_0.3.0_amd64.deb) · [.rpm](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge-0.3.0-1.x86_64.rpm) |
 
 > ⚠️ **설치 파일은 미서명입니다** (DEC-24 — 이 프로젝트 규모에서 코드
 > 서명 비용은 정당화되지 않는다고 판단, 재논의 시한 없음). Windows/macOS
