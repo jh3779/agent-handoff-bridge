@@ -607,6 +607,27 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         self.assertIn(".handoff/", str(ctx.exception))
         self.assertEqual(list(self.base_dir.iterdir()), [])
 
+    def test_init_subprocess_pins_utf8_encoding(self):
+        # Regression coverage for a real crash class (2026-08-14, see
+        # handoff_bridge.py's run_provider() fix): without an explicit
+        # encoding, subprocess.run() falls back to
+        # locale.getpreferredencoding() -- not UTF-8 on a non-UTF-8-locale
+        # Windows machine -- to decode this subprocess's stdout/stderr,
+        # and `task` here is the user's own first message.
+        #
+        # The mocked "success" here doesn't actually create real
+        # .handoff/ files, so create_workspace_for_first_message() still
+        # raises afterward (test_exit_zero_without_the_expected_handoff_files_is_still_a_failure
+        # above covers that path directly) -- irrelevant to this test,
+        # which only cares that subprocess.run() was called with the
+        # right kwargs, captured before that later exception.
+        success = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch("handoff_webui.subprocess.run", return_value=success) as run_spy:
+            with self.assertRaises(webui.WorkspaceError):
+                webui.create_workspace_for_first_message("hello", [])
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
+
 
 class CreateWorkspaceConcurrencyTests(unittest.TestCase):
     """A real live server + real concurrent HTTP requests -- verifies the
@@ -1375,6 +1396,30 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
             self.assertTrue(records[1]["final_text"].startswith("Timed out"))
 
 
+class RunProviderViaBridgeSubprocessEncodingTests(unittest.TestCase):
+    """Not FakeProviderPathMixin-based (that skips outside a POSIX shell)
+    -- this only needs to inspect the subprocess.run() call itself, not a
+    real fake-provider round trip, so it runs on every platform including
+    Windows, where this exact bug class was found."""
+
+    def test_pins_utf8_encoding(self):
+        # Regression coverage for a real crash class (2026-08-14, see
+        # handoff_bridge.py's run_provider() fix): without an explicit
+        # encoding, subprocess.run() falls back to
+        # locale.getpreferredencoding() -- not UTF-8 on a non-UTF-8-locale
+        # Windows machine -- to decode this subprocess's stdout/stderr,
+        # which can reflect arbitrary provider/prompt content.
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            with mock.patch("handoff_webui.cli_available", return_value=True), mock.patch(
+                "handoff_webui.subprocess.run",
+                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+            ) as run_spy:
+                webui.run_provider_via_bridge(workspace, "codex", "hello", None, "continue")
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
+
+
 class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
     def setUp(self):
         self.setUpFakeProviders()
@@ -1952,9 +1997,13 @@ class CredentialsTests(unittest.TestCase):
         self.assertEqual(webui.read_credentials(), {})
 
     def test_read_credentials_filters_unknown_provider(self):
+        # "gemini" used to be the not-API-key-mode-supported example here
+        # (DEC-15) -- DEC-25 extended API_KEY_MODE_PROVIDERS to include
+        # it, so this now needs a genuinely made-up provider name that
+        # will never be in that tuple.
         self.base_dir.mkdir(parents=True)
         (self.base_dir / "credentials.json").write_text(
-            json.dumps({"claude": {"key": "sk-1"}, "gemini": {"key": "sk-2"}}), encoding="utf-8"
+            json.dumps({"claude": {"key": "sk-1"}, "totally-unknown-provider": {"key": "sk-2"}}), encoding="utf-8"
         )
         self.assertEqual(list(webui.read_credentials()), ["claude"])
 
@@ -2304,6 +2353,45 @@ class CallProviderApiTests(unittest.TestCase):
         self.assertIn("rate_limit_error", result["message"])
         self.assertNotIn("sk-super-secret-value", result["message"])
 
+    def test_gemini_success_extracts_text_from_candidates(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(200, {"candidates": [{"content": {"parts": [{"text": "hi from gemini"}]}}]}),
+        ):
+            result = webui.call_gemini_api(
+                "sk-secret", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "hi from gemini")
+
+    def test_gemini_error_response_is_reported_and_never_echoes_the_key(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(400, {"error": {"status": "INVALID_ARGUMENT", "message": "API key not valid"}}),
+        ):
+            result = webui.call_gemini_api("sk-super-secret-value", "gemini-2.5-flash", [], self.workspace)
+        self.assertFalse(result["ok"])
+        self.assertIn("INVALID_ARGUMENT", result["message"])
+        self.assertNotIn("sk-super-secret-value", result["message"])
+
+    def test_gemini_network_error_does_not_raise(self):
+        with mock.patch("handoff_webui._http_post_json", side_effect=urllib.error.URLError("boom")):
+            result = webui.call_gemini_api("sk-secret", "gemini-2.5-flash", [], self.workspace)
+        self.assertFalse(result["ok"])
+        self.assertIn("network error", result["message"])
+        self.assertNotIn("sk-secret", result["message"])
+
+    def test_gemini_blocked_prompt_is_reported_as_an_error(self):
+        # No candidates at all, with a promptFeedback.blockReason -- must
+        # not be silently treated as an empty-but-successful reply.
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}}),
+        ):
+            result = webui.call_gemini_api("sk-secret", "gemini-2.5-flash", [], self.workspace)
+        self.assertFalse(result["ok"])
+        self.assertIn("SAFETY", result["message"])
+
 
 class ValidateProviderApiKeyTests(unittest.TestCase):
     """validate_provider_api_key() -- the real, minimal call POST
@@ -2360,6 +2448,33 @@ class ValidateProviderApiKeyTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["text"], "(empty response)")
 
+    def test_gemini_success_returns_the_reply_text(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(200, {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}),
+        ) as spy:
+            result = webui.validate_provider_api_key("gemini", "sk-secret", "gemini-2.5-flash")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "ok")
+        sent_body = spy.call_args.args[2]
+        self.assertNotIn("tools", sent_body)
+        self.assertEqual(sent_body["generationConfig"]["maxOutputTokens"], webui.API_KEY_VALIDATION_MAX_TOKENS)
+        # Auth via header, not the `?key=` query-string form -- never put
+        # the secret in a URL.
+        sent_headers = spy.call_args.args[1]
+        self.assertEqual(sent_headers["x-goog-api-key"], "sk-secret")
+        self.assertNotIn("key=sk-secret", spy.call_args.args[0])
+
+    def test_gemini_invalid_key_is_reported_and_never_echoes_the_key(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(400, {"error": {"status": "INVALID_ARGUMENT", "message": "API key not valid"}}),
+        ):
+            result = webui.validate_provider_api_key("gemini", "sk-super-secret-value", "gemini-2.5-flash")
+        self.assertFalse(result["ok"])
+        self.assertIn("INVALID_ARGUMENT", result["message"])
+        self.assertNotIn("sk-super-secret-value", result["message"])
+
 
 class ToolCallTranscriptTests(unittest.TestCase):
     """_escape_fence()/_tool_call_transcript_block() -- the fenced-
@@ -2405,15 +2520,18 @@ class ToolCallTranscriptTests(unittest.TestCase):
 
 
 class ToolDefinitionTests(unittest.TestCase):
-    """anthropic_tool_definitions()/openai_tool_definitions() are both
-    derived from the single _TOOL_SPECS list -- this guards against the
-    two vendor schemas drifting out of sync with each other."""
+    """anthropic_tool_definitions()/openai_tool_definitions()/
+    gemini_tool_definitions() are all derived from the single
+    _TOOL_SPECS list -- this guards against the three vendor schemas
+    drifting out of sync with each other."""
 
-    def test_both_vendor_schemas_list_the_same_four_tool_names(self):
+    def test_all_three_vendor_schemas_list_the_same_four_tool_names(self):
         anthropic_names = {t["name"] for t in webui.anthropic_tool_definitions()}
         openai_names = {t["name"] for t in webui.openai_tool_definitions()}
+        gemini_names = {d["name"] for d in webui.gemini_tool_definitions()[0]["functionDeclarations"]}
         self.assertEqual(anthropic_names, {"read_file", "write_file", "edit_file", "run_shell"})
         self.assertEqual(anthropic_names, openai_names)
+        self.assertEqual(anthropic_names, gemini_names)
 
     def test_openai_definitions_are_strict_function_tools(self):
         for tool in webui.openai_tool_definitions():
@@ -2426,6 +2544,18 @@ class ToolDefinitionTests(unittest.TestCase):
             self.assertIn("input_schema", tool)
             self.assertNotIn("parameters", tool)
             self.assertEqual(tool["input_schema"]["type"], "object")
+
+    def test_gemini_definitions_are_a_single_tool_with_all_declarations(self):
+        # One Tool object holding every functionDeclaration, not one Tool
+        # per function -- see gemini_tool_definitions()'s own comment for
+        # why (matches the shape confirmed against Google's docs).
+        tools = webui.gemini_tool_definitions()
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(len(tools[0]["functionDeclarations"]), 4)
+        for declaration in tools[0]["functionDeclarations"]:
+            self.assertIn("parameters", declaration)
+            self.assertNotIn("additionalProperties", declaration["parameters"])
+            self.assertNotIn("strict", declaration)
 
 
 class ToolExecutorTests(unittest.TestCase):
@@ -2526,6 +2656,22 @@ class ToolExecutorTests(unittest.TestCase):
             result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "x"})
         self.assertIn("(output truncated)", result)
         self.assertLessEqual(len(result), webui.TOOL_OUTPUT_MAX_CHARS + 200)
+
+    def test_run_shell_pins_utf8_encoding(self):
+        # Regression coverage for a real crash class (2026-08-14, see
+        # handoff_bridge.py's run_provider() fix): without an explicit
+        # encoding, subprocess.run() falls back to
+        # locale.getpreferredencoding() -- not UTF-8 on a non-UTF-8-locale
+        # Windows machine -- to decode this command's stdout/stderr, and a
+        # model-issued shell command (or the files it reads) can easily
+        # produce non-ASCII output.
+        with mock.patch(
+            "handoff_webui.subprocess.run",
+            return_value=subprocess.CompletedProcess(args="x", returncode=0, stdout="ok", stderr=""),
+        ) as run_spy:
+            webui.execute_tool_call(self.workspace, "run_shell", {"command": "echo ok"})
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
 
     def test_unknown_tool_name_is_an_error_not_a_crash(self):
         result = webui.execute_tool_call(self.workspace, "delete_everything", {})
@@ -2792,6 +2938,112 @@ class AgenticLoopTests(unittest.TestCase):
         self.assertEqual(http_spy.call_count, 1)
         self.assertEqual(result["text"], "just chatting")
 
+    def test_gemini_executes_a_function_call_then_returns_the_final_text(self):
+        function_call_response = (
+            200,
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [{"functionCall": {"name": "read_file", "args": {"path": "a.txt"}, "id": "call-1"}}]
+                        }
+                    }
+                ]
+            },
+        )
+        final_response = (200, {"candidates": [{"content": {"parts": [{"text": "the file says hi"}]}}]})
+        with mock.patch(
+            "handoff_webui._http_post_json", side_effect=[function_call_response, final_response]
+        ) as post_spy, mock.patch("handoff_webui.execute_tool_call", return_value="hi") as exec_spy:
+            result = webui.call_gemini_api(
+                "sk-x", "gemini-2.5-flash", [{"role": "user", "content": "read a.txt"}], self.workspace
+            )
+        self.assertTrue(result["ok"])
+        exec_spy.assert_called_once_with(self.workspace, "read_file", {"path": "a.txt"})
+        self.assertIn("the file says hi", result["text"])
+        # The second call's request body must carry the functionResponse
+        # back, wrapped as a JSON object (not the bare tool-result
+        # string, execute_tool_call()'s own return shape) and echoing
+        # the same call id.
+        second_call_body = post_spy.call_args_list[1].args[2]
+        function_response_part = second_call_body["contents"][-1]["parts"][0]["functionResponse"]
+        self.assertEqual(function_response_part["response"], {"result": "hi"})
+        self.assertEqual(function_response_part["id"], "call-1")
+
+    def test_gemini_defensively_executes_every_function_call_even_if_the_api_ever_returns_more_than_one(self):
+        two_calls_response = (
+            200,
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"functionCall": {"name": "read_file", "args": {"path": "a.txt"}}},
+                                {"functionCall": {"name": "read_file", "args": {"path": "b.txt"}}},
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+        final_response = (200, {"candidates": [{"content": {"parts": [{"text": "done"}]}}]})
+        with mock.patch(
+            "handoff_webui._http_post_json", side_effect=[two_calls_response, final_response]
+        ), mock.patch("handoff_webui.execute_tool_call", return_value="ok") as exec_spy:
+            result = webui.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertTrue(result["ok"])
+        self.assertEqual(exec_spy.call_count, 2)
+
+    def test_gemini_max_iterations_bounds_executions_even_across_a_multi_part_response(self):
+        batch_response = (
+            200,
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {"functionCall": {"name": "run_shell", "args": {"command": "echo hi"}}}
+                                for _ in range(webui.MAX_TOOL_ITERATIONS + 10)
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+        with mock.patch("handoff_webui._http_post_json", return_value=batch_response), mock.patch(
+            "handoff_webui.execute_tool_call", return_value="ok"
+        ) as exec_spy:
+            result = webui.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertTrue(result["ok"])
+        self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
+        self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
+
+    def test_gemini_no_function_call_returns_on_the_first_call(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(200, {"candidates": [{"content": {"parts": [{"text": "just chatting"}]}}]}),
+        ) as http_spy:
+            result = webui.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
+        self.assertEqual(http_spy.call_count, 1)
+        self.assertEqual(result["text"], "just chatting")
+
+    def test_gemini_function_call_without_an_id_does_not_echo_a_fabricated_one(self):
+        # Some models/responses omit "id" on the functionCall (confirmed:
+        # only "always returned... for Gemini 3 models") -- the
+        # functionResponse sent back must not invent one.
+        no_id_response = (
+            200,
+            {"candidates": [{"content": {"parts": [{"functionCall": {"name": "run_shell", "args": {"command": "echo hi"}}}]}}]},
+        )
+        final_response = (200, {"candidates": [{"content": {"parts": [{"text": "done"}]}}]})
+        with mock.patch(
+            "handoff_webui._http_post_json", side_effect=[no_id_response, final_response]
+        ) as post_spy, mock.patch("handoff_webui.execute_tool_call", return_value="ok"):
+            webui.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
+        second_call_body = post_spy.call_args_list[1].args[2]
+        function_response_part = second_call_body["contents"][-1]["parts"][0]["functionResponse"]
+        self.assertNotIn("id", function_response_part)
+
 
 class RunProviderViaApiKeyTests(unittest.TestCase):
     def test_success_produces_a_record_with_no_session_or_run_dir(self):
@@ -2857,6 +3109,27 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
                 )
         spy.assert_called_once()
         self.assertEqual(records[0]["model"], "gpt-5.1-codex")
+
+    def test_gemini_with_a_saved_model_calls_the_api(self):
+        # DEC-25: gemini is dispatched via call_gemini_api(), the same as
+        # claude/codex go through their own caller.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("handoff_webui.call_gemini_api", return_value={"ok": True, "text": "ok"}) as spy:
+                records = webui.run_provider_via_api_key(
+                    root, "gemini", "hello", {"key": "sk-x", "model": "gemini-2.5-flash"}, "continue"
+                )
+        spy.assert_called_once()
+        self.assertEqual(records[0]["model"], "gemini-2.5-flash")
+
+    def test_gemini_with_no_model_configured_and_no_default_errors_without_calling_the_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("handoff_webui.call_gemini_api") as spy:
+                records = webui.run_provider_via_api_key(root, "gemini", "hello", {"key": "sk-x", "model": None}, "continue")
+        spy.assert_not_called()
+        self.assertTrue(records[0]["reason"].startswith("tool_failure"))
+        self.assertIn("model", records[0]["final_text"])
 
     def test_model_override_takes_priority_over_the_saved_credential_model(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3029,17 +3302,14 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         status, data = self._get("/api/providers")
         self.assertEqual(status, 200)
         by_name = {p["provider"]: p for p in data["providers"]}
-        # Phase 5: PROVIDERS grew to include gemini for CLI dispatch, but
-        # API_KEY_MODE_PROVIDERS (DEC-15's scope) deliberately did not --
-        # gemini shows up here (real CLI-detection badge) without gaining
-        # a key field.
         self.assertEqual(set(by_name), {"codex", "claude", "gemini"})
         for info in by_name.values():
             self.assertIn("cli_detected", info)
             self.assertFalse(info["api_key_configured"])
+        # DEC-25: all three now support API-key mode.
         self.assertTrue(by_name["codex"]["api_key_mode_supported"])
         self.assertTrue(by_name["claude"]["api_key_mode_supported"])
-        self.assertFalse(by_name["gemini"]["api_key_mode_supported"])
+        self.assertTrue(by_name["gemini"]["api_key_mode_supported"])
 
     def _mock_valid_key_response(self):
         # POST /api/provider-key now calls validate_provider_api_key()
@@ -3088,14 +3358,42 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("error", data)
 
-    def test_gemini_is_rejected_here_even_though_its_a_real_cli_provider_elsewhere(self):
-        # DEC-15's API-key-mode scope (API_KEY_MODE_PROVIDERS) deliberately
-        # was not extended to gemini when PROVIDERS grew in Phase 5 -- this
-        # endpoint specifically must keep rejecting it, even though
-        # GET /api/providers and POST /api/run both now recognize it fine.
-        status, data = self._post("/api/provider-key", {"provider": "gemini", "key": "sk-x"})
+    def test_gemini_key_can_be_saved_and_verified_too(self):
+        # DEC-25 extended API_KEY_MODE_PROVIDERS to include gemini
+        # (previously rejected here even though GET /api/providers and
+        # POST /api/run both already recognized it as a real CLI
+        # provider, DEC-15's original, narrower scope). Gemini's response
+        # shape differs from Claude's -- candidates[0].content.parts,
+        # not content -- so this uses its own mocked response rather than
+        # reusing _mock_valid_key_response().
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(200, {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}),
+        ):
+            status, data = self._post(
+                "/api/provider-key", {"provider": "gemini", "key": "sk-x", "model": "gemini-2.5-flash"}
+            )
+        self.assertEqual(status, 200)
+        self.assertTrue(data["api_key_configured"])
+        self.assertEqual(data["confirmation"], "ok")
+        _, providers = self._get("/api/providers")
+        gemini = next(p for p in providers["providers"] if p["provider"] == "gemini")
+        self.assertTrue(gemini["api_key_configured"])
+
+    def test_a_gemini_key_that_fails_validation_is_rejected_with_400_and_not_saved(self):
+        with mock.patch(
+            "handoff_webui._http_post_json",
+            return_value=(400, {"error": {"status": "INVALID_ARGUMENT", "message": "API key not valid"}}),
+        ):
+            status, data = self._post(
+                "/api/provider-key", {"provider": "gemini", "key": "sk-wrong", "model": "gemini-2.5-flash"}
+            )
         self.assertEqual(status, 400)
-        self.assertIn("error", data)
+        self.assertIn("INVALID_ARGUMENT", data["error"])
+        self.assertNotIn("sk-wrong", data["error"])
+        _, providers = self._get("/api/providers")
+        gemini = next(p for p in providers["providers"] if p["provider"] == "gemini")
+        self.assertFalse(gemini["api_key_configured"])
 
     def test_a_key_without_a_model_is_rejected_with_400_and_not_saved(self):
         # A non-empty key has nothing to validate against without a

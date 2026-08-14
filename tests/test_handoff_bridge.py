@@ -447,6 +447,19 @@ class ShortRunTimeoutTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertIn("not found", stderr)
 
+    def test_pins_utf8_encoding_not_the_locale_default(self):
+        # Regression coverage for a real crash (2026-08-14): without an
+        # explicit encoding, subprocess.run() falls back to
+        # locale.getpreferredencoding() -- cp949, not UTF-8, on a
+        # Korean-locale Windows machine -- to decode a git/gh call's
+        # stdout/stderr, which can easily contain non-ASCII characters.
+        with mock.patch.object(
+            hb.subprocess, "run", return_value=subprocess.CompletedProcess(["fake"], returncode=0, stdout="", stderr="")
+        ) as run_spy:
+            hb.short_run(["fake"])
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
+
 
 class RunProviderTimeoutIntegrationTests(unittest.TestCase):
     """CLI-level regression test for the exact scenario flagged in review:
@@ -668,6 +681,79 @@ class RunProviderAutoFallbackBuildPromptCountTests(unittest.TestCase):
             2,
             msg="build_prompt() must run at most once per fallback hop, not twice for the same fallback",
         )
+
+
+class RunProviderSubprocessEncodingTests(unittest.TestCase):
+    """Regression coverage for a real crash (2026-08-14): run_provider()'s
+    subprocess.run() call had no explicit `encoding`, so Python fell back
+    to locale.getpreferredencoding() to encode `input=prompt` for the
+    provider's stdin -- cp949 on a Korean-locale Windows machine, not
+    UTF-8. `prompt` folds in this project's own docs
+    (docs/shared-agent-contract.md, docs/verification-playbook.md), which
+    contain literal em dashes -- cp949 can't encode U+2014, so a plain
+    "테스트" prompt still crashed with UnicodeEncodeError before this
+    fix, reproduced directly on a real cp949-locale Windows machine (not
+    just inferred): even the simplest possible run crashed, because the
+    offending character came from the *folded-in doc content*, not the
+    user's own text."""
+
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
+
+    def test_provider_subprocess_call_pins_utf8_encoding(self):
+        args = hb.argparse.Namespace(
+            prompt="hello",
+            prompt_file=None,
+            execute=True,
+            auto_fallback=False,
+            timeout_seconds=30,
+            model=None,
+            instruction_type="continue",
+        )
+        state = {"task": "hello", "primary_provider": "codex", "status": "ready"}
+        stdout = (
+            '{"type": "system", "subtype": "init", "session_id": "s"}\n'
+            '{"type": "result", "session_id": "s", "result": "ok", '
+            '"total_cost_usd": 0.0, "is_error": false}\n'
+        )
+        with mock.patch.object(
+            hb.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(["codex"], returncode=0, stdout=stdout, stderr=""),
+        ) as run_spy:
+            hb.run_provider("codex", args, state)
+        provider_call = next(call for call in run_spy.call_args_list if call.args[0][0] == "codex")
+        self.assertEqual(provider_call.kwargs["encoding"], "utf-8")
+        self.assertEqual(provider_call.kwargs["errors"], "replace")
+
+    def test_a_prompt_containing_an_em_dash_does_not_raise_on_a_real_subprocess_call(self):
+        # Not mocked: a real subprocess.run() with a real child process
+        # (`cmd /c more` on Windows, `cat` on POSIX) reading real stdin --
+        # the exact boundary that crashed. This em dash is standing in for
+        # the ones already present in docs/shared-agent-contract.md and
+        # docs/verification-playbook.md, which build_prompt() always
+        # folds into every real prompt regardless of user input.
+        command = ["cmd", "/c", "more"] if os.name == "nt" else ["cat"]
+        args = hb.argparse.Namespace(
+            prompt="hello — world",
+            prompt_file=None,
+            execute=True,
+            auto_fallback=False,
+            timeout_seconds=15,
+            model=None,
+            instruction_type="continue",
+        )
+        state = {"task": "hello", "primary_provider": "codex", "status": "ready"}
+        with mock.patch.object(hb, "provider_command", return_value=command):
+            exit_code = hb.run_provider("codex", args, state)
+        # A crash here would surface as an uncaught UnicodeEncodeError
+        # propagating out of run_provider() -- reaching this assertion at
+        # all is the actual regression check.
+        self.assertIsInstance(exit_code, int)
 
 
 class NextProviderTests(unittest.TestCase):

@@ -22,6 +22,12 @@ def repo_root() -> Path:
     result = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
         text=True,
+        # Without an explicit encoding, subprocess falls back to
+        # locale.getpreferredencoding() -- not UTF-8 on a non-UTF-8-locale
+        # Windows machine. A repo path can plausibly contain non-ASCII
+        # characters (a Windows username, a localized folder name).
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )

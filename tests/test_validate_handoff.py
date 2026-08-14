@@ -70,6 +70,20 @@ class CheckSecretsCommandTests(unittest.TestCase):
         fail_spy.assert_called_once()
         self.assertIn("found a secret", fail_spy.call_args.args[0])
 
+    def test_pins_utf8_encoding(self):
+        # Regression coverage for a real crash class (2026-08-14, see
+        # handoff_bridge.py's run_provider() fix): without an explicit
+        # encoding, subprocess.run() falls back to
+        # locale.getpreferredencoding() -- not UTF-8 on a non-UTF-8-locale
+        # Windows machine -- to decode scan_secrets.py's own output.
+        with mock.patch.object(vh.sys, "frozen", False, create=True), mock.patch(
+            "validate_handoff.subprocess.run"
+        ) as run_spy:
+            run_spy.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+            vh.check_secrets(Path("/some/root"))
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
+
 
 class CheckTestsFrozenSkipTests(unittest.TestCase):
     """check_tests() re-running this project's own dev unittest suite

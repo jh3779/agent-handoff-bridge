@@ -207,6 +207,13 @@ class HandoffDesktop(TK_BASE):
                     command,
                     cwd=str(BRIDGE_ROOT),
                     text=True,
+                    # Without an explicit encoding, subprocess falls back
+                    # to locale.getpreferredencoding() -- not UTF-8 on a
+                    # non-UTF-8-locale Windows machine -- and this runs
+                    # handoff_bridge.py commands whose output can reflect
+                    # arbitrary task/prompt text.
+                    encoding="utf-8",
+                    errors="replace",
                     capture_output=True,
                     check=False,
                 )

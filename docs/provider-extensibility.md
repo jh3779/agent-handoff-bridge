@@ -74,7 +74,10 @@ what had to change, not a forward-looking plan:
   extend to a new CLI provider — it has its own, deliberately separate
   `API_KEY_MODE_PROVIDERS` tuple ([DEC-15](design-system/flutter-mapping.html#s1c)).
   Adding a CLI provider to `PROVIDERS` never silently changes what
-  API-key mode supports; that stays a distinct decision.
+  API-key mode supports; that stays a distinct decision. Gemini's own
+  API-key-mode decision was made later, separately, as
+  [DEC-25](design-system/flutter-mapping.html#s1c) — see "Adding A New
+  API-Key-Based Provider" below.
 
 ## Adding A New CLI-Based Provider — What Actually Happened For Gemini
 
@@ -172,6 +175,29 @@ extended to full agentic parity by the CFL-17 follow-up
   itself, since there is no default to fall back on for the verification
   call either. See `docs/webui-chat-storage.md`'s "Credentials & API-Key
   Mode" section for the full contract.
+- **Gemini added as a third API-key-mode provider**
+  ([DEC-25](design-system/flutter-mapping.html#s1c), resolving DEC-15's
+  originally-left-open "should Gemini get API-key mode too" question).
+  `API_KEY_MODE_PROVIDERS` grew to `("codex", "claude", "gemini")` --
+  still its own tuple, not an alias for `PROVIDERS`, so a future CLI
+  provider still needs its own separate decision the same way this one
+  did. New `call_gemini_api()` matches `call_anthropic_messages_api()`/
+  `call_openai_responses_api()`'s contract and tool-use loop exactly,
+  but Gemini's actual wire format differs enough to need real
+  translation, not a drop-in copy: `Content` objects use `{"role",
+  "parts": [...]}` instead of `{"role", "content": "..."}` (`"model"` is
+  Gemini's assistant-turn role, not `"assistant"`), and its function
+  calling uses `functionCall`/`functionResponse` parts (the response
+  sent back with `role: "user"`, wrapping the tool executor's plain-text
+  result as `{"result": <text>}` since Gemini requires an object there,
+  unlike the other two). Confirmed against
+  [ai.google.dev/api/generate-content](https://ai.google.dev/api/generate-content)
+  and
+  [ai.google.dev/gemini-api/docs/generate-content/function-calling](https://ai.google.dev/gemini-api/docs/generate-content/function-calling)
+  before implementing -- same "don't assume the shape" discipline this
+  project already applied to Anthropic's and OpenAI's APIs. Auth via the
+  `x-goog-api-key` header, not the `?key=` query-string alternative the
+  same docs also describe, so the secret never ends up in a URL.
 
 ## Checklist When A Provider Is Actually Added
 

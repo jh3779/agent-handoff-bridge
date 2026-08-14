@@ -4,15 +4,33 @@
 
 ## Unreleased
 
+- `handoff_bridge.py`'s `--instruction-type` (on both `init` and `run`)
+  now rejects any value outside `new-task`/`continue`/`handoff`/`review`/
+  `verify` instead of silently accepting and persisting arbitrary text
+  into the shared `.handoff/current.md` state.
 - API-key mode: `POST /api/provider-key` now verifies a key with a real,
   minimal, tool-free call to the provider's own API before ever saving
   it — a bad key, wrong model name, or network failure returns a 400
   with nothing written, instead of silently saving an unchecked string.
   `model` is now a hard requirement whenever a non-empty key is saved
-  (no built-in default exists for either provider, and the verification
+  (no built-in default exists for any provider, and the verification
   call needs one). The connection panel's success toast now shows the
   actual confirmation reply. See `docs/webui-chat-storage.md`'s
   "Credentials & API-Key Mode" section.
+- API-key mode: **Gemini is now a third supported provider**, alongside
+  Codex and Claude — connect it the same way, with a pasted API key and
+  an explicit model name (e.g. `gemini-2.5-flash`). Gets the same full
+  tool-use turn loop (`read_file`/`write_file`/`edit_file`/`run_shell`)
+  as the other two. Resolves the "should Gemini get API-key mode too"
+  question this project had left open since the feature first shipped.
+- Fixed a real crash on Windows machines whose system locale isn't
+  UTF-8-based (e.g. Korean/`cp949`): every real `execute` run would fail
+  immediately with `UnicodeEncodeError`, even for the simplest possible
+  message, because a subprocess call's stdin encoding silently fell back
+  to the OS locale codec instead of UTF-8, and this project's own docs
+  (folded into every prompt) contain characters that codec can't
+  represent. Every `subprocess.run`/`Popen` call across the project now
+  pins `encoding="utf-8"` explicitly.
 
 ## v0.2.0 — 2026-08-06
 

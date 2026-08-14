@@ -7,9 +7,11 @@ python3 -m unittest discover -s tests -v
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -59,6 +61,21 @@ class MainExitCodeTests(unittest.TestCase):
         # A root with no git repo (or git unavailable) must not crash --
         # it should degrade to "nothing to validate" rather than raise.
         self.assertIsNone(cbn.current_branch(Path("/nonexistent-path-for-tests")))
+
+    def test_current_branch_pins_utf8_encoding(self):
+        # Regression coverage for a real crash class (2026-08-14, see
+        # handoff_bridge.py's run_provider() fix): without an explicit
+        # encoding, subprocess.run() falls back to
+        # locale.getpreferredencoding() -- not UTF-8 on a non-UTF-8-locale
+        # Windows machine.
+        with mock.patch.object(
+            cbn.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="main\n", stderr=""),
+        ) as run_spy:
+            cbn.current_branch(Path("."))
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
 
 
 if __name__ == "__main__":

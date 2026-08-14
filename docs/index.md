@@ -26,6 +26,8 @@ context.
 - [Platform Setup](platform-setup.md): macOS and Windows launcher setup.
 - [Architecture](architecture.md): how the files and command flows fit
   together.
+- [Codebase Review](codebase-review.md): a point-in-time code review of the
+  whole project — architecture, code quality, and concrete findings.
 - [Korean Operator Guide](ko-operator-guide.md): Korean setup and instruction
   templates for phone-based operation and handoff.
 - [Security Model](security-model.md): safety boundaries and operational risks.

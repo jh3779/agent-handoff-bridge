@@ -314,6 +314,18 @@ def short_run(args: list[str], timeout: int = 10) -> tuple[int, str, str]:
         result = subprocess.run(
             args,
             text=True,
+            # encoding/errors: without an explicit encoding, subprocess
+            # falls back to locale.getpreferredencoding() for both
+            # directions -- on a non-UTF-8-locale Windows machine (e.g.
+            # cp949 on Korean Windows) that raises UnicodeEncodeError the
+            # instant a git/gh call's output contains a character the
+            # locale codec can't represent (an em dash in a commit
+            # message is enough). Every git/gh call this project makes
+            # can plausibly hit non-ASCII output, and errors="replace"
+            # matches decode_timeout_output()'s own established
+            # never-crash-on-decode posture below.
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=timeout,
             check=False,
@@ -1034,6 +1046,24 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
             command,
             input=prompt,
             text=True,
+            # encoding/errors: `prompt` folds in this project's own docs
+            # (docs/shared-agent-contract.md etc., liberally using em
+            # dashes and other Unicode punctuation) plus arbitrary user
+            # text -- without an explicit encoding, subprocess falls back
+            # to locale.getpreferredencoding() for the stdin write, which
+            # is cp949 (not UTF-8) on a Korean-locale Windows machine and
+            # raises UnicodeEncodeError on the very first non-cp949
+            # character, before the provider CLI is ever actually run.
+            # Reproduced directly (2026-08-14): a plain "테스트" prompt
+            # still crashed here, since the *doc content* folded into
+            # `prompt`, not the user's own text, contained the offending
+            # character. errors="replace" also covers the read-back
+            # direction (a provider's real stdout/stderr) so a stray
+            # malformed byte can't crash an otherwise-successful run --
+            # the same never-crash-on-decode posture as
+            # decode_timeout_output() elsewhere in this file.
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             cwd=Path.cwd(),
             timeout=None if args.timeout_seconds == 0 else args.timeout_seconds,

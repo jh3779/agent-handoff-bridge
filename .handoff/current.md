@@ -1593,3 +1593,227 @@ than a re-check of already-proven ground.
   this environment).
 - **Blocked**: none. Still on branch `fix/instruction-type-validation`,
   uncommitted — no commit/PR requested this session.
+
+**2026-08-14, follow-up (after the commit above)**: user pasted a real
+crash traceback from running the frozen Windows `.exe` build
+(`[PYI-18892:ERROR]`), triggered by typing a plain test message
+("테스트로 테스트테스트") and hitting execute:
+`UnicodeEncodeError: 'cp949' codec can't encode character '\u2014' in
+position 5985: illegal multibyte sequence`, raised inside
+`subprocess.run`'s stdin write in `run_provider()`.
+- **Root cause, confirmed empirically on this real machine**: this
+  Windows machine's locale is Korean, `locale.getpreferredencoding(False)`
+  is `cp949` (confirmed via `python -c "import locale;
+  print(locale.getpreferredencoding(False))"`). Every `subprocess.run(...,
+  text=True, ...)` call in this codebase omitted an explicit `encoding=`,
+  so Python fell back to that locale codec for both directions (encoding
+  `input=` for stdin, decoding stdout/stderr) instead of UTF-8. `prompt`
+  (what actually gets written to the provider's stdin) folds in this
+  project's own docs (`docs/shared-agent-contract.md`,
+  `docs/verification-playbook.md`), which contain literal em dashes
+  (U+2014) -- cp949 cannot represent that character, so **any** execute
+  call crashes immediately, regardless of what the user actually typed;
+  the user's own simple test message was never the trigger. Reproduced
+  directly and minimally first (`subprocess.run(['cmd','/c','more'],
+  input='hello — world', text=True, capture_output=True)` raises the
+  identical `UnicodeEncodeError` on this machine), then reproduced against
+  the real `run_provider()` code path itself (mocked provider command,
+  same crash, then confirmed clean after the fix).
+- **Changed**: audited every `subprocess.run`/`Popen` call across all
+  production (non-test) `.py` files for the same gap and fixed all of
+  them with explicit `encoding="utf-8"` (plus `errors="replace"` on
+  capture-output calls, matching `decode_timeout_output()`'s existing
+  never-crash-on-decode posture in this codebase -- kept strict on
+  `scan_secrets.py`'s `read_staged_text()` specifically, since its
+  `except UnicodeDecodeError` guard relies on strict decoding to detect
+  "this file isn't UTF-8 text" and skip it, its actual intended purpose):
+  `handoff_bridge.py` (`short_run()`, `run_provider()`'s main provider
+  call -- the confirmed crash site), `handoff_webui.py` (the `init`
+  subprocess in `create_workspace_for_first_message()`, the `run_shell`
+  tool executor, the outer bridge subprocess in
+  `_run_provider_via_bridge_locked()`), `remote_handoff_server.py`
+  (`run_command()`), `scripts/validate_handoff.py` (`check_secrets()`),
+  `scripts/scan_secrets.py` (`list_files()`, `read_staged_text()`),
+  `scripts/check_branch_name.py` (`current_branch()`),
+  `scripts/handoff_hook.py` (`repo_root()`), `handoff_desktop.py`
+  (`run_command()`'s worker), `scripts/build_sidecars.py`
+  (`detect_target_triple()`, low-risk/ASCII-only but fixed for
+  consistency). Every fix carries a comment explaining the locale-default
+  hazard, not just the `encoding=` addition, so a future edit doesn't
+  quietly drop it.
+- **Not changed**: `handoff_desktop.py`'s fix has no automated regression
+  test -- `tests/test_handoff_desktop.py` deliberately never instantiates
+  a real Tk widget tree (documented in its own module docstring; the
+  fixed code lives inside a `worker()` closure launched via
+  `threading.Thread`/`self.after()`, genuinely impractical to unit test
+  headlessly), so this one relies on matching the same
+  reviewed-everywhere-else pattern rather than its own test.
+  `scripts/build_sidecars.py` similarly has no existing test file and
+  none was added (dev/CI-only build script; `rustc -vV` output is
+  effectively always pure ASCII, lowest-risk fix in the batch).
+- **Verified**: 12 new regression tests across 7 test files, each
+  asserting `encoding="utf-8"` (and `errors="replace"` where applicable)
+  is actually passed to the mocked `subprocess.run` call -- plus one that
+  runs a real (unmocked) subprocess with a real em dash in the input and
+  asserts no exception propagates. Full suite: `python -m unittest
+  discover -s tests` -> 437 tests (425 + 12), 0 failures, skipped=35
+  (unchanged). `python handoff_bridge.py check` -> PASS. `python
+  scripts/scan_secrets.py` -> clean. `python -m py_compile` clean on
+  every changed file. The exact user-reported crash was reproduced
+  end-to-end against the real `run_provider()` function (not just the
+  isolated minimal repro) before the fix, and confirmed crash-free after,
+  both on this real cp949-locale Windows machine.
+- **Remaining**: the user's crash came from running a **frozen** `.exe`
+  (PyInstaller bootloader, `[PYI-18892:ERROR]`) -- almost certainly the
+  packaged v0.2.0 Windows installer. This fix is only in source on this
+  branch; it does **not** retroactively fix any already-built `.exe`. The
+  user needs either: run from source in the meantime (`python
+  handoff_bridge.py ...`, this environment's real Python 3.12.10 at
+  `C:\Users\Admin\AppData\Local\Programs\Python\Python312`), or a new
+  sidecar/installer build once this fix is merged and released. Not done
+  this pass: no new release was cut, no sidecar rebuild was triggered --
+  out of scope unless asked.
+- **Blocked**: none. Still on branch `fix/instruction-type-validation`,
+  uncommitted -- no commit/PR requested yet for this follow-up.
+
+**2026-08-14, follow-up 2 (before committing the above)**: user asked
+(before committing the encoding fix) whether settings should be added
+for "someone who just uses AI by entering an API key" -- clarified via
+AskUserQuestion into a concrete ask: **extend API-key mode to support
+Gemini too** (DEC-15 had left this as an explicitly open, separate
+question when API-key mode first shipped in Phase 4 -- codex/claude
+only).
+- **Changed**: Researched Gemini's real `generateContent` REST API
+  against Google's own current official docs before implementing (same
+  discipline this project already applied to Anthropic/OpenAI) --
+  `docs/research-api-key-mode.md`'s new "Gemini: generateContent API"
+  section has the full findings and sources. New `call_gemini_api()`
+  (`handoff_webui.py`) matches `call_anthropic_messages_api()`/
+  `call_openai_responses_api()`'s exact contract (`{"ok"/"text"}` /
+  `{"ok"/"message"}`) and full tool-use turn loop
+  (`read_file`/`write_file`/`edit_file`/`run_shell`, same
+  `MAX_TOOL_ITERATIONS` bound, same defensive-every-call-block posture),
+  but genuinely translates rather than reuses the wire format: Gemini's
+  `Content` objects are `{"role", "parts": [...]}`, not the shared
+  `{"role", "content": "..."}` shape `build_api_message_history()`
+  builds (new `_gemini_contents_from_messages()` helper; `"model"`, not
+  `"assistant"`, is Gemini's role for a prior turn), and its function
+  calling uses `functionCall`/`functionResponse` parts (result sent back
+  with `role: "user"`, wrapping the shared `execute_tool_call()`'s
+  plain-text return as `{"result": <text>}` since Gemini's schema
+  requires an object there, unlike Anthropic's/OpenAI's bare-string tool
+  results). New `gemini_tool_definitions()` renders the same
+  `_TOOL_SPECS` list Anthropic/OpenAI already share into Gemini's
+  `functionDeclarations` shape (one Tool object holding all four, not
+  one Tool per function). Auth via the `x-goog-api-key` header, not the
+  `?key=` query-string alternative the same docs also mention -- keeps
+  the key out of any URL. `API_KEY_MODE_PROVIDERS` grew to `("codex",
+  "claude", "gemini")` (kept as its own tuple, not an alias for
+  `PROVIDERS`, so a future CLI provider still needs its own explicit
+  decision). `validate_provider_api_key()` got a third branch (Gemini's
+  error shape uses `error.status`, e.g. `"INVALID_ARGUMENT"`, not
+  `error.type` the way Anthropic/OpenAI's do). `webui/app.js`'s
+  `PROVIDER_LABEL["gemini"]` changed from `"Gemini CLI"` to `"Gemini"`
+  (no longer CLI-only, so the old label read oddly in the connection
+  panel's save/delete toasts) plus a stale comment fix. No frontend
+  *logic* change was needed beyond that -- `renderProviderRow()` already
+  read `api_key_mode_supported` generically from the backend.
+- **Recorded as DEC-25** (`docs/design-system/flutter-mapping.html`'s
+  Decision Log, with a forward-reference added to DEC-15's own row) --
+  resolves the question DEC-15 explicitly left open. Docs updated:
+  `docs/webui-chat-storage.md` ("Credentials & API-Key Mode" + "Tool
+  loop" sections), `docs/provider-extensibility.md` (new "Gemini added
+  as a third API-key-mode provider" bullet), `docs/research-api-key-mode.md`
+  (new Gemini section + Sources subsection), `docs/design-system/roadmap.md`
+  and `components.html` (both had stale "API-key mode is still
+  codex/claude only" notes from Phase 5, corrected with a forward
+  pointer to DEC-25 rather than silently rewritten), `docs/release-notes.md`'s
+  `## Unreleased` (also backfilled a missing entry for the
+  instruction-type-validation fix from earlier this session, found
+  missing while touching this file).
+- **Verified**: new tests across `CallProviderApiTests` (4: success,
+  error-never-echoes-key, network-error, blocked-prompt),
+  `AgenticLoopTests` (5: executes-then-returns-final-text,
+  defensively-executes-every-call, max-iterations-bound,
+  no-function-call-returns-first-call, no-id-doesn't-fabricate-one),
+  `ValidateProviderApiKeyTests` (2), `RunProviderViaApiKeyTests` (2),
+  `ToolDefinitionTests` (1 new + the "two vendor schemas" test widened
+  to three), `ProviderApiLiveServerTests` (the old
+  `test_gemini_is_rejected_here...` test -- now factually wrong --
+  replaced with `test_gemini_key_can_be_saved_and_verified_too` +
+  a validation-failure counterpart). Two pre-existing tests that
+  asserted the *old* "gemini is rejected/unsupported" behavior as their
+  premise were fixed to use a genuinely-unsupported provider name
+  instead (`CredentialsTests::test_read_credentials_filters_unknown_provider`,
+  `ProviderApiLiveServerTests::test_providers_list_reflects_cli_detection_and_key_state`'s
+  `api_key_mode_supported` assertion flipped true). Full suite: `python
+  -m unittest discover -s tests` -> 452 tests (437 + 15 new), 0
+  failures, skipped=35 (unchanged). `python handoff_bridge.py check` ->
+  PASS. `python scripts/scan_secrets.py` -> clean. `python -m py_compile`
+  clean. HTML tag balance in `flutter-mapping.html` re-verified
+  programmatically after the DEC-25 row edit (same check this project's
+  history already used for that file).
+- **Not verified against a real Gemini account**: same caveat as the
+  original API-key-mode-verification feature earlier this session -- no
+  real Gemini API key available in this environment; every test mocks
+  `_http_post_json`. The request/response shapes themselves were
+  confirmed against Google's current official docs (not assumed), but a
+  real end-to-end round trip (save a real Gemini key, chat, have it call
+  a tool) has not been exercised. Whoever next has a real Gemini API key
+  should do one.
+- **Blocked**: none. Still on branch `fix/instruction-type-validation`,
+  uncommitted -- no commit/PR requested yet.
+
+**2026-08-14, follow-up 3**: user asked for a code review of the whole
+project, documented into `docs/`. Clarified via AskUserQuestion into "a
+new document reviewing the entire current codebase for quality/structure/
+risk" (not a session retrospective, not an architecture explainer).
+- **Changed**: new `docs/codebase-review.md`. Wrote the sections covering
+  `handoff_bridge.py`/`handoff_webui.py`/tests/quality-gates/docs-system
+  directly (deep first-hand knowledge from this session's own work);
+  delegated two parallel background Explore agents for the parts examined
+  less closely this session (desktop/CLI controllers, remote HTTP
+  client/server, build/packaging scripts; and separately, the full
+  `webui/app.js` frontend + `src-tauri/` Rust shell), then independently
+  verified their two most concrete new-bug claims by reading the exact
+  cited lines myself before writing them into the doc as confirmed (not
+  just relayed) findings:
+  1. `remote_handoff_submit.py:93` -- `--auto-fallback` is declared
+     `action="store_true", default=True`, so it's unconditionally `True`
+     regardless of whether the flag is passed, with no
+     `--no-auto-fallback` counterpart -- confirmed by reading the exact
+     line; the server-side `normalize_task()` fully supports
+     `auto_fallback: false` via the JSON API directly, so only this CLI
+     client can never send it.
+  2. `handoff_control.py:45-51,81-88` -- `initialize_task()`'s
+     primary-provider prompt reuses `ask_provider()`, which validates
+     against the full `PROVIDERS` tuple (includes `"auto"`), then passes
+     the answer straight through as `--primary` -- confirmed
+     `handoff_bridge.py init --primary`'s own `choices=` (line 1229) is
+     `PROVIDERS` from `handoff_bridge.py` itself, which has no `"auto"`
+     entry, so typing `auto` there produces a raw, confusing argparse
+     error from the child subprocess. `run_once()` (same file) and
+     `handoff_desktop.py` both already avoid this correctly.
+  Neither bug was fixed in this pass -- this was a review/documentation
+  task, not a fix task; both are listed in the doc's "Consolidated
+  Findings" table as concrete, actionable, still-open items. Several
+  other findings (Tauri sidecar-spawn `.expect()`/panic risk,
+  `package_platforms.py`'s `COMMON_FILES` possibly omitting some test
+  files, `docs/architecture.md` not mentioning the Web UI/Tauri shell at
+  all, a stale "pip install pywebview" instruction shown even inside the
+  Tauri app that can never act on it) came from the agents' reports and
+  are recorded as "open, needs confirmation" rather than asserted as
+  fully proven -- not independently re-verified line-by-line the way the
+  two bugs above were, per this session's own standing practice of not
+  trusting a single unverified pass. Linked from `docs/index.md`'s
+  Operator Docs section, next to Architecture.
+- **Verified**: `python scripts/scan_secrets.py` clean on the new file
+  (pure prose, no real risk expected, checked anyway).
+  `python handoff_bridge.py check` -- PASS, 452 tests unchanged (this was
+  a docs-only addition, no test-suite changes). No code was changed in
+  this follow-up.
+- **Remaining**: the two independently-confirmed bugs (#2, #3 in the
+  review doc's findings table) and the four "needs confirmation" items
+  are all real candidates for a future fix pass, not yet actioned.
+- **Blocked**: none. Still on branch `fix/instruction-type-validation`,
+  uncommitted -- no commit/PR requested yet.

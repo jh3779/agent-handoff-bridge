@@ -148,6 +148,24 @@ class RunCommandTimeoutDecodeTests(unittest.TestCase):
         self.assertIsInstance(command_record["stderr"], str)
         json.dumps(command_record)  # must not raise
 
+    def test_pins_utf8_encoding(self):
+        # Regression coverage for a real crash class (2026-08-14, see
+        # handoff_bridge.py's run_provider() fix): without an explicit
+        # encoding, subprocess.run() falls back to
+        # locale.getpreferredencoding() -- not UTF-8 on a non-UTF-8-locale
+        # Windows machine -- to decode this subprocess's stdout/stderr,
+        # which reflects handoff_bridge.py's own output for arbitrary
+        # task/prompt content.
+        task = {"id": "t1", "workspace": "/tmp/ws", "commands": []}
+        with mock.patch.object(
+            rhs.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+        ) as run_spy, mock.patch.object(rhs, "update_task"):
+            rhs.run_command(task, ["run", "codex"], timeout=1)
+        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
+
 
 class ProviderListTests(unittest.TestCase):
     def test_gemini_is_a_valid_provider_and_primary(self):

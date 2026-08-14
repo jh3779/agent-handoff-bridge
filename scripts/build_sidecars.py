@@ -69,7 +69,12 @@ def detect_target_triple() -> str:
     explicitly to skip this in a context that doesn't have Rust
     installed at all (this script itself never needs Rust; only the
     naming convention it produces does)."""
-    result = subprocess.run(["rustc", "-vV"], capture_output=True, text=True, check=True)
+    # encoding="utf-8": consistent with every other subprocess call in
+    # this project (see handoff_bridge.py's run_provider() for the
+    # confirmed crash a missing encoding produces on a non-UTF-8-locale
+    # Windows machine) -- `rustc -vV` output is normally pure ASCII, but
+    # there is no reason for this one call to be the odd one out.
+    result = subprocess.run(["rustc", "-vV"], capture_output=True, text=True, encoding="utf-8", check=True)
     for line in result.stdout.splitlines():
         if line.startswith("host:"):
             return line.split(":", 1)[1].strip()

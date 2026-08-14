@@ -188,7 +188,11 @@ def check_secrets(root: Path) -> None:
     else:
         scanner = root / "scripts" / "scan_secrets.py"
         command = [sys.executable, str(scanner), "--root", str(root)]
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    # encoding/errors: without an explicit encoding, subprocess falls
+    # back to locale.getpreferredencoding() to decode stdout/stderr --
+    # not UTF-8 on a non-UTF-8-locale Windows machine -- and scanned file
+    # paths/contents can easily be non-ASCII.
+    result = subprocess.run(command, text=True, encoding="utf-8", errors="replace", capture_output=True, check=False)
     if result.returncode != 0:
         fail(f"secret scan failed:\n{result.stdout}{result.stderr}")
 

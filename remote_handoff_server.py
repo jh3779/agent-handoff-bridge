@@ -265,6 +265,15 @@ def run_command(task: dict[str, Any], args: list[str], timeout: int) -> int:
         result = subprocess.run(
             command,
             text=True,
+            # Without an explicit encoding, subprocess falls back to
+            # locale.getpreferredencoding() to decode stdout/stderr -- not
+            # UTF-8 on a non-UTF-8-locale Windows machine -- and this
+            # shells out to handoff_bridge.py, whose own output can
+            # reflect arbitrary task/prompt content. See
+            # handoff_bridge.py's run_provider() for the confirmed crash
+            # this class of bug produces.
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             timeout=None if timeout == 0 else timeout,
             check=False,
