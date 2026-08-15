@@ -1892,3 +1892,52 @@ risk" (not a session retrospective, not an architecture explainer).
   a pointer comment, not deleted (keeps the accidental-close incident
   visible in the repo's history rather than erasing it).
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-15 (structure audit + remediation)
+
+- **Task**: user asked for a structure audit (`/structure-audit` skill --
+  relationship/layering quality, not a bug hunt) of the whole repo, then
+  asked to remediate the findings.
+- **Audit result** (reported in-session, not duplicated in full here):
+  well-separated points confirmed -- handoff_bridge.py has zero reverse
+  imports from any consumer, handoff_webui.py's ~2000 lines of business
+  logic never reference HTTP-handler primitives (HTTPStatus/self.send_*/
+  wfile/rfile, grep-confirmed 0 hits), provider-symmetric functions
+  (provider_command/summarize_X/call_X_api) exist for codex/claude/gemini
+  everywhere providers are handled. Five violations found, all fixed
+  (see the `refactor:` commit's own message for the full list): workspace
+  path normalization duplicated in 4 files, a subprocess.run() wrapper
+  duplicated in 4 files (missing short_run()'s FileNotFoundError->127
+  normalization in 3 of them), load_state() missing the JSON-corruption
+  handling its two peripheral counterparts already had, do_GET/do_POST's
+  route-not-found fallback breaking the _send_json() contract every other
+  endpoint follows, and remote_handoff_server.py's provider-list error
+  messages having drifted stale relative to an earlier session's own fix.
+  Two "판단 유보" (deferred, not code defects) items were reported but
+  intentionally left alone -- handoff_webui.py's 2621-line single-file
+  size (logical sections are real, physical module split is a real
+  tradeoff against the project's file-centered/no-build-step philosophy,
+  not something to force without a separate decision), and
+  handoff_webui.py importing business logic from handoff_bridge.py while
+  5 other consumers import only constants (may be a deliberate
+  "webui is a more-trusted in-process consumer" design, can't tell from
+  code alone).
+- **What changed**: `handoff_bridge.py` (added `normalize_path()`,
+  `default_state()`, extended `short_run()` with `cwd`/`timeout: float |
+  None`), `handoff_control.py`, `handoff_desktop.py`, `handoff_webui.py`,
+  `remote_handoff_server.py` (all migrated to the shared helpers where it
+  didn't lose behavior; two subprocess call sites deliberately NOT
+  migrated -- run_provider()'s stdin-`input=` call and run_shell's
+  `shell=True` call -- documented in short_run()'s own docstring for why).
+  `remote_handoff_server.py`'s `run_command()` shrank by roughly half.
+- **Verified**: `python3 -m unittest discover -s tests` -> 462 tests, OK
+  (many new regression tests added per fix; one of them, a new
+  `normalize_task()` test, initially failed on macOS's `/tmp` ->
+  `/private/tmp` symlink -- the test's own `allow_roots` fixture wasn't
+  resolved the same way `normalize_task()` resolves the workspace path,
+  fixed in the test, not the production code). `python3
+  handoff_bridge.py check` -> PASS. Pushed as commit `3b01ea9`.
+- **Remaining**: none from the audit's violations list. The two deferred
+  items above are explicitly left for the user's own judgment, not
+  forgotten.
+- **Blocked**: none.
