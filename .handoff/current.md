@@ -2057,3 +2057,51 @@ risk" (not a session retrospective, not an architecture explainer).
   frozen `agent-handoff-bridge-server` binary the same way the existing
   ones already do.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-16 (root-caused the registry.json pollution flake)
+
+- **Task**: user asked to actually root-cause the "known flake" noted
+  above instead of leaving it as a shrug. Confirmed via
+  `AskUserQuestion` that this (not the docs, not the handoff-log wording)
+  was what "이에 대한 내용 수정해줘" meant.
+- **Method**: manual code reading across every `AppState(...)`-constructing
+  test class had already come up empty (each one individually looked
+  correctly patched) in the prior session, so this time added a temporary
+  debug probe directly in `webui_chat_storage.py`'s `registry_path()` --
+  print a full stack trace to stderr the moment it's ever called while
+  `webui_common.AUTO_WORKSPACE_BASE_DIR` still equals the real
+  `~/Documents/Agent Handoff Bridge`. One test run was enough to get an
+  exact stack trace instead of guessing.
+- **Root cause found**: `POST /api/open-folder`'s handler
+  (`handoff_webui.py`'s `do_POST`) unconditionally calls
+  `touch_registry(candidate, utc_now())` as a side effect of switching
+  workspace -- but `registry_path()` (where the registry file actually
+  lives) depends on `AUTO_WORKSPACE_BASE_DIR`, not on `candidate` (the
+  workspace being switched to). So any test class that exercises
+  `/api/open-folder` against a harmless tempdir workspace *still* writes
+  a real `registry.json` (and would write `credentials.json` too, same
+  mechanism) to the developer's actual home directory, unless it
+  *also* patches `AUTO_WORKSPACE_BASE_DIR` -- even though that class has
+  nothing to do with the registry/history-drawer feature it looks like
+  only auto-workspace-creation tests would need that patch for. Two
+  classes had this gap: `MutableStateLiveServerTests` (tests open-folder
+  switching directly, 4 call sites) and `ApiRunLiveServerTests` (tests
+  provider-run dispatch, but calls open-folder once as fixture setup).
+  Every other `AUTO_WORKSPACE_BASE_DIR`-relevant class already patched it
+  correctly, which is exactly why spot-checking individual classes by eye
+  kept coming up clean -- the bug was in the two classes nobody had
+  checked yet, not a systemic pattern.
+- **Fix**: added the same `mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR",
+  <tempdir>)` + `addCleanup` pattern already used correctly elsewhere to
+  both classes' `setUp()`, with a comment explaining why a class that
+  isn't "about" the registry still needs this patch.
+- **Verified**: 10 consecutive full/solo test-suite runs after the fix
+  (with the debug probe still active) produced zero hits and left
+  `~/Documents/Agent Handoff Bridge/` completely empty every time --
+  removed the debug probe afterward (net zero diff on
+  `webui_chat_storage.py`). `python3 -m unittest discover -s tests` ->
+  466 tests, OK. `python3 handoff_bridge.py check` -> PASS.
+- **Remaining**: none -- this closes the flake noted in the prior entry.
+  The PyInstaller sidecar build still hasn't been exercised for real
+  (same caveat as before).
+- **Blocked**: none.

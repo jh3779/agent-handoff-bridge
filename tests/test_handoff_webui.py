@@ -1433,6 +1433,17 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         self.setUpFakeProviders()
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        # Regression (found via a full-suite pollution hunt, 2026-08-16):
+        # POST /api/open-folder (used below) unconditionally calls
+        # touch_registry() as a side effect -- registry_path() depends on
+        # AUTO_WORKSPACE_BASE_DIR, not on the workspace path being opened,
+        # so omitting this patch wrote a real registry.json to the
+        # developer's actual ~/Documents/Agent Handoff Bridge/ even though
+        # self.root here is a tempdir.
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
         self.state = webui.AppState(self.root)
         handler = webui.build_handler(self.state)
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -1637,6 +1648,19 @@ class MutableStateLiveServerTests(unittest.TestCase):
         self.other = Path(self.tmp.name) / "other"
         self.other.mkdir()
         (self.other / "NOTES.md").write_text("# other\n", encoding="utf-8")
+
+        # Regression (found via a full-suite pollution hunt, 2026-08-16):
+        # POST /api/open-folder unconditionally calls touch_registry() as a
+        # side effect of switching workspace -- registry_path() depends on
+        # AUTO_WORKSPACE_BASE_DIR, not on the workspace path being switched
+        # to, so even though every workspace here is a tempdir, omitting
+        # this patch made every /api/open-folder call in this class write
+        # a real registry.json to the developer's actual
+        # ~/Documents/Agent Handoff Bridge/.
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
 
         self.state = webui.AppState(self.root)
         handler = webui.build_handler(self.state)
