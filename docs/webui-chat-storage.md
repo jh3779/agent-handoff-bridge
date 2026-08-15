@@ -1,6 +1,6 @@
 # Web UI Chat Storage — Data Model
 
-Source of truth for the on-disk formats `handoff_webui.py` reads and
+Source of truth for the on-disk formats the Web UI (`handoff_webui.py` and its `webui_*.py` modules) reads and
 writes: the per-workspace chat log below, and the app-level
 ["recently-opened" registry](#recently-opened-registry-phase-3) Phase 3
 added. This repo has no ADR directory or numbered decision-record series —
@@ -66,7 +66,7 @@ original request that introduced this feature.
 
 `attachments` on a `POST /api/run` call also become part of the actual
 provider prompt, not just this chat log — `build_run_prompt()`
-(`handoff_webui.py`) folds each attachment's name/content into the text
+(`webui_bridge_run.py`) folds each attachment's name/content into the text
 written to `--prompt-file` before the provider ever runs. This was a real
 gap for one round of review: the client sent `attachments` to `/api/chat`
 but not to `/api/run`, so a file the user "attached" was persisted locally
@@ -75,7 +75,7 @@ but never actually reached Codex/Claude.
 **`agent` role messages** (Phase 1) are never written by the client directly
 — `POST /api/run` is the only writer; `POST /api/chat` rejects `role: "agent"`
 with 400 (`CLIENT_WRITABLE_CHAT_ROLES = ("user", "system")` in
-`handoff_webui.py`), even though the shared `append_chat_message()` writer it
+`webui_chat_storage.py`), even though the shared `append_chat_message()` writer it
 calls into would otherwise accept any role in `CHAT_ROLES`. Without that
 check a client could POST a fake agent reply straight to `/api/chat` with no
 provider having actually run. `run_provider_via_bridge()` shells out
@@ -249,7 +249,7 @@ one set of saved keys applies regardless of which workspace is open:
 | Field | Type | Notes |
 |---|---|---|
 | `key` | string | the raw API key, as pasted into the connection panel (SCR-06/`components.html` §14) |
-| `model` | string \| null | **required**, enforced by `POST /api/provider-key` itself (not just "in practice" as before) — `API_KEY_MODE_DEFAULT_MODELS` (`handoff_webui.py`) is deliberately empty for every provider (a hardcoded Claude default existed briefly but was removed: no externally-citable, dated source could back a specific model ID, and a wrong one would silently break every CLI-less user), and `validate_provider_api_key()` (below) has no model to make its verification call with. Without a saved `model`, `run_provider_via_api_key()` returns a clear "model not configured" chat-log error instead of guessing (see [DEC-13](design-system/flutter-mapping.html#s1c)) |
+| `model` | string \| null | **required**, enforced by `POST /api/provider-key` itself (not just "in practice" as before) — `API_KEY_MODE_DEFAULT_MODELS` (`webui_api_key_mode.py`) is deliberately empty for every provider (a hardcoded Claude default existed briefly but was removed: no externally-citable, dated source could back a specific model ID, and a wrong one would silently break every CLI-less user), and `validate_provider_api_key()` (below) has no model to make its verification call with. Without a saved `model`, `run_provider_via_api_key()` returns a clear "model not configured" chat-log error instead of guessing (see [DEC-13](design-system/flutter-mapping.html#s1c)) |
 
 **Saved keys are verified, not just accepted.** `POST /api/provider-key`
 previously wrote any non-empty `key` string to disk unconditionally — a
@@ -269,7 +269,7 @@ to verify when disconnecting.
 
 **Gemini joined API-key mode as of DEC-25**
 (`docs/design-system/flutter-mapping.html#s1c`), resolving DEC-15's
-originally-left-open question. `API_KEY_MODE_PROVIDERS` (`handoff_webui.py`)
+originally-left-open question. `API_KEY_MODE_PROVIDERS` (`webui_credentials.py`)
 now reads `("codex", "claude", "gemini")` — kept as its own tuple rather
 than an alias for the `PROVIDERS` imported from `handoff_bridge`, so a
 *future* provider added there for CLI dispatch still needs its own

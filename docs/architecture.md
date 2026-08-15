@@ -44,6 +44,12 @@ for folder selection and mobile prompt generation.
 - `remote_handoff_server.py`: optional HTTP task receiver for trusted
   automation experiments.
 - `remote_handoff_submit.py`: optional HTTP submission client.
+- `handoff_webui.py` + `webui_common.py`/`webui_workspace.py`/
+  `webui_chat_storage.py`/`webui_credentials.py`/`webui_api_key_mode.py`/
+  `webui_bridge_run.py`: the web UI MVP (`docs/cli-reference.md#web-ui-mvp`).
+  Split by domain (structure audit, 2026-08-15) -- `handoff_webui.py` itself
+  keeps only the HTTP routing layer, `AppState`/`Api`, and the process entry
+  point; see each module's own docstring for what it owns.
 - `AGENTS.md`: Codex-facing durable instructions.
 - `CLAUDE.md`: Claude Code-facing durable instructions.
 - `.handoff/current.md`: current task packet and handoff log.
@@ -96,7 +102,7 @@ The bridge (`handoff_bridge.py`) does not copy credentials, auth files,
 provider transcripts, or hidden app state. Each provider continues from
 files on disk and the current git state. This remains true of the bridge
 itself — the one deliberate exception lives one layer up, in the Web UI's
-Phase 4 API-key mode (`handoff_webui.py`), which stores a provider
+Phase 4 API-key mode (`webui_credentials.py`), which stores a provider
 credential for CLI-less use. See
 [Security Model § Credential Boundaries](security-model.md#credential-boundaries)
 for what that exception actually stores, where, and why.
@@ -110,7 +116,7 @@ for what this does and does not guarantee.
 
 The same `WriteLock` (imported directly from `handoff_bridge`, not
 reimplemented) guards the Web UI MVP's local chat log at
-`.handoff/webui/chat/` (`handoff_webui.py`'s `append_chat_message()` and
+`.handoff/webui/chat/` (`webui_chat_storage.py`'s `append_chat_message()` and
 `archive_old_months()`) — this repo's storage-policy stance (shared
 `.handoff/` state, locked/atomic writes, gitignored runtime data) applies to
 that store the same way it applies to `state.json`/`current.md`. Full

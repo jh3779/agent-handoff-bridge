@@ -30,6 +30,12 @@ from pathlib import Path, PureWindowsPath
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import handoff_webui as webui  # noqa: E402
+import webui_api_key_mode  # noqa: E402
+import webui_bridge_run  # noqa: E402
+import webui_chat_storage  # noqa: E402
+import webui_common  # noqa: E402
+import webui_credentials  # noqa: E402
+import webui_workspace  # noqa: E402
 
 
 class ChooseUiModeTests(unittest.TestCase):
@@ -97,13 +103,13 @@ class BridgeCommandPrefixTests(unittest.TestCase):
 
     def test_unfrozen_uses_sys_executable_and_bridge_script(self):
         with mock.patch.object(webui.sys, "frozen", False, create=True):
-            self.assertEqual(webui.bridge_command_prefix(), [webui.sys.executable, str(webui.BRIDGE_SCRIPT)])
+            self.assertEqual(webui_common.bridge_command_prefix(), [webui.sys.executable, str(webui_common.BRIDGE_SCRIPT)])
 
     def test_frozen_uses_a_sibling_cli_sidecar_next_to_sys_executable(self):
         with mock.patch.object(webui.sys, "frozen", True, create=True), mock.patch.object(
             webui.sys, "executable", "/Applications/Agent Handoff Bridge.app/Contents/MacOS/agent-handoff-bridge-server"
         ), mock.patch.object(webui.sys, "platform", "darwin"):
-            prefix = webui.bridge_command_prefix()
+            prefix = webui_common.bridge_command_prefix()
         self.assertEqual(
             prefix, ["/Applications/Agent Handoff Bridge.app/Contents/MacOS/agent-handoff-bridge-cli"]
         )
@@ -117,7 +123,7 @@ class BridgeCommandPrefixTests(unittest.TestCase):
         with mock.patch.object(webui.sys, "frozen", True, create=True), mock.patch.object(
             webui.sys, "executable", "/apps/agent-handoff-bridge/agent-handoff-bridge-server.exe"
         ), mock.patch.object(webui.sys, "platform", "win32"):
-            prefix = webui.bridge_command_prefix()
+            prefix = webui_common.bridge_command_prefix()
         expected = PureWindowsPath("/apps/agent-handoff-bridge") / "agent-handoff-bridge-cli.exe"
         self.assertEqual(prefix, [str(expected)])
 
@@ -128,26 +134,26 @@ class SafeJoinTests(unittest.TestCase):
             root = Path(tmp)
             (root / "sub").mkdir()
             (root / "sub" / "file.txt").write_text("hi", encoding="utf-8")
-            resolved = webui.safe_join(root, "sub/file.txt")
+            resolved = webui_workspace.safe_join(root, "sub/file.txt")
             self.assertEqual(resolved, (root / "sub" / "file.txt").resolve())
 
     def test_empty_path_resolves_to_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self.assertEqual(webui.safe_join(root, ""), root.resolve())
+            self.assertEqual(webui_workspace.safe_join(root, ""), root.resolve())
 
     def test_dotdot_traversal_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "workspace"
             root.mkdir()
-            with self.assertRaises(webui.WorkspaceError):
-                webui.safe_join(root, "../../etc/passwd")
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.safe_join(root, "../../etc/passwd")
 
     def test_absolute_path_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with self.assertRaises(webui.WorkspaceError):
-                webui.safe_join(root, "/etc/passwd")
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.safe_join(root, "/etc/passwd")
 
     def test_symlink_escape_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -161,8 +167,8 @@ class SafeJoinTests(unittest.TestCase):
                 link.symlink_to(outside)
             except (OSError, NotImplementedError):
                 self.skipTest("symlinks not supported on this platform/runner")
-            with self.assertRaises(webui.WorkspaceError):
-                webui.safe_join(root, "escape/secret.txt")
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.safe_join(root, "escape/secret.txt")
 
 
 class ListTreeEntriesTests(unittest.TestCase):
@@ -172,7 +178,7 @@ class ListTreeEntriesTests(unittest.TestCase):
             (root / "zeta.txt").write_text("z", encoding="utf-8")
             (root / "alpha.txt").write_text("a", encoding="utf-8")
             (root / "beta_dir").mkdir()
-            entries = webui.list_tree_entries(root, "")
+            entries = webui_workspace.list_tree_entries(root, "")
             names = [e["name"] for e in entries]
             self.assertEqual(names, ["beta_dir", "alpha.txt", "zeta.txt"])
             self.assertEqual(entries[0]["type"], "dir")
@@ -183,21 +189,21 @@ class ListTreeEntriesTests(unittest.TestCase):
             root = Path(tmp)
             (root / ".git").mkdir()
             (root / "src").mkdir()
-            names = [e["name"] for e in webui.list_tree_entries(root, "")]
+            names = [e["name"] for e in webui_workspace.list_tree_entries(root, "")]
             self.assertNotIn(".git", names)
             self.assertIn("src", names)
 
     def test_nonexistent_path_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(webui.WorkspaceError):
-                webui.list_tree_entries(Path(tmp), "nope")
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.list_tree_entries(Path(tmp), "nope")
 
     def test_file_path_raises_not_a_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "f.txt").write_text("x", encoding="utf-8")
-            with self.assertRaises(webui.WorkspaceError):
-                webui.list_tree_entries(root, "f.txt")
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.list_tree_entries(root, "f.txt")
 
 
 class ReadFilePreviewTests(unittest.TestCase):
@@ -205,7 +211,7 @@ class ReadFilePreviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "notes.md").write_text("hello world", encoding="utf-8")
-            preview = webui.read_file_preview(root, "notes.md")
+            preview = webui_workspace.read_file_preview(root, "notes.md")
             self.assertEqual(preview["content"], "hello world")
             self.assertFalse(preview["truncated"])
 
@@ -213,28 +219,28 @@ class ReadFilePreviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "bin.dat").write_bytes(b"\x00\x01\x02binary")
-            with self.assertRaises(webui.WorkspaceError):
-                webui.read_file_preview(root, "bin.dat")
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.read_file_preview(root, "bin.dat")
 
     def test_oversized_file_is_truncated_not_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            original_max = webui.MAX_FILE_BYTES
-            webui.MAX_FILE_BYTES = 10
+            original_max = webui_workspace.MAX_FILE_BYTES
+            webui_workspace.MAX_FILE_BYTES = 10
             try:
                 (root / "big.txt").write_text("0123456789" * 5, encoding="utf-8")
-                preview = webui.read_file_preview(root, "big.txt")
+                preview = webui_workspace.read_file_preview(root, "big.txt")
                 self.assertTrue(preview["truncated"])
                 self.assertEqual(len(preview["content"]), 10)
             finally:
-                webui.MAX_FILE_BYTES = original_max
+                webui_workspace.MAX_FILE_BYTES = original_max
 
     def test_directory_path_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "sub").mkdir()
-            with self.assertRaises(webui.WorkspaceError):
-                webui.read_file_preview(root, "sub")
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.read_file_preview(root, "sub")
 
 
 class LiveServerTests(unittest.TestCase):
@@ -329,28 +335,28 @@ class LiveServerTests(unittest.TestCase):
 class ValidateWorkspaceCandidateTests(unittest.TestCase):
     def test_valid_absolute_directory_resolves(self):
         with tempfile.TemporaryDirectory() as tmp:
-            resolved = webui.validate_workspace_candidate(tmp)
+            resolved = webui_workspace.validate_workspace_candidate(tmp)
             self.assertEqual(resolved, Path(tmp).resolve())
 
     def test_empty_path_rejected(self):
-        with self.assertRaises(webui.WorkspaceError):
-            webui.validate_workspace_candidate("")
+        with self.assertRaises(webui_common.WorkspaceError):
+            webui_workspace.validate_workspace_candidate("")
 
     def test_relative_path_rejected(self):
-        with self.assertRaises(webui.WorkspaceError):
-            webui.validate_workspace_candidate("relative/dir")
+        with self.assertRaises(webui_common.WorkspaceError):
+            webui_workspace.validate_workspace_candidate("relative/dir")
 
     def test_nonexistent_path_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(webui.WorkspaceError):
-                webui.validate_workspace_candidate(str(Path(tmp) / "does-not-exist"))
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.validate_workspace_candidate(str(Path(tmp) / "does-not-exist"))
 
     def test_file_path_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             file_path = Path(tmp) / "f.txt"
             file_path.write_text("x", encoding="utf-8")
-            with self.assertRaises(webui.WorkspaceError):
-                webui.validate_workspace_candidate(str(file_path))
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.validate_workspace_candidate(str(file_path))
 
 
 class HasHandoffMarkerTests(unittest.TestCase):
@@ -358,23 +364,23 @@ class HasHandoffMarkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".handoff").mkdir()
-            self.assertTrue(webui.has_handoff_marker(root))
+            self.assertTrue(webui_workspace.has_handoff_marker(root))
 
     def test_false_when_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertFalse(webui.has_handoff_marker(Path(tmp)))
+            self.assertFalse(webui_workspace.has_handoff_marker(Path(tmp)))
 
     def test_false_when_dot_handoff_is_a_file_not_a_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".handoff").write_text("not a dir", encoding="utf-8")
-            self.assertFalse(webui.has_handoff_marker(root))
+            self.assertFalse(webui_workspace.has_handoff_marker(root))
 
 
 class ResolveStartupWorkspaceTests(unittest.TestCase):
     def test_explicit_valid_path_resolves(self):
         with tempfile.TemporaryDirectory() as tmp:
-            workspace, error = webui.resolve_startup_workspace(tmp, Path("/irrelevant"))
+            workspace, error = webui_workspace.resolve_startup_workspace(tmp, Path("/irrelevant"))
             self.assertIsNone(error)
             self.assertEqual(workspace, Path(tmp).resolve())
 
@@ -385,7 +391,7 @@ class ResolveStartupWorkspaceTests(unittest.TestCase):
         # to point.
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "does-not-exist"
-            workspace, error = webui.resolve_startup_workspace(str(missing), Path("/irrelevant"))
+            workspace, error = webui_workspace.resolve_startup_workspace(str(missing), Path("/irrelevant"))
             self.assertIsNone(workspace)
             self.assertIsNotNone(error)
             self.assertIn("does not exist", error)
@@ -394,7 +400,7 @@ class ResolveStartupWorkspaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)
             (cwd / ".handoff").mkdir()
-            workspace, error = webui.resolve_startup_workspace(None, cwd)
+            workspace, error = webui_workspace.resolve_startup_workspace(None, cwd)
             self.assertIsNone(error)
             self.assertEqual(workspace, cwd.resolve())
 
@@ -405,58 +411,58 @@ class ResolveStartupWorkspaceTests(unittest.TestCase):
         # condition is "not yet an initialized handoff workspace".
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)  # no .handoff/ -- e.g. launcher double-clicked from Downloads
-            workspace, error = webui.resolve_startup_workspace(None, cwd)
+            workspace, error = webui_workspace.resolve_startup_workspace(None, cwd)
             self.assertIsNone(workspace)
             self.assertIsNone(error)
 
 
 class SlugifyForFolderNameTests(unittest.TestCase):
     def test_ascii_text_becomes_hyphenated_slug(self):
-        self.assertEqual(webui.slugify_for_folder_name("Fix the deploy script"), "Fix-the-deploy-script")
+        self.assertEqual(webui_workspace.slugify_for_folder_name("Fix the deploy script"), "Fix-the-deploy-script")
 
     def test_korean_text_is_preserved(self):
         # DEC-05's whole point: unlike a typical ASCII-only slugify library
         # that would strip/transliterate this to nothing, \w is
         # Unicode-aware and keeps Hangul -- matching the wireframe's own
         # example folder name.
-        slug = webui.slugify_for_folder_name("배포 스크립트에 있는 버그를 점검해줘.")
+        slug = webui_workspace.slugify_for_folder_name("배포 스크립트에 있는 버그를 점검해줘.")
         self.assertEqual(slug, "배포-스크립트에-있는-버그를-점검해줘")
 
     def test_empty_text_becomes_untitled(self):
-        self.assertEqual(webui.slugify_for_folder_name(""), "untitled")
+        self.assertEqual(webui_workspace.slugify_for_folder_name(""), "untitled")
 
     def test_whitespace_only_becomes_untitled(self):
-        self.assertEqual(webui.slugify_for_folder_name("   \n\t  "), "untitled")
+        self.assertEqual(webui_workspace.slugify_for_folder_name("   \n\t  "), "untitled")
 
     def test_punctuation_only_becomes_untitled(self):
-        self.assertEqual(webui.slugify_for_folder_name("... !!! ???"), "untitled")
+        self.assertEqual(webui_workspace.slugify_for_folder_name("... !!! ???"), "untitled")
 
     def test_long_text_is_truncated_to_max_length(self):
-        slug = webui.slugify_for_folder_name("word " * 30)
-        self.assertLessEqual(len(slug), webui.MAX_SLUG_LENGTH)
+        slug = webui_workspace.slugify_for_folder_name("word " * 30)
+        self.assertLessEqual(len(slug), webui_workspace.MAX_SLUG_LENGTH)
         self.assertFalse(slug.endswith("-"))
 
 
 class BuildAutoWorkspaceNameTests(unittest.TestCase):
     def test_uses_text_when_present(self):
         now = datetime(2026, 8, 4, tzinfo=timezone.utc)
-        name = webui.build_auto_workspace_name("Fix bug", [], now)
+        name = webui_workspace.build_auto_workspace_name("Fix bug", [], now)
         self.assertEqual(name, "2026-08-04-Fix-bug")
 
     def test_falls_back_to_attachment_name_when_no_text(self):
         now = datetime(2026, 8, 4, tzinfo=timezone.utc)
-        name = webui.build_auto_workspace_name("", [{"name": "report.pdf"}], now)
+        name = webui_workspace.build_auto_workspace_name("", [{"name": "report.pdf"}], now)
         self.assertEqual(name, "2026-08-04-report-pdf")
 
     def test_falls_back_to_untitled_when_neither_text_nor_attachments(self):
         now = datetime(2026, 8, 4, tzinfo=timezone.utc)
-        name = webui.build_auto_workspace_name("", [], now)
+        name = webui_workspace.build_auto_workspace_name("", [], now)
         self.assertEqual(name, "2026-08-04-untitled")
 
 
 class ResolveTaskForFirstMessageTests(unittest.TestCase):
     def test_uses_text_when_present(self):
-        self.assertEqual(webui.resolve_task_for_first_message("Fix bug", []), "Fix bug")
+        self.assertEqual(webui_workspace.resolve_task_for_first_message("Fix bug", []), "Fix bug")
 
     def test_attachments_only_produces_a_meaningful_task_not_a_generic_placeholder(self):
         # Regression: the folder name already fell back to the attachment's
@@ -464,12 +470,12 @@ class ResolveTaskForFirstMessageTests(unittest.TestCase):
         # feeds every future prompt's "## Task" section -- used to ignore
         # that and always record the generic placeholder for an
         # attachments-only first message.
-        task = webui.resolve_task_for_first_message("", [{"name": "report.pdf"}])
+        task = webui_workspace.resolve_task_for_first_message("", [{"name": "report.pdf"}])
         self.assertIn("report.pdf", task)
         self.assertNotEqual(task, "Continue the current handoff task.")
 
     def test_falls_back_to_placeholder_when_neither_text_nor_attachments(self):
-        self.assertEqual(webui.resolve_task_for_first_message("", []), "Continue the current handoff task.")
+        self.assertEqual(webui_workspace.resolve_task_for_first_message("", []), "Continue the current handoff task.")
 
 
 class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
@@ -484,13 +490,13 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         # its own comment) -- matching that here avoids a spurious macOS
         # /var vs /private/var mismatch in assertions below.
         self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
-        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(self.tmp.cleanup)
 
     def test_creates_directory_under_base_dir_with_date_and_slug(self):
-        workspace = webui.create_workspace_for_first_message("Fix the deploy script", [])
+        workspace = webui_workspace.create_workspace_for_first_message("Fix the deploy script", [])
         self.assertEqual(workspace.parent, self.base_dir)
         self.assertTrue(workspace.is_dir())
         self.assertIn("Fix-the-deploy-script", workspace.name)
@@ -513,20 +519,20 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         except (OSError, NotImplementedError):
             self.skipTest("symlinks not supported on this platform/runner")
 
-        with mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", symlinked_base):
-            workspace = webui.create_workspace_for_first_message("hello", [])
+        with mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", symlinked_base):
+            workspace = webui_workspace.create_workspace_for_first_message("hello", [])
 
         self.assertEqual(workspace.parent, real_target.resolve())
 
     def test_runs_init_and_produces_state_json_with_task_set_to_the_message(self):
-        workspace = webui.create_workspace_for_first_message("investigate the flaky test", [])
+        workspace = webui_workspace.create_workspace_for_first_message("investigate the flaky test", [])
         state_path = workspace / ".handoff" / "state.json"
         self.assertTrue(state_path.exists())
         state = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual(state["task"], "investigate the flaky test")
 
     def test_attachments_only_message_records_a_meaningful_task(self):
-        workspace = webui.create_workspace_for_first_message("", [{"name": "report.pdf"}])
+        workspace = webui_workspace.create_workspace_for_first_message("", [{"name": "report.pdf"}])
         state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
         self.assertIn("report.pdf", state["task"])
 
@@ -534,19 +540,19 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         # init_handoff() writes both unconditionally on success -- the
         # explicit post-condition check in create_workspace_for_first_message()
         # relies on that being true.
-        workspace = webui.create_workspace_for_first_message("hello", [])
+        workspace = webui_workspace.create_workspace_for_first_message("hello", [])
         self.assertTrue((workspace / ".handoff" / "current.md").exists())
 
     def test_collision_appends_numeric_suffix_and_never_reuses_the_folder(self):
-        first = webui.create_workspace_for_first_message("same summary", [])
-        second = webui.create_workspace_for_first_message("same summary", [])
+        first = webui_workspace.create_workspace_for_first_message("same summary", [])
+        second = webui_workspace.create_workspace_for_first_message("same summary", [])
         self.assertNotEqual(first, second)
         self.assertTrue(first.is_dir())
         self.assertTrue(second.is_dir())
         self.assertTrue(second.name.endswith("-2"))
 
     def test_ensures_chat_gitignore_is_written(self):
-        workspace = webui.create_workspace_for_first_message("hello", [])
+        workspace = webui_workspace.create_workspace_for_first_message("hello", [])
         self.assertTrue((workspace / ".handoff" / "webui" / ".gitignore").exists())
 
     def test_message_matching_an_init_flag_name_is_still_treated_as_the_task(self):
@@ -556,7 +562,7 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         # positional task, and fail with "the following arguments are
         # required: task" -- a real user message shouldn't be able to
         # break scaffolding just by looking like a CLI flag.
-        workspace = webui.create_workspace_for_first_message("--no-install", [])
+        workspace = webui_workspace.create_workspace_for_first_message("--no-install", [])
         state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
         self.assertEqual(state["task"], "--no-install")
 
@@ -568,8 +574,8 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         # JSON every other failure path here produces.
         self.base_dir.parent.mkdir(parents=True, exist_ok=True)
         self.base_dir.write_text("not a directory", encoding="utf-8")
-        with self.assertRaises(webui.WorkspaceError):
-            webui.create_workspace_for_first_message("hello", [])
+        with self.assertRaises(webui_common.WorkspaceError):
+            webui_workspace.create_workspace_for_first_message("hello", [])
 
     def test_init_subprocess_failure_raises_and_cleans_up_the_directory(self):
         # Regression: the subprocess result used to be discarded entirely --
@@ -578,20 +584,20 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         # directory that append_chat_message() then wrote into as if it
         # were a real workspace.
         failed = mock.Mock(returncode=1, stdout="", stderr="boom: disk full")
-        with mock.patch("handoff_webui.subprocess.run", return_value=failed):
-            with self.assertRaises(webui.WorkspaceError) as ctx:
-                webui.create_workspace_for_first_message("hello", [])
+        with mock.patch("handoff_bridge.subprocess.run", return_value=failed):
+            with self.assertRaises(webui_common.WorkspaceError) as ctx:
+                webui_workspace.create_workspace_for_first_message("hello", [])
         self.assertIn("boom: disk full", str(ctx.exception))
         # and it didn't leave an orphaned empty folder behind
         self.assertEqual(list(self.base_dir.iterdir()), [])
 
     def test_init_subprocess_timeout_raises_and_cleans_up_the_directory(self):
         with mock.patch(
-            "handoff_webui.subprocess.run",
+            "handoff_bridge.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="handoff_bridge.py", timeout=30),
         ):
-            with self.assertRaises(webui.WorkspaceError):
-                webui.create_workspace_for_first_message("hello", [])
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.create_workspace_for_first_message("hello", [])
         self.assertEqual(list(self.base_dir.iterdir()), [])
 
     def test_exit_zero_without_the_expected_handoff_files_is_still_a_failure(self):
@@ -601,9 +607,9 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         # as a real workspace (docs/architecture.md: those are the durable
         # handoff surface).
         fake_success_but_did_nothing = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("handoff_webui.subprocess.run", return_value=fake_success_but_did_nothing):
-            with self.assertRaises(webui.WorkspaceError) as ctx:
-                webui.create_workspace_for_first_message("hello", [])
+        with mock.patch("handoff_bridge.subprocess.run", return_value=fake_success_but_did_nothing):
+            with self.assertRaises(webui_common.WorkspaceError) as ctx:
+                webui_workspace.create_workspace_for_first_message("hello", [])
         self.assertIn(".handoff/", str(ctx.exception))
         self.assertEqual(list(self.base_dir.iterdir()), [])
 
@@ -622,9 +628,9 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         # which only cares that subprocess.run() was called with the
         # right kwargs, captured before that later exception.
         success = mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("handoff_webui.subprocess.run", return_value=success) as run_spy:
-            with self.assertRaises(webui.WorkspaceError):
-                webui.create_workspace_for_first_message("hello", [])
+        with mock.patch("handoff_bridge.subprocess.run", return_value=success) as run_spy:
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_workspace.create_workspace_for_first_message("hello", [])
         self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
 
@@ -644,7 +650,7 @@ class CreateWorkspaceConcurrencyTests(unittest.TestCase):
         # its own comment) -- matching that here avoids a spurious macOS
         # /var vs /private/var mismatch in assertions below.
         self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
-        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -715,13 +721,13 @@ class RegistryTests(unittest.TestCase):
         # its own comment) -- matching that here avoids a spurious macOS
         # /var vs /private/var mismatch in assertions below.
         self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
-        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(self.tmp.cleanup)
 
     def test_read_registry_missing_file_returns_empty_list(self):
-        self.assertEqual(webui.read_registry(), [])
+        self.assertEqual(webui_chat_storage.read_registry(), [])
 
     def test_read_registry_unreadable_path_returns_empty_list_not_raise(self):
         # registry.json existing as a *directory* (permissions issues are
@@ -730,7 +736,7 @@ class RegistryTests(unittest.TestCase):
         # without relying on chmod, which root/CI can bypass).
         self.base_dir.mkdir(parents=True)
         (self.base_dir / "registry.json").mkdir()
-        self.assertEqual(webui.read_registry(), [])
+        self.assertEqual(webui_chat_storage.read_registry(), [])
 
     def test_read_registry_skips_malformed_entries_instead_of_crashing(self):
         self.base_dir.mkdir(parents=True)
@@ -738,7 +744,7 @@ class RegistryTests(unittest.TestCase):
             json.dumps([{"path": "/w/good", "name": "good"}, "not a dict", {"name": "no path field"}, 42]),
             encoding="utf-8",
         )
-        entries = webui.read_registry()
+        entries = webui_chat_storage.read_registry()
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["path"], "/w/good")
 
@@ -752,54 +758,54 @@ class RegistryTests(unittest.TestCase):
         self.base_dir.parent.mkdir(parents=True, exist_ok=True)
         self.base_dir.write_text("a file, not a directory", encoding="utf-8")
         try:
-            webui.touch_registry(Path("/some/workspace"), webui.utc_now())
+            webui_chat_storage.touch_registry(Path("/some/workspace"), webui_common.utc_now())
         except OSError:
             self.fail("touch_registry() must not raise on a write failure")
 
     def test_read_registry_malformed_json_returns_empty_list(self):
         self.base_dir.mkdir(parents=True)
         (self.base_dir / "registry.json").write_text("not json", encoding="utf-8")
-        self.assertEqual(webui.read_registry(), [])
+        self.assertEqual(webui_chat_storage.read_registry(), [])
 
     def test_read_registry_non_list_json_returns_empty_list(self):
         self.base_dir.mkdir(parents=True)
         (self.base_dir / "registry.json").write_text('{"not": "a list"}', encoding="utf-8")
-        self.assertEqual(webui.read_registry(), [])
+        self.assertEqual(webui_chat_storage.read_registry(), [])
 
     def test_touch_registry_writes_it_to_the_patched_base_dir_not_the_real_one(self):
-        webui.touch_registry(Path("/some/workspace"), datetime(2026, 8, 4, tzinfo=timezone.utc))
+        webui_chat_storage.touch_registry(Path("/some/workspace"), datetime(2026, 8, 4, tzinfo=timezone.utc))
         self.assertTrue((self.base_dir / "registry.json").exists())
 
     def test_touch_registry_adds_an_entry(self):
-        webui.touch_registry(Path("/w/project-a"), datetime(2026, 8, 4, tzinfo=timezone.utc))
-        entries = webui.read_registry()
+        webui_chat_storage.touch_registry(Path("/w/project-a"), datetime(2026, 8, 4, tzinfo=timezone.utc))
+        entries = webui_chat_storage.read_registry()
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["path"], str(Path("/w/project-a")))
         self.assertEqual(entries[0]["name"], "project-a")
 
     def test_touching_the_same_workspace_again_moves_it_to_front_not_duplicates(self):
         now = datetime(2026, 8, 4, tzinfo=timezone.utc)
-        webui.touch_registry(Path("/w/a"), now)
-        webui.touch_registry(Path("/w/b"), now)
-        webui.touch_registry(Path("/w/a"), now)  # re-touch a
-        entries = webui.read_registry()
+        webui_chat_storage.touch_registry(Path("/w/a"), now)
+        webui_chat_storage.touch_registry(Path("/w/b"), now)
+        webui_chat_storage.touch_registry(Path("/w/a"), now)  # re-touch a
+        entries = webui_chat_storage.read_registry()
         self.assertEqual([e["path"] for e in entries], [str(Path("/w/a")), str(Path("/w/b"))])
 
     def test_caps_at_max_entries_evicting_the_oldest(self):
         now = datetime(2026, 8, 4, tzinfo=timezone.utc)
-        for i in range(webui.REGISTRY_MAX_ENTRIES + 3):
-            webui.touch_registry(Path(f"/w/project-{i}"), now)
-        entries = webui.read_registry()
-        self.assertEqual(len(entries), webui.REGISTRY_MAX_ENTRIES)
+        for i in range(webui_chat_storage.REGISTRY_MAX_ENTRIES + 3):
+            webui_chat_storage.touch_registry(Path(f"/w/project-{i}"), now)
+        entries = webui_chat_storage.read_registry()
+        self.assertEqual(len(entries), webui_chat_storage.REGISTRY_MAX_ENTRIES)
         # most recent (highest i) survive, oldest (0, 1, 2) evicted
         paths = [e["path"] for e in entries]
-        self.assertIn(str(Path(f"/w/project-{webui.REGISTRY_MAX_ENTRIES + 2}")), paths)
+        self.assertIn(str(Path(f"/w/project-{webui_chat_storage.REGISTRY_MAX_ENTRIES + 2}")), paths)
         self.assertNotIn(str(Path("/w/project-0")), paths)
 
 
 class PairMessagesIntoTurnsTests(unittest.TestCase):
     def test_user_message_alone_produces_a_turn_with_no_provider_yet(self):
-        turns = webui.pair_messages_into_turns([{"role": "user", "text": "hi", "ts": "t1"}])
+        turns = webui_chat_storage.pair_messages_into_turns([{"role": "user", "text": "hi", "ts": "t1"}])
         self.assertEqual(len(turns), 1)
         self.assertEqual(turns[0]["text"], "hi")
         self.assertIsNone(turns[0]["provider"])
@@ -809,7 +815,7 @@ class PairMessagesIntoTurnsTests(unittest.TestCase):
             {"role": "user", "text": "fix the bug", "ts": "t1"},
             {"role": "agent", "text": "done", "provider": "codex", "status": "success", "ts": "t2"},
         ]
-        turns = webui.pair_messages_into_turns(messages)
+        turns = webui_chat_storage.pair_messages_into_turns(messages)
         self.assertEqual(len(turns), 1)
         self.assertEqual(turns[0]["text"], "fix the bug")
         self.assertEqual(turns[0]["provider"], "codex")
@@ -824,7 +830,7 @@ class PairMessagesIntoTurnsTests(unittest.TestCase):
             {"role": "agent", "text": "rate limited", "provider": "codex", "status": "handoff", "ts": "t2"},
             {"role": "agent", "text": "done", "provider": "claude", "status": "success", "ts": "t3"},
         ]
-        turns = webui.pair_messages_into_turns(messages)
+        turns = webui_chat_storage.pair_messages_into_turns(messages)
         self.assertEqual(len(turns), 1)
         self.assertEqual(turns[0]["provider"], "claude")
         self.assertEqual(turns[0]["status"], "success")
@@ -834,7 +840,7 @@ class PairMessagesIntoTurnsTests(unittest.TestCase):
             {"role": "system", "text": "workspace switched", "ts": "t1"},
             {"role": "user", "text": "hi", "ts": "t2"},
         ]
-        turns = webui.pair_messages_into_turns(messages)
+        turns = webui_chat_storage.pair_messages_into_turns(messages)
         self.assertEqual(len(turns), 1)
         self.assertEqual(turns[0]["text"], "hi")
 
@@ -845,7 +851,7 @@ class PairMessagesIntoTurnsTests(unittest.TestCase):
             {"role": "user", "text": "second", "ts": "t3"},
             {"role": "agent", "text": "ok2", "provider": "claude", "status": "success", "ts": "t4"},
         ]
-        turns = webui.pair_messages_into_turns(messages)
+        turns = webui_chat_storage.pair_messages_into_turns(messages)
         self.assertEqual([t["text"] for t in turns], ["first", "second"])
 
 
@@ -855,9 +861,9 @@ class CollectRecentTurnsTests(unittest.TestCase):
             root = Path(tmp)
             now = datetime(2026, 8, 4, tzinfo=timezone.utc)
             for i in range(8):
-                webui.append_chat_message(root, "user", f"turn {i}", [], now)
-                webui.append_chat_message(root, "agent", "ok", [], now, provider="codex", status="success")
-            turns = webui.collect_recent_turns(root, limit=5)
+                webui_chat_storage.append_chat_message(root, "user", f"turn {i}", [], now)
+                webui_chat_storage.append_chat_message(root, "agent", "ok", [], now, provider="codex", status="success")
+            turns = webui_chat_storage.collect_recent_turns(root, limit=5)
             self.assertEqual(len(turns), 5)
             # newest first
             self.assertEqual(turns[0]["text"], "turn 7")
@@ -867,14 +873,14 @@ class CollectRecentTurnsTests(unittest.TestCase):
             root = Path(tmp)
             older = datetime(2026, 6, 1, tzinfo=timezone.utc)
             newer = datetime(2026, 8, 4, tzinfo=timezone.utc)
-            webui.append_chat_message(root, "user", "old turn", [], older)
-            webui.append_chat_message(root, "user", "new turn", [], newer)
-            turns = webui.collect_recent_turns(root, limit=5)
+            webui_chat_storage.append_chat_message(root, "user", "old turn", [], older)
+            webui_chat_storage.append_chat_message(root, "user", "new turn", [], newer)
+            turns = webui_chat_storage.collect_recent_turns(root, limit=5)
             self.assertEqual({t["text"] for t in turns}, {"old turn", "new turn"})
 
     def test_empty_workspace_returns_no_turns(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(webui.collect_recent_turns(Path(tmp)), [])
+            self.assertEqual(webui_chat_storage.collect_recent_turns(Path(tmp)), [])
 
     def test_turn_split_across_a_month_boundary_still_pairs_correctly(self):
         # Regression: pairing each month's file in isolation would drop
@@ -886,11 +892,11 @@ class CollectRecentTurnsTests(unittest.TestCase):
             root = Path(tmp)
             end_of_july = datetime(2026, 7, 31, 23, 59, tzinfo=timezone.utc)
             start_of_august = datetime(2026, 8, 1, 0, 1, tzinfo=timezone.utc)
-            webui.append_chat_message(root, "user", "cross-boundary turn", [], end_of_july)
-            webui.append_chat_message(
+            webui_chat_storage.append_chat_message(root, "user", "cross-boundary turn", [], end_of_july)
+            webui_chat_storage.append_chat_message(
                 root, "agent", "done", [], start_of_august, provider="codex", status="success"
             )
-            turns = webui.collect_recent_turns(root, limit=5)
+            turns = webui_chat_storage.collect_recent_turns(root, limit=5)
             self.assertEqual(len(turns), 1)
             self.assertEqual(turns[0]["text"], "cross-boundary turn")
             self.assertEqual(turns[0]["provider"], "codex")
@@ -905,7 +911,7 @@ class BuildHistoryDrawerTests(unittest.TestCase):
         # its own comment) -- matching that here avoids a spurious macOS
         # /var vs /private/var mismatch in assertions below.
         self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
-        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -915,15 +921,15 @@ class BuildHistoryDrawerTests(unittest.TestCase):
     def _make_project(self, name, text="hello"):
         root = self.projects_dir / name
         root.mkdir()
-        webui.append_chat_message(root, "user", text, [], webui.utc_now())
+        webui_chat_storage.append_chat_message(root, "user", text, [], webui_common.utc_now())
         return root
 
     def test_current_workspace_is_pinned_first_and_marked(self):
         current = self._make_project("current-proj")
         other = self._make_project("other-proj")
-        webui.touch_registry(other, webui.utc_now())
-        webui.touch_registry(current, webui.utc_now())
-        groups = webui.build_history_drawer(current)
+        webui_chat_storage.touch_registry(other, webui_common.utc_now())
+        webui_chat_storage.touch_registry(current, webui_common.utc_now())
+        groups = webui_chat_storage.build_history_drawer(current)
         self.assertEqual(groups[0]["path"], str(current))
         self.assertTrue(groups[0]["current"])
         self.assertFalse(groups[1]["current"])
@@ -931,22 +937,22 @@ class BuildHistoryDrawerTests(unittest.TestCase):
     def test_registry_entry_for_a_deleted_folder_is_silently_skipped(self):
         gone = self.projects_dir / "deleted-proj"
         gone.mkdir()
-        webui.touch_registry(gone, webui.utc_now())
+        webui_chat_storage.touch_registry(gone, webui_common.utc_now())
         shutil.rmtree(gone)
-        groups = webui.build_history_drawer(None)
+        groups = webui_chat_storage.build_history_drawer(None)
         self.assertEqual(groups, [])
 
     def test_no_current_workspace_still_returns_registry_groups(self):
         project = self._make_project("solo-proj")
-        webui.touch_registry(project, webui.utc_now())
-        groups = webui.build_history_drawer(None)
+        webui_chat_storage.touch_registry(project, webui_common.utc_now())
+        groups = webui_chat_storage.build_history_drawer(None)
         self.assertEqual(len(groups), 1)
         self.assertFalse(groups[0]["current"])
 
     def test_each_group_carries_its_own_turns(self):
         project = self._make_project("with-turns", text="do the thing")
-        webui.touch_registry(project, webui.utc_now())
-        groups = webui.build_history_drawer(None)
+        webui_chat_storage.touch_registry(project, webui_common.utc_now())
+        groups = webui_chat_storage.build_history_drawer(None)
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]["turns"][0]["text"], "do the thing")
 
@@ -956,12 +962,12 @@ class ChatStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             now = datetime(2026, 8, 4, 10, 0, 0, tzinfo=timezone.utc)
-            saved = webui.append_chat_message(root, "user", "hello", [], now)
+            saved = webui_chat_storage.append_chat_message(root, "user", "hello", [], now)
             self.assertEqual(saved["role"], "user")
             self.assertEqual(saved["text"], "hello")
             self.assertIn("id", saved)
 
-            messages = webui.read_month_messages(root, "2026-08")
+            messages = webui_chat_storage.read_month_messages(root, "2026-08")
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0]["text"], "hello")
 
@@ -969,19 +975,19 @@ class ChatStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             now = datetime(2026, 8, 4, tzinfo=timezone.utc)
-            webui.append_chat_message(root, "user", "first", [], now)
-            webui.append_chat_message(root, "user", "second", [], now)
-            messages = webui.read_month_messages(root, "2026-08")
+            webui_chat_storage.append_chat_message(root, "user", "first", [], now)
+            webui_chat_storage.append_chat_message(root, "user", "second", [], now)
+            messages = webui_chat_storage.read_month_messages(root, "2026-08")
             self.assertEqual([m["text"] for m in messages], ["first", "second"])
 
     def test_invalid_role_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(webui.WorkspaceError):
-                webui.append_chat_message(Path(tmp), "assistant", "hi", [], utc_now_for_test())
+            with self.assertRaises(webui_common.WorkspaceError):
+                webui_chat_storage.append_chat_message(Path(tmp), "assistant", "hi", [], utc_now_for_test())
 
     def test_read_missing_month_returns_empty_list(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(webui.read_month_messages(Path(tmp), "2020-01"), [])
+            self.assertEqual(webui_chat_storage.read_month_messages(Path(tmp), "2020-01"), [])
 
     def test_read_tolerates_plain_file_vanishing_between_exists_check_and_read(self):
         # Regression test: read_month_messages() used to call plain.exists()
@@ -996,29 +1002,29 @@ class ChatStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with mock.patch("pathlib.Path.exists", return_value=True):
-                self.assertEqual(webui.read_month_messages(root, "2020-01"), [])
+                self.assertEqual(webui_chat_storage.read_month_messages(root, "2020-01"), [])
 
     def test_list_available_months_sees_both_plain_and_compressed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            chat_dir = webui.chat_dir(root)
+            chat_dir = webui_chat_storage.chat_dir(root)
             chat_dir.mkdir(parents=True)
             (chat_dir / "2026-07.jsonl.gz").write_bytes(b"")
             (chat_dir / "2026-08.jsonl").write_text("", encoding="utf-8")
-            self.assertEqual(webui.list_available_months(root), ["2026-07", "2026-08"])
+            self.assertEqual(webui_chat_storage.list_available_months(root), ["2026-07", "2026-08"])
 
     def test_archive_compresses_past_months_but_not_current(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             july = datetime(2026, 7, 15, tzinfo=timezone.utc)
             august = datetime(2026, 8, 4, tzinfo=timezone.utc)
-            webui.append_chat_message(root, "user", "old message", [], july)
-            webui.append_chat_message(root, "user", "new message", [], august)
+            webui_chat_storage.append_chat_message(root, "user", "old message", [], july)
+            webui_chat_storage.append_chat_message(root, "user", "new message", [], august)
 
-            archived = webui.archive_old_months(root, august)
+            archived = webui_chat_storage.archive_old_months(root, august)
 
             self.assertEqual(archived, ["2026-07"])
-            chat_dir = webui.chat_dir(root)
+            chat_dir = webui_chat_storage.chat_dir(root)
             self.assertTrue((chat_dir / "2026-07.jsonl.gz").exists())
             self.assertFalse((chat_dir / "2026-07.jsonl").exists())
             self.assertTrue((chat_dir / "2026-08.jsonl").exists())
@@ -1028,10 +1034,10 @@ class ChatStorageTests(unittest.TestCase):
             root = Path(tmp)
             july = datetime(2026, 7, 15, tzinfo=timezone.utc)
             august = datetime(2026, 8, 4, tzinfo=timezone.utc)
-            webui.append_chat_message(root, "user", "archive me", [], july)
-            webui.archive_old_months(root, august)
+            webui_chat_storage.append_chat_message(root, "user", "archive me", [], july)
+            webui_chat_storage.archive_old_months(root, august)
 
-            messages = webui.read_month_messages(root, "2026-07")
+            messages = webui_chat_storage.read_month_messages(root, "2026-07")
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0]["text"], "archive me")
 
@@ -1040,9 +1046,9 @@ class ChatStorageTests(unittest.TestCase):
             root = Path(tmp)
             july = datetime(2026, 7, 15, tzinfo=timezone.utc)
             august = datetime(2026, 8, 4, tzinfo=timezone.utc)
-            webui.append_chat_message(root, "user", "msg", [], july)
-            first = webui.archive_old_months(root, august)
-            second = webui.archive_old_months(root, august)
+            webui_chat_storage.append_chat_message(root, "user", "msg", [], july)
+            first = webui_chat_storage.archive_old_months(root, august)
+            second = webui_chat_storage.archive_old_months(root, august)
             self.assertEqual(first, ["2026-07"])
             self.assertEqual(second, [])  # nothing left to compress
 
@@ -1059,21 +1065,21 @@ class ChatStorageTests(unittest.TestCase):
             june = datetime(2026, 6, 10, tzinfo=timezone.utc)
             july = datetime(2026, 7, 10, tzinfo=timezone.utc)
             august = datetime(2026, 8, 4, tzinfo=timezone.utc)
-            webui.append_chat_message(root, "user", "may", [], may_)
-            webui.append_chat_message(root, "user", "june", [], june)
-            webui.append_chat_message(root, "user", "july", [], july)
-            webui.append_chat_message(root, "user", "august", [], august)
+            webui_chat_storage.append_chat_message(root, "user", "may", [], may_)
+            webui_chat_storage.append_chat_message(root, "user", "june", [], june)
+            webui_chat_storage.append_chat_message(root, "user", "july", [], july)
+            webui_chat_storage.append_chat_message(root, "user", "august", [], august)
 
-            archived = webui.archive_old_months(root, august)
+            archived = webui_chat_storage.archive_old_months(root, august)
 
             self.assertEqual(sorted(archived), ["2026-05", "2026-06", "2026-07"])
-            chat_dir = webui.chat_dir(root)
+            chat_dir = webui_chat_storage.chat_dir(root)
             for month in ("2026-05", "2026-06", "2026-07"):
                 self.assertTrue((chat_dir / f"{month}.jsonl.gz").exists(), f"{month} not compressed")
                 self.assertFalse((chat_dir / f"{month}.jsonl").exists(), f"{month} plain file still present")
             self.assertTrue((chat_dir / "2026-08.jsonl").exists())
             for month in ("2026-05", "2026-06", "2026-07"):
-                messages = webui.read_month_messages(root, month)
+                messages = webui_chat_storage.read_month_messages(root, month)
                 self.assertEqual(len(messages), 1, f"{month} lost its message")
 
 
@@ -1129,27 +1135,27 @@ EOF
 
 class ClassifyRunStatusTests(unittest.TestCase):
     def test_no_handoff_needed_is_success(self):
-        self.assertEqual(webui.classify_run_status(False, "none: no handoff signal detected"), "success")
+        self.assertEqual(webui_bridge_run.classify_run_status(False, "none: no handoff signal detected"), "success")
 
     def test_tool_failure_is_fail(self):
-        self.assertEqual(webui.classify_run_status(True, "tool_failure: provider command not found"), "fail")
+        self.assertEqual(webui_bridge_run.classify_run_status(True, "tool_failure: provider command not found"), "fail")
 
     def test_unknown_is_fail(self):
-        self.assertEqual(webui.classify_run_status(True, "unknown: provider emitted an unrecognized error"), "fail")
+        self.assertEqual(webui_bridge_run.classify_run_status(True, "unknown: provider emitted an unrecognized error"), "fail")
 
     def test_rate_limit_is_handoff(self):
-        self.assertEqual(webui.classify_run_status(True, "rate_limit: matched rate_limit signal"), "handoff")
+        self.assertEqual(webui_bridge_run.classify_run_status(True, "rate_limit: matched rate_limit signal"), "handoff")
 
     def test_quota_is_handoff(self):
-        self.assertEqual(webui.classify_run_status(True, "quota: matched quota signal"), "handoff")
+        self.assertEqual(webui_bridge_run.classify_run_status(True, "quota: matched quota signal"), "handoff")
 
 
 class BuildRunPromptTests(unittest.TestCase):
     def test_text_only_passes_through_unchanged(self):
-        self.assertEqual(webui.build_run_prompt("hello", []), "hello")
+        self.assertEqual(webui_bridge_run.build_run_prompt("hello", []), "hello")
 
     def test_attachment_content_is_included(self):
-        prompt = webui.build_run_prompt(
+        prompt = webui_bridge_run.build_run_prompt(
             "look at this", [{"name": "a.py", "path": "a.py", "content": "print(1)", "truncated": False}]
         )
         self.assertIn("look at this", prompt)
@@ -1157,18 +1163,18 @@ class BuildRunPromptTests(unittest.TestCase):
         self.assertIn("print(1)", prompt)
 
     def test_truncated_attachment_is_noted(self):
-        prompt = webui.build_run_prompt(
+        prompt = webui_bridge_run.build_run_prompt(
             "", [{"name": "big.txt", "path": "big.txt", "content": "...", "truncated": True}]
         )
         self.assertIn("(truncated)", prompt)
 
     def test_binary_attachment_with_no_content_is_noted_not_dropped(self):
-        prompt = webui.build_run_prompt("", [{"name": "image.png", "path": "image.png", "content": None}])
+        prompt = webui_bridge_run.build_run_prompt("", [{"name": "image.png", "path": "image.png", "content": None}])
         self.assertIn("image.png", prompt)
         self.assertIn("no preview available", prompt)
 
     def test_attachment_only_with_no_text_still_produces_a_prompt(self):
-        prompt = webui.build_run_prompt("", [{"name": "a.py", "path": "a.py", "content": "x = 1", "truncated": False}])
+        prompt = webui_bridge_run.build_run_prompt("", [{"name": "a.py", "path": "a.py", "content": "x = 1", "truncated": False}])
         self.assertTrue(prompt.strip())
         self.assertIn("x = 1", prompt)
 
@@ -1176,14 +1182,14 @@ class BuildRunPromptTests(unittest.TestCase):
 class ReadStateHistoryTests(unittest.TestCase):
     def test_missing_state_file_returns_empty_list(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(webui.read_state_history(Path(tmp)), [])
+            self.assertEqual(webui_bridge_run.read_state_history(Path(tmp)), [])
 
     def test_malformed_state_file_returns_empty_list(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".handoff").mkdir()
             (root / ".handoff" / "state.json").write_text("not json", encoding="utf-8")
-            self.assertEqual(webui.read_state_history(root), [])
+            self.assertEqual(webui_bridge_run.read_state_history(root), [])
 
     def test_reads_history_array(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1192,7 +1198,7 @@ class ReadStateHistoryTests(unittest.TestCase):
             (root / ".handoff" / "state.json").write_text(
                 json.dumps({"history": [{"provider": "codex"}]}), encoding="utf-8"
             )
-            self.assertEqual(webui.read_state_history(root), [{"provider": "codex"}])
+            self.assertEqual(webui_bridge_run.read_state_history(root), [{"provider": "codex"}])
 
 
 class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
@@ -1210,20 +1216,20 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-            webui._RUN_LOCK.acquire()
+            webui_bridge_run._RUN_LOCK.acquire()
             try:
-                with self.assertRaises(webui.RunAlreadyInProgressError):
-                    webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+                with self.assertRaises(webui_bridge_run.RunAlreadyInProgressError):
+                    webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", None, "continue")
             finally:
-                webui._RUN_LOCK.release()
+                webui_bridge_run._RUN_LOCK.release()
 
     def test_lock_is_released_after_a_normal_call_so_the_next_one_can_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-            webui.run_provider_via_bridge(root, "codex", "first", None, "continue")
+            webui_bridge_run.run_provider_via_bridge(root, "codex", "first", None, "continue")
             # Would raise RunAlreadyInProgressError if the lock leaked.
-            records = webui.run_provider_via_bridge(root, "codex", "second", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(root, "codex", "second", None, "continue")
             self.assertEqual(len(records), 1)
 
     def test_delegates_provider_timeout_to_the_bridge(self):
@@ -1235,13 +1241,13 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-            with mock.patch("handoff_webui.subprocess.run", wraps=subprocess.run) as spy:
-                webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+            with mock.patch("webui_bridge_run.subprocess.run", wraps=subprocess.run) as spy:
+                webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", None, "continue")
             command = spy.call_args.args[0]
             self.assertIn("--timeout-seconds", command)
             idx = command.index("--timeout-seconds")
-            self.assertEqual(command[idx + 1], str(webui.PROVIDER_RUN_TIMEOUT_SECONDS))
-            self.assertEqual(spy.call_args.kwargs["timeout"], webui.OUTER_SUBPROCESS_TIMEOUT_SECONDS)
+            self.assertEqual(command[idx + 1], str(webui_bridge_run.PROVIDER_RUN_TIMEOUT_SECONDS))
+            self.assertEqual(spy.call_args.kwargs["timeout"], webui_bridge_run.OUTER_SUBPROCESS_TIMEOUT_SECONDS)
 
     def test_model_starting_with_a_dash_is_passed_as_one_argv_token(self):
         # ["--model", value] would let argparse misparse a value that
@@ -1255,8 +1261,8 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-            with mock.patch("handoff_webui.subprocess.run", wraps=subprocess.run) as spy:
-                webui.run_provider_via_bridge(root, "codex", "hello", "--weird-model-name", "continue")
+            with mock.patch("webui_bridge_run.subprocess.run", wraps=subprocess.run) as spy:
+                webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", "--weird-model-name", "continue")
             command = spy.call_args.args[0]
             self.assertIn("--model=--weird-model-name", command)
             # never as a separate token (that's the old, broken ["--model", value] form)
@@ -1268,7 +1274,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         # that exact combined text into the --prompt-file the bridge reads
         # from -- not just that the two pieces work in isolation.
         captured = {}
-        real_run = subprocess.run  # patching handoff_webui.subprocess.run patches this module's too (same object)
+        real_run = subprocess.run  # patching webui_bridge_run.subprocess.run patches this module's too (same object)
 
         def _capture_prompt_file_then_run(command, **kwargs):
             idx = command.index("--prompt-file")
@@ -1278,11 +1284,11 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-            prompt = webui.build_run_prompt(
+            prompt = webui_bridge_run.build_run_prompt(
                 "do the thing", [{"name": "a.py", "path": "a.py", "content": "print('hi')", "truncated": False}]
             )
-            with mock.patch("handoff_webui.subprocess.run", side_effect=_capture_prompt_file_then_run):
-                webui.run_provider_via_bridge(root, "codex", prompt, None, "continue")
+            with mock.patch("webui_bridge_run.subprocess.run", side_effect=_capture_prompt_file_then_run):
+                webui_bridge_run.run_provider_via_bridge(root, "codex", prompt, None, "continue")
 
         self.assertIn("do the thing", captured["prompt_text"])
         self.assertIn("a.py", captured["prompt_text"])
@@ -1292,7 +1298,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-            records = webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", None, "continue")
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["provider"], "codex")
             self.assertFalse(records[0]["handoff_needed"])
@@ -1306,7 +1312,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_RATE_LIMITED)
             _write_fake_provider(self.fake_bin, "claude", FAKE_CLAUDE_SUCCESS)
-            records = webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", None, "continue")
             self.assertEqual(len(records), 2)
             self.assertEqual(records[0]["provider"], "codex")
             self.assertTrue(records[0]["handoff_needed"])
@@ -1319,7 +1325,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         # handoff_bridge.py itself exits before ever writing to state.json
         # when --workspace doesn't exist -- run_provider_via_bridge() must
         # still return something rather than an empty list.
-        records = webui.run_provider_via_bridge(
+        records = webui_bridge_run.run_provider_via_bridge(
             Path("/definitely/does/not/exist"), "codex", "hello", None, "continue"
         )
         self.assertEqual(len(records), 1)
@@ -1336,7 +1342,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         # written would leak "auto" into a chat-log record. Regression test
         # for resolving it via choose_auto_provider() instead.
         _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-        records = webui.run_provider_via_bridge(
+        records = webui_bridge_run.run_provider_via_bridge(
             Path("/definitely/does/not/exist"), "auto", "hello", None, "continue"
         )
         self.assertEqual(len(records), 1)
@@ -1386,10 +1392,10 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
                 )
                 raise subprocess.TimeoutExpired(cmd="handoff_bridge.py", timeout=600)
 
-            with mock.patch("handoff_webui.subprocess.run", side_effect=_seed_partial_history_then_hang), mock.patch(
-                "handoff_webui._bridge_next_provider", return_value="claude"
+            with mock.patch("webui_bridge_run.subprocess.run", side_effect=_seed_partial_history_then_hang), mock.patch(
+                "webui_bridge_run._bridge_next_provider", return_value="claude"
             ):
-                records = webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+                records = webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", None, "continue")
 
             self.assertEqual(len(records), 2)
             self.assertEqual(records[0]["provider"], "codex")
@@ -1413,11 +1419,11 @@ class RunProviderViaBridgeSubprocessEncodingTests(unittest.TestCase):
         # which can reflect arbitrary provider/prompt content.
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            with mock.patch("handoff_webui.cli_available", return_value=True), mock.patch(
-                "handoff_webui.subprocess.run",
+            with mock.patch("webui_bridge_run.cli_available", return_value=True), mock.patch(
+                "webui_bridge_run.subprocess.run",
                 return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
             ) as run_spy:
-                webui.run_provider_via_bridge(workspace, "codex", "hello", None, "continue")
+                webui_bridge_run.run_provider_via_bridge(workspace, "codex", "hello", None, "continue")
         self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
 
@@ -1498,11 +1504,11 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         self.assertIn("error", data)
 
     def test_concurrent_run_gets_409_not_a_hang_or_duplicate_message(self):
-        webui._RUN_LOCK.acquire()
+        webui_bridge_run._RUN_LOCK.acquire()
         try:
             status, data = self._post("/api/run", {"provider": "codex", "text": "hi"})
         finally:
-            webui._RUN_LOCK.release()
+            webui_bridge_run._RUN_LOCK.release()
         self.assertEqual(status, 409)
         self.assertIn("error", data)
 
@@ -1512,11 +1518,11 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         # switching state.workspace out from under it mid-run would
         # misdirect where that write (and the client's eventual render of
         # it) ends up.
-        webui._RUN_LOCK.acquire()
+        webui_bridge_run._RUN_LOCK.acquire()
         try:
             status, data = self._post("/api/open-folder", {"path": str(self.root)})
         finally:
-            webui._RUN_LOCK.release()
+            webui_bridge_run._RUN_LOCK.release()
         self.assertEqual(status, 409)
         self.assertIn("error", data)
 
@@ -1529,11 +1535,11 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         # message in the history drawer once it lands. Rejecting the new
         # message outright means two user turns can never be
         # simultaneously unanswered in the same workspace.
-        webui._RUN_LOCK.acquire()
+        webui_bridge_run._RUN_LOCK.acquire()
         try:
             status, data = self._post("/api/chat", {"role": "user", "text": "a second message", "attachments": []})
         finally:
-            webui._RUN_LOCK.release()
+            webui_bridge_run._RUN_LOCK.release()
         self.assertEqual(status, 409)
         self.assertIn("error", data)
 
@@ -1546,11 +1552,11 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
     def test_system_message_is_still_accepted_while_a_run_is_in_flight(self):
         # The 409 guard is specifically for "user" (new turns) -- a system
         # message doesn't start a turn and shouldn't be blocked by it.
-        webui._RUN_LOCK.acquire()
+        webui_bridge_run._RUN_LOCK.acquire()
         try:
             status, data = self._post("/api/chat", {"role": "system", "text": "note", "attachments": []})
         finally:
-            webui._RUN_LOCK.release()
+            webui_bridge_run._RUN_LOCK.release()
         self.assertEqual(status, 200)
 
     def test_run_with_invalid_provider_is_rejected(self):
@@ -1566,7 +1572,7 @@ class EnsureChatGitignoreTests(unittest.TestCase):
     def test_creates_gitignore_ignoring_everything_under_handoff_webui(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            webui.ensure_chat_gitignore(root)
+            webui_chat_storage.ensure_chat_gitignore(root)
             gitignore_path = root / ".handoff" / "webui" / ".gitignore"
             self.assertTrue(gitignore_path.exists())
             self.assertEqual(gitignore_path.read_text(encoding="utf-8"), "*\n")
@@ -1577,14 +1583,14 @@ class EnsureChatGitignoreTests(unittest.TestCase):
             gitignore_path = root / ".handoff" / "webui" / ".gitignore"
             gitignore_path.parent.mkdir(parents=True)
             gitignore_path.write_text("# custom\n*\n", encoding="utf-8")
-            webui.ensure_chat_gitignore(root)
+            webui_chat_storage.ensure_chat_gitignore(root)
             self.assertEqual(gitignore_path.read_text(encoding="utf-8"), "# custom\n*\n")
 
     def test_append_chat_message_creates_it_even_in_a_workspace_with_no_dot_handoff_at_all(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.assertFalse((root / ".handoff").exists())
-            webui.append_chat_message(root, "user", "hi", [], utc_now_for_test())
+            webui_chat_storage.append_chat_message(root, "user", "hi", [], utc_now_for_test())
             self.assertTrue((root / ".handoff" / "webui" / ".gitignore").exists())
 
     def test_protects_chat_history_from_git_even_with_a_stale_top_level_gitignore(self):
@@ -1606,7 +1612,7 @@ class EnsureChatGitignoreTests(unittest.TestCase):
             subprocess.run([git, "add", "-A"], cwd=root, check=True)
             subprocess.run([git, "commit", "-q", "-m", "init"], cwd=root, check=True)
 
-            webui.append_chat_message(root, "user", "should stay untracked", [], utc_now_for_test())
+            webui_chat_storage.append_chat_message(root, "user", "should stay untracked", [], utc_now_for_test())
 
             status = subprocess.run(
                 [git, "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True
@@ -1752,7 +1758,7 @@ class NoWorkspaceLiveServerTests(unittest.TestCase):
         # its own comment) -- matching that here avoids a spurious macOS
         # /var vs /private/var mismatch in assertions below.
         self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
-        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -1885,7 +1891,7 @@ class HistoryDrawerLiveServerTests(unittest.TestCase):
         # its own comment) -- matching that here avoids a spurious macOS
         # /var vs /private/var mismatch in assertions below.
         self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
-        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -1907,7 +1913,7 @@ class HistoryDrawerLiveServerTests(unittest.TestCase):
         # so simulate that one call here -- otherwise self.root would
         # never appear in the registry despite being a real, currently-open
         # workspace, which doesn't reflect actual startup behavior.
-        webui.touch_registry(self.root, webui.utc_now())
+        webui_chat_storage.touch_registry(self.root, webui_common.utc_now())
 
         self.state = webui.AppState(self.root)
         handler = webui.build_handler(self.state)
@@ -1980,23 +1986,23 @@ class CredentialsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
-        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(self.tmp.cleanup)
 
     def test_read_credentials_missing_file_returns_empty_dict(self):
-        self.assertEqual(webui.read_credentials(), {})
+        self.assertEqual(webui_bridge_run.read_credentials(), {})
 
     def test_read_credentials_malformed_json_returns_empty_dict(self):
         self.base_dir.mkdir(parents=True)
         (self.base_dir / "credentials.json").write_text("not json", encoding="utf-8")
-        self.assertEqual(webui.read_credentials(), {})
+        self.assertEqual(webui_bridge_run.read_credentials(), {})
 
     def test_read_credentials_non_dict_json_returns_empty_dict(self):
         self.base_dir.mkdir(parents=True)
         (self.base_dir / "credentials.json").write_text("[1, 2, 3]", encoding="utf-8")
-        self.assertEqual(webui.read_credentials(), {})
+        self.assertEqual(webui_bridge_run.read_credentials(), {})
 
     def test_read_credentials_filters_unknown_provider(self):
         # "gemini" used to be the not-API-key-mode-supported example here
@@ -2007,40 +2013,40 @@ class CredentialsTests(unittest.TestCase):
         (self.base_dir / "credentials.json").write_text(
             json.dumps({"claude": {"key": "sk-1"}, "totally-unknown-provider": {"key": "sk-2"}}), encoding="utf-8"
         )
-        self.assertEqual(list(webui.read_credentials()), ["claude"])
+        self.assertEqual(list(webui_bridge_run.read_credentials()), ["claude"])
 
     def test_read_credentials_filters_entry_with_no_key(self):
         self.base_dir.mkdir(parents=True)
         (self.base_dir / "credentials.json").write_text(
             json.dumps({"claude": {"model": "claude-sonnet-5"}}), encoding="utf-8"
         )
-        self.assertEqual(webui.read_credentials(), {})
+        self.assertEqual(webui_bridge_run.read_credentials(), {})
 
     def test_save_then_read_round_trips_key_and_model(self):
-        webui.save_credential("claude", "sk-ant-test", "claude-sonnet-5")
-        creds = webui.read_credentials()
+        webui_credentials.save_credential("claude", "sk-ant-test", "claude-sonnet-5")
+        creds = webui_bridge_run.read_credentials()
         self.assertEqual(creds["claude"], {"key": "sk-ant-test", "model": "claude-sonnet-5"})
 
     def test_save_with_no_model_stores_none(self):
-        webui.save_credential("codex", "sk-test", None)
-        self.assertIsNone(webui.read_credentials()["codex"]["model"])
+        webui_credentials.save_credential("codex", "sk-test", None)
+        self.assertIsNone(webui_bridge_run.read_credentials()["codex"]["model"])
 
     def test_save_with_empty_key_removes_the_entry(self):
-        webui.save_credential("claude", "sk-ant-test", None)
-        webui.save_credential("claude", "", None)
-        self.assertNotIn("claude", webui.read_credentials())
+        webui_credentials.save_credential("claude", "sk-ant-test", None)
+        webui_credentials.save_credential("claude", "", None)
+        self.assertNotIn("claude", webui_bridge_run.read_credentials())
 
     def test_saved_file_has_owner_only_permissions(self):
         if os.name != "posix":
             self.skipTest("POSIX file permissions not applicable")
-        webui.save_credential("claude", "sk-ant-test", None)
-        mode = webui.credentials_path().stat().st_mode & 0o777
+        webui_credentials.save_credential("claude", "sk-ant-test", None)
+        mode = webui_credentials.credentials_path().stat().st_mode & 0o777
         self.assertEqual(mode, 0o600)
 
     def test_saving_one_provider_does_not_clobber_another(self):
-        webui.save_credential("claude", "sk-claude", None)
-        webui.save_credential("codex", "sk-codex", None)
-        creds = webui.read_credentials()
+        webui_credentials.save_credential("claude", "sk-claude", None)
+        webui_credentials.save_credential("codex", "sk-codex", None)
+        creds = webui_bridge_run.read_credentials()
         self.assertEqual(creds["claude"]["key"], "sk-claude")
         self.assertEqual(creds["codex"]["key"], "sk-codex")
 
@@ -2049,18 +2055,18 @@ class BuildApiMessageHistoryTests(unittest.TestCase):
     def test_empty_log_produces_just_the_current_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            now = webui.utc_now()
-            messages = webui.build_api_message_history(root, "hello", now)
+            now = webui_common.utc_now()
+            messages = webui_api_key_mode.build_api_message_history(root, "hello", now)
             self.assertEqual(messages, [{"role": "user", "content": "hello"}])
 
     def test_prior_turns_are_replayed_as_alternating_roles(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            now = webui.utc_now()
-            webui.append_chat_message(root, "user", "first question", [], now)
-            webui.append_chat_message(root, "agent", "first answer", [], now, provider="claude", status="success", reason="none")
-            webui.append_chat_message(root, "user", "second question (bare, no attachments)", [], now)
-            messages = webui.build_api_message_history(root, "second question WITH attachment text", now)
+            now = webui_common.utc_now()
+            webui_chat_storage.append_chat_message(root, "user", "first question", [], now)
+            webui_chat_storage.append_chat_message(root, "agent", "first answer", [], now, provider="claude", status="success", reason="none")
+            webui_chat_storage.append_chat_message(root, "user", "second question (bare, no attachments)", [], now)
+            messages = webui_api_key_mode.build_api_message_history(root, "second question WITH attachment text", now)
             # The bare current-turn "user" log entry is dropped in favor of
             # the caller-supplied `prompt` (which carries attachment
             # content the bare log entry never does) -- so it must appear
@@ -2077,10 +2083,10 @@ class BuildApiMessageHistoryTests(unittest.TestCase):
     def test_system_role_messages_are_excluded(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            now = webui.utc_now()
-            webui.append_chat_message(root, "system", "auto-created workspace", [], now)
-            webui.append_chat_message(root, "user", "hi", [], now)
-            messages = webui.build_api_message_history(root, "hi again", now)
+            now = webui_common.utc_now()
+            webui_chat_storage.append_chat_message(root, "system", "auto-created workspace", [], now)
+            webui_chat_storage.append_chat_message(root, "user", "hi", [], now)
+            messages = webui_api_key_mode.build_api_message_history(root, "hi again", now)
             # The system message is filtered out entirely, and the trailing
             # bare "user" log entry is dropped in favor of `prompt` (same
             # rule as the prior-turns test) -- leaving just one message.
@@ -2089,11 +2095,11 @@ class BuildApiMessageHistoryTests(unittest.TestCase):
     def test_history_is_capped_to_the_max_message_count(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            now = webui.utc_now()
-            for i in range(webui.API_KEY_MODE_MAX_HISTORY_MESSAGES + 10):
-                webui.append_chat_message(root, "user" if i % 2 == 0 else "agent", f"turn {i}", [], now)
-            messages = webui.build_api_message_history(root, "final prompt", now)
-            self.assertEqual(len(messages), webui.API_KEY_MODE_MAX_HISTORY_MESSAGES + 1)  # +1 for the final prompt
+            now = webui_common.utc_now()
+            for i in range(webui_api_key_mode.API_KEY_MODE_MAX_HISTORY_MESSAGES + 10):
+                webui_chat_storage.append_chat_message(root, "user" if i % 2 == 0 else "agent", f"turn {i}", [], now)
+            messages = webui_api_key_mode.build_api_message_history(root, "final prompt", now)
+            self.assertEqual(len(messages), webui_api_key_mode.API_KEY_MODE_MAX_HISTORY_MESSAGES + 1)  # +1 for the final prompt
             self.assertEqual(messages[-1], {"role": "user", "content": "final prompt"})
 
     def test_two_consecutive_agent_messages_from_auto_fallback_are_merged_not_left_alternating_broken(self):
@@ -2106,12 +2112,12 @@ class BuildApiMessageHistoryTests(unittest.TestCase):
         # workspace fail with a 400. They must be merged into one.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            now = webui.utc_now()
-            webui.append_chat_message(root, "user", "do the thing", [], now)
-            webui.append_chat_message(root, "agent", "codex gave up", [], now, provider="codex", status="handoff", reason="rate_limit: x")
-            webui.append_chat_message(root, "agent", "claude finished it", [], now, provider="claude", status="success", reason="none")
-            webui.append_chat_message(root, "user", "thanks, now do the next thing", [], now)
-            messages = webui.build_api_message_history(root, "thanks, now do the next thing (with attachment)", now)
+            now = webui_common.utc_now()
+            webui_chat_storage.append_chat_message(root, "user", "do the thing", [], now)
+            webui_chat_storage.append_chat_message(root, "agent", "codex gave up", [], now, provider="codex", status="handoff", reason="rate_limit: x")
+            webui_chat_storage.append_chat_message(root, "agent", "claude finished it", [], now, provider="claude", status="success", reason="none")
+            webui_chat_storage.append_chat_message(root, "user", "thanks, now do the next thing", [], now)
+            messages = webui_api_key_mode.build_api_message_history(root, "thanks, now do the next thing (with attachment)", now)
             self.assertEqual(
                 messages,
                 [
@@ -2132,10 +2138,10 @@ class BuildApiMessageHistoryTests(unittest.TestCase):
         # final prompt, not left as its own consecutive "user" message.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            now = webui.utc_now()
-            webui.append_chat_message(root, "user", "first, unanswered", [], now)
-            webui.append_chat_message(root, "user", "second, also unanswered", [], now)
-            messages = webui.build_api_message_history(root, "second, also unanswered (full prompt)", now)
+            now = webui_common.utc_now()
+            webui_chat_storage.append_chat_message(root, "user", "first, unanswered", [], now)
+            webui_chat_storage.append_chat_message(root, "user", "second, also unanswered", [], now)
+            messages = webui_api_key_mode.build_api_message_history(root, "second, also unanswered (full prompt)", now)
             self.assertEqual(
                 messages, [{"role": "user", "content": "first, unanswered\n\nsecond, also unanswered (full prompt)"}]
             )
@@ -2151,10 +2157,10 @@ class BuildApiMessageHistoryTests(unittest.TestCase):
             root = Path(tmp)
             july = datetime(2026, 7, 31, 23, 0, tzinfo=timezone.utc)
             august = datetime(2026, 8, 1, 0, 5, tzinfo=timezone.utc)
-            webui.append_chat_message(root, "user", "july question", [], july)
-            webui.append_chat_message(root, "agent", "july answer", [], july, provider="claude", status="success", reason="none")
-            webui.append_chat_message(root, "user", "august question (bare)", [], august)
-            messages = webui.build_api_message_history(root, "august question (full prompt)", august)
+            webui_chat_storage.append_chat_message(root, "user", "july question", [], july)
+            webui_chat_storage.append_chat_message(root, "agent", "july answer", [], july, provider="claude", status="success", reason="none")
+            webui_chat_storage.append_chat_message(root, "user", "august question (bare)", [], august)
+            messages = webui_api_key_mode.build_api_message_history(root, "august question (full prompt)", august)
             self.assertEqual(
                 messages,
                 [
@@ -2196,8 +2202,8 @@ class HttpPostJsonTests(unittest.TestCase):
         # record ever written -- unlike every other failure path this
         # feature classifies cleanly.
         raw_exception_text = "Invalid header value b'sk-super-secret\\r\\nX-Evil: 1'"
-        with mock.patch("handoff_webui.urllib.request.urlopen", side_effect=ValueError(raw_exception_text)):
-            status, data = webui._http_post_json(
+        with mock.patch("webui_api_key_mode.urllib.request.urlopen", side_effect=ValueError(raw_exception_text)):
+            status, data = webui_api_key_mode._http_post_json(
                 "https://example.invalid/v1/messages", {"x-api-key": "sk-super-secret\r\nX-Evil: 1"}, {}, 5
             )
         self.assertNotEqual(status, 200)
@@ -2209,8 +2215,8 @@ class HttpPostJsonTests(unittest.TestCase):
         self.assertNotIn(raw_exception_text, message)
 
     def test_success_path_still_works_unchanged(self):
-        with mock.patch("handoff_webui.urllib.request.urlopen", return_value=_fake_response(200, {"ok": True})):
-            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+        with mock.patch("webui_api_key_mode.urllib.request.urlopen", return_value=_fake_response(200, {"ok": True})):
+            status, data = webui_api_key_mode._http_post_json("https://example.invalid", {}, {}, 5)
         self.assertEqual((status, data), (200, {"ok": True}))
 
     def test_a_malformed_200_body_is_a_clean_error_not_a_raise_and_not_mislabeled_as_a_header_problem(self):
@@ -2224,8 +2230,8 @@ class HttpPostJsonTests(unittest.TestCase):
         fake.__enter__.return_value = fake
         fake.status = 200
         fake.read.return_value = b"not json"
-        with mock.patch("handoff_webui.urllib.request.urlopen", return_value=fake):
-            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+        with mock.patch("webui_api_key_mode.urllib.request.urlopen", return_value=fake):
+            status, data = webui_api_key_mode._http_post_json("https://example.invalid", {}, {}, 5)
         self.assertNotEqual(status, 200)
         message = json.dumps(data)
         self.assertNotIn("header", message.lower())
@@ -2233,28 +2239,28 @@ class HttpPostJsonTests(unittest.TestCase):
     def test_a_429_is_retried_and_a_later_success_is_returned(self):
         rate_limited = _fake_http_error(429, {"error": {"type": "rate_limit_error", "message": "slow down"}})
         succeeded = _fake_response(200, {"ok": True})
-        with mock.patch("handoff_webui.urllib.request.urlopen", side_effect=[rate_limited, succeeded]), mock.patch(
-            "handoff_webui._sleep"
+        with mock.patch("webui_api_key_mode.urllib.request.urlopen", side_effect=[rate_limited, succeeded]), mock.patch(
+            "webui_api_key_mode._sleep"
         ) as sleep_spy:
-            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+            status, data = webui_api_key_mode._http_post_json("https://example.invalid", {}, {}, 5)
         self.assertEqual((status, data), (200, {"ok": True}))
         sleep_spy.assert_called_once()
 
     def test_retries_are_bounded_then_the_final_error_is_returned(self):
         always_500 = [_fake_http_error(500, {"error": {"type": "api_error", "message": "down"}}) for _ in range(10)]
-        with mock.patch("handoff_webui.urllib.request.urlopen", side_effect=always_500), mock.patch(
-            "handoff_webui._sleep"
+        with mock.patch("webui_api_key_mode.urllib.request.urlopen", side_effect=always_500), mock.patch(
+            "webui_api_key_mode._sleep"
         ) as sleep_spy:
-            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+            status, data = webui_api_key_mode._http_post_json("https://example.invalid", {}, {}, 5)
         self.assertEqual(status, 500)
-        self.assertEqual(sleep_spy.call_count, webui.API_KEY_MODE_MAX_RETRIES)
+        self.assertEqual(sleep_spy.call_count, webui_api_key_mode.API_KEY_MODE_MAX_RETRIES)
 
     def test_a_non_retryable_error_is_returned_immediately_without_sleeping(self):
         auth_error = _fake_http_error(401, {"error": {"type": "authentication_error", "message": "bad key"}})
-        with mock.patch("handoff_webui.urllib.request.urlopen", side_effect=[auth_error, auth_error]), mock.patch(
-            "handoff_webui._sleep"
+        with mock.patch("webui_api_key_mode.urllib.request.urlopen", side_effect=[auth_error, auth_error]), mock.patch(
+            "webui_api_key_mode._sleep"
         ) as sleep_spy:
-            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+            status, data = webui_api_key_mode._http_post_json("https://example.invalid", {}, {}, 5)
         self.assertEqual(status, 401)
         sleep_spy.assert_not_called()
 
@@ -2263,17 +2269,17 @@ class HttpPostJsonTests(unittest.TestCase):
             429, {"error": {"type": "rate_limit_error", "message": "slow down"}}, retry_after="7"
         )
         succeeded = _fake_response(200, {"ok": True})
-        with mock.patch("handoff_webui.urllib.request.urlopen", side_effect=[rate_limited, succeeded]), mock.patch(
-            "handoff_webui._sleep"
+        with mock.patch("webui_api_key_mode.urllib.request.urlopen", side_effect=[rate_limited, succeeded]), mock.patch(
+            "webui_api_key_mode._sleep"
         ) as sleep_spy:
-            webui._http_post_json("https://example.invalid", {}, {}, 5)
+            webui_api_key_mode._http_post_json("https://example.invalid", {}, {}, 5)
         sleep_spy.assert_called_once_with(7.0)
 
     def test_a_network_error_is_retried_the_same_as_a_5xx(self):
         with mock.patch(
-            "handoff_webui.urllib.request.urlopen", side_effect=[urllib.error.URLError("connection reset"), _fake_response(200, {"ok": True})]
-        ), mock.patch("handoff_webui._sleep") as sleep_spy:
-            status, data = webui._http_post_json("https://example.invalid", {}, {}, 5)
+            "webui_api_key_mode.urllib.request.urlopen", side_effect=[urllib.error.URLError("connection reset"), _fake_response(200, {"ok": True})]
+        ), mock.patch("webui_api_key_mode._sleep") as sleep_spy:
+            status, data = webui_api_key_mode._http_post_json("https://example.invalid", {}, {}, 5)
         self.assertEqual((status, data), (200, {"ok": True}))
         sleep_spy.assert_called_once()
 
@@ -2291,10 +2297,10 @@ class CallProviderApiTests(unittest.TestCase):
 
     def test_anthropic_success_extracts_text(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(200, {"content": [{"type": "text", "text": "hi there"}]}),
         ):
-            result = webui.call_anthropic_messages_api(
+            result = webui_api_key_mode.call_anthropic_messages_api(
                 "sk-secret", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace
             )
         self.assertTrue(result["ok"])
@@ -2302,17 +2308,17 @@ class CallProviderApiTests(unittest.TestCase):
 
     def test_anthropic_error_response_is_reported_and_never_echoes_the_key(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(401, {"error": {"type": "authentication_error", "message": "invalid x-api-key"}}),
         ):
-            result = webui.call_anthropic_messages_api("sk-super-secret-value", "claude-sonnet-5", [], self.workspace)
+            result = webui_api_key_mode.call_anthropic_messages_api("sk-super-secret-value", "claude-sonnet-5", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("authentication_error", result["message"])
         self.assertNotIn("sk-super-secret-value", result["message"])
 
     def test_anthropic_network_error_does_not_raise(self):
-        with mock.patch("handoff_webui._http_post_json", side_effect=urllib.error.URLError("boom")):
-            result = webui.call_anthropic_messages_api("sk-secret", "claude-sonnet-5", [], self.workspace)
+        with mock.patch("webui_api_key_mode._http_post_json", side_effect=urllib.error.URLError("boom")):
+            result = webui_api_key_mode.call_anthropic_messages_api("sk-secret", "claude-sonnet-5", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("network error", result["message"])
         self.assertNotIn("sk-secret", result["message"])
@@ -2323,23 +2329,23 @@ class CallProviderApiTests(unittest.TestCase):
         # rather than letting it propagate -- this confirms the caller
         # treats that tuple as an ordinary non-200 error, not a crash.
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(0, {"error": {"type": "invalid_request", "message": "request headers were rejected"}}),
         ):
-            result = webui.call_anthropic_messages_api("sk-secret-with-crlf", "claude-sonnet-5", [], self.workspace)
+            result = webui_api_key_mode.call_anthropic_messages_api("sk-secret-with-crlf", "claude-sonnet-5", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("invalid_request", result["message"])
         self.assertNotIn("sk-secret-with-crlf", result["message"])
 
     def test_openai_success_extracts_text_from_output_items(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(
                 200,
                 {"output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hi from openai"}]}]},
             ),
         ):
-            result = webui.call_openai_responses_api(
+            result = webui_api_key_mode.call_openai_responses_api(
                 "sk-secret", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace
             )
         self.assertTrue(result["ok"])
@@ -2347,20 +2353,20 @@ class CallProviderApiTests(unittest.TestCase):
 
     def test_openai_error_response_is_reported_and_never_echoes_the_key(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(429, {"error": {"type": "rate_limit_error", "message": "too many requests"}}),
         ):
-            result = webui.call_openai_responses_api("sk-super-secret-value", "gpt-5.1-codex", [], self.workspace)
+            result = webui_api_key_mode.call_openai_responses_api("sk-super-secret-value", "gpt-5.1-codex", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("rate_limit_error", result["message"])
         self.assertNotIn("sk-super-secret-value", result["message"])
 
     def test_gemini_success_extracts_text_from_candidates(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(200, {"candidates": [{"content": {"parts": [{"text": "hi from gemini"}]}}]}),
         ):
-            result = webui.call_gemini_api(
+            result = webui_api_key_mode.call_gemini_api(
                 "sk-secret", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace
             )
         self.assertTrue(result["ok"])
@@ -2368,17 +2374,17 @@ class CallProviderApiTests(unittest.TestCase):
 
     def test_gemini_error_response_is_reported_and_never_echoes_the_key(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(400, {"error": {"status": "INVALID_ARGUMENT", "message": "API key not valid"}}),
         ):
-            result = webui.call_gemini_api("sk-super-secret-value", "gemini-2.5-flash", [], self.workspace)
+            result = webui_api_key_mode.call_gemini_api("sk-super-secret-value", "gemini-2.5-flash", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("INVALID_ARGUMENT", result["message"])
         self.assertNotIn("sk-super-secret-value", result["message"])
 
     def test_gemini_network_error_does_not_raise(self):
-        with mock.patch("handoff_webui._http_post_json", side_effect=urllib.error.URLError("boom")):
-            result = webui.call_gemini_api("sk-secret", "gemini-2.5-flash", [], self.workspace)
+        with mock.patch("webui_api_key_mode._http_post_json", side_effect=urllib.error.URLError("boom")):
+            result = webui_api_key_mode.call_gemini_api("sk-secret", "gemini-2.5-flash", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("network error", result["message"])
         self.assertNotIn("sk-secret", result["message"])
@@ -2387,10 +2393,10 @@ class CallProviderApiTests(unittest.TestCase):
         # No candidates at all, with a promptFeedback.blockReason -- must
         # not be silently treated as an empty-but-successful reply.
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(200, {"candidates": [], "promptFeedback": {"blockReason": "SAFETY"}}),
         ):
-            result = webui.call_gemini_api("sk-secret", "gemini-2.5-flash", [], self.workspace)
+            result = webui_api_key_mode.call_gemini_api("sk-secret", "gemini-2.5-flash", [], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("SAFETY", result["message"])
 
@@ -2404,10 +2410,10 @@ class ValidateProviderApiKeyTests(unittest.TestCase):
 
     def test_claude_success_returns_the_reply_text(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(200, {"content": [{"type": "text", "text": "ok"}]}),
         ) as spy:
-            result = webui.validate_provider_api_key("claude", "sk-secret", "claude-sonnet-5")
+            result = webui_api_key_mode.validate_provider_api_key("claude", "sk-secret", "claude-sonnet-5")
         self.assertTrue(result["ok"])
         self.assertEqual(result["text"], "ok")
         # No tools/tool_choice at all -- a validation ping must never grant
@@ -2415,14 +2421,14 @@ class ValidateProviderApiKeyTests(unittest.TestCase):
         sent_body = spy.call_args.args[2]
         self.assertNotIn("tools", sent_body)
         self.assertNotIn("tool_choice", sent_body)
-        self.assertEqual(sent_body["max_tokens"], webui.API_KEY_VALIDATION_MAX_TOKENS)
+        self.assertEqual(sent_body["max_tokens"], webui_api_key_mode.API_KEY_VALIDATION_MAX_TOKENS)
 
     def test_codex_success_returns_the_reply_text(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(200, {"output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}]}),
         ) as spy:
-            result = webui.validate_provider_api_key("codex", "sk-secret", "gpt-5.1-codex")
+            result = webui_api_key_mode.validate_provider_api_key("codex", "sk-secret", "gpt-5.1-codex")
         self.assertTrue(result["ok"])
         self.assertEqual(result["text"], "ok")
         sent_body = spy.call_args.args[2]
@@ -2430,37 +2436,37 @@ class ValidateProviderApiKeyTests(unittest.TestCase):
 
     def test_invalid_key_is_reported_and_never_echoes_the_key(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(401, {"error": {"type": "authentication_error", "message": "invalid x-api-key"}}),
         ):
-            result = webui.validate_provider_api_key("claude", "sk-super-secret-value", "claude-sonnet-5")
+            result = webui_api_key_mode.validate_provider_api_key("claude", "sk-super-secret-value", "claude-sonnet-5")
         self.assertFalse(result["ok"])
         self.assertIn("authentication_error", result["message"])
         self.assertNotIn("sk-super-secret-value", result["message"])
 
     def test_network_error_does_not_raise(self):
-        with mock.patch("handoff_webui._http_post_json", side_effect=urllib.error.URLError("boom")):
-            result = webui.validate_provider_api_key("claude", "sk-secret", "claude-sonnet-5")
+        with mock.patch("webui_api_key_mode._http_post_json", side_effect=urllib.error.URLError("boom")):
+            result = webui_api_key_mode.validate_provider_api_key("claude", "sk-secret", "claude-sonnet-5")
         self.assertFalse(result["ok"])
         self.assertIn("network error", result["message"])
 
     def test_empty_reply_still_counts_as_ok(self):
-        with mock.patch("handoff_webui._http_post_json", return_value=(200, {"content": []})):
-            result = webui.validate_provider_api_key("claude", "sk-secret", "claude-sonnet-5")
+        with mock.patch("webui_api_key_mode._http_post_json", return_value=(200, {"content": []})):
+            result = webui_api_key_mode.validate_provider_api_key("claude", "sk-secret", "claude-sonnet-5")
         self.assertTrue(result["ok"])
         self.assertEqual(result["text"], "(empty response)")
 
     def test_gemini_success_returns_the_reply_text(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(200, {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}),
         ) as spy:
-            result = webui.validate_provider_api_key("gemini", "sk-secret", "gemini-2.5-flash")
+            result = webui_api_key_mode.validate_provider_api_key("gemini", "sk-secret", "gemini-2.5-flash")
         self.assertTrue(result["ok"])
         self.assertEqual(result["text"], "ok")
         sent_body = spy.call_args.args[2]
         self.assertNotIn("tools", sent_body)
-        self.assertEqual(sent_body["generationConfig"]["maxOutputTokens"], webui.API_KEY_VALIDATION_MAX_TOKENS)
+        self.assertEqual(sent_body["generationConfig"]["maxOutputTokens"], webui_api_key_mode.API_KEY_VALIDATION_MAX_TOKENS)
         # Auth via header, not the `?key=` query-string form -- never put
         # the secret in a URL.
         sent_headers = spy.call_args.args[1]
@@ -2469,10 +2475,10 @@ class ValidateProviderApiKeyTests(unittest.TestCase):
 
     def test_gemini_invalid_key_is_reported_and_never_echoes_the_key(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(400, {"error": {"status": "INVALID_ARGUMENT", "message": "API key not valid"}}),
         ):
-            result = webui.validate_provider_api_key("gemini", "sk-super-secret-value", "gemini-2.5-flash")
+            result = webui_api_key_mode.validate_provider_api_key("gemini", "sk-super-secret-value", "gemini-2.5-flash")
         self.assertFalse(result["ok"])
         self.assertIn("INVALID_ARGUMENT", result["message"])
         self.assertNotIn("sk-super-secret-value", result["message"])
@@ -2488,16 +2494,16 @@ class ToolCallTranscriptTests(unittest.TestCase):
     the transcript off mid-way."""
 
     def test_escape_fence_breaks_up_a_triple_backtick_run(self):
-        self.assertNotIn("```", webui._escape_fence("before ``` after"))
+        self.assertNotIn("```", webui_api_key_mode._escape_fence("before ``` after"))
 
     def test_escape_fence_leaves_ordinary_text_untouched(self):
-        self.assertEqual(webui._escape_fence("no backticks here"), "no backticks here")
+        self.assertEqual(webui_api_key_mode._escape_fence("no backticks here"), "no backticks here")
 
     def test_escape_fence_handles_longer_backtick_runs_too(self):
-        self.assertNotIn("```", webui._escape_fence("`````"))
+        self.assertNotIn("```", webui_api_key_mode._escape_fence("`````"))
 
     def test_transcript_block_with_embedded_fence_in_result_stays_a_single_block(self):
-        block = webui._tool_call_transcript_block("run_shell", '{"command": "cat f.md"}', "# title\n```python\nprint(1)\n```\n")
+        block = webui_api_key_mode._tool_call_transcript_block("run_shell", '{"command": "cat f.md"}', "# title\n```python\nprint(1)\n```\n")
         # The whole block must still open with exactly one ``` and close
         # with exactly one ``` -- an embedded fence in the middle must not
         # produce extra fence boundaries the frontend regex would split on.
@@ -2512,13 +2518,13 @@ class ToolCallTranscriptTests(unittest.TestCase):
         # TOOL_OUTPUT_MAX_CHARS was already applied to tool *results* --
         # a large-but-normal file write would otherwise inflate every
         # subsequent API call's context indefinitely.
-        huge_args = '{"path": "big.txt", "content": "' + ("a" * (webui.TOOL_OUTPUT_MAX_CHARS + 500)) + '"}'
-        block = webui._tool_call_transcript_block("write_file", huge_args, "wrote a lot of characters to big.txt")
+        huge_args = '{"path": "big.txt", "content": "' + ("a" * (webui_api_key_mode.TOOL_OUTPUT_MAX_CHARS + 500)) + '"}'
+        block = webui_api_key_mode._tool_call_transcript_block("write_file", huge_args, "wrote a lot of characters to big.txt")
         self.assertIn("truncated for transcript", block)
         self.assertLess(len(block), len(huge_args))
 
     def test_truncate_for_transcript_leaves_short_text_untouched(self):
-        self.assertEqual(webui._truncate_for_transcript("short"), "short")
+        self.assertEqual(webui_api_key_mode._truncate_for_transcript("short"), "short")
 
 
 class ToolDefinitionTests(unittest.TestCase):
@@ -2528,21 +2534,21 @@ class ToolDefinitionTests(unittest.TestCase):
     drifting out of sync with each other."""
 
     def test_all_three_vendor_schemas_list_the_same_four_tool_names(self):
-        anthropic_names = {t["name"] for t in webui.anthropic_tool_definitions()}
-        openai_names = {t["name"] for t in webui.openai_tool_definitions()}
-        gemini_names = {d["name"] for d in webui.gemini_tool_definitions()[0]["functionDeclarations"]}
+        anthropic_names = {t["name"] for t in webui_api_key_mode.anthropic_tool_definitions()}
+        openai_names = {t["name"] for t in webui_api_key_mode.openai_tool_definitions()}
+        gemini_names = {d["name"] for d in webui_api_key_mode.gemini_tool_definitions()[0]["functionDeclarations"]}
         self.assertEqual(anthropic_names, {"read_file", "write_file", "edit_file", "run_shell"})
         self.assertEqual(anthropic_names, openai_names)
         self.assertEqual(anthropic_names, gemini_names)
 
     def test_openai_definitions_are_strict_function_tools(self):
-        for tool in webui.openai_tool_definitions():
+        for tool in webui_api_key_mode.openai_tool_definitions():
             self.assertEqual(tool["type"], "function")
             self.assertTrue(tool["strict"])
             self.assertFalse(tool["parameters"]["additionalProperties"])
 
     def test_anthropic_definitions_use_input_schema_not_parameters(self):
-        for tool in webui.anthropic_tool_definitions():
+        for tool in webui_api_key_mode.anthropic_tool_definitions():
             self.assertIn("input_schema", tool)
             self.assertNotIn("parameters", tool)
             self.assertEqual(tool["input_schema"]["type"], "object")
@@ -2551,7 +2557,7 @@ class ToolDefinitionTests(unittest.TestCase):
         # One Tool object holding every functionDeclaration, not one Tool
         # per function -- see gemini_tool_definitions()'s own comment for
         # why (matches the shape confirmed against Google's docs).
-        tools = webui.gemini_tool_definitions()
+        tools = webui_api_key_mode.gemini_tool_definitions()
         self.assertEqual(len(tools), 1)
         self.assertEqual(len(tools[0]["functionDeclarations"]), 4)
         for declaration in tools[0]["functionDeclarations"]:
@@ -2568,11 +2574,11 @@ class ToolExecutorTests(unittest.TestCase):
 
     def test_read_file_returns_contents(self):
         (self.workspace / "a.txt").write_text("hello world", encoding="utf-8")
-        result = webui.execute_tool_call(self.workspace, "read_file", {"path": "a.txt"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "read_file", {"path": "a.txt"})
         self.assertEqual(result, "hello world")
 
     def test_read_file_missing_path_argument_is_an_error_not_a_crash(self):
-        result = webui.execute_tool_call(self.workspace, "read_file", {})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "read_file", {})
         self.assertTrue(result.startswith("error:"))
 
     def test_read_file_output_over_the_cap_is_truncated_not_silently_cut(self):
@@ -2581,83 +2587,83 @@ class ToolExecutorTests(unittest.TestCase):
         # bounds what's read off disk, not what's fed into the next API
         # call, so a single large file could still blow past the same
         # context/cost budget run_shell's output already respects.
-        (self.workspace / "big.txt").write_text("a" * (webui.TOOL_OUTPUT_MAX_CHARS + 500), encoding="utf-8")
-        result = webui.execute_tool_call(self.workspace, "read_file", {"path": "big.txt"})
+        (self.workspace / "big.txt").write_text("a" * (webui_api_key_mode.TOOL_OUTPUT_MAX_CHARS + 500), encoding="utf-8")
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "read_file", {"path": "big.txt"})
         self.assertIn("(truncated)", result)
-        self.assertLessEqual(len(result), webui.TOOL_OUTPUT_MAX_CHARS + 50)
+        self.assertLessEqual(len(result), webui_api_key_mode.TOOL_OUTPUT_MAX_CHARS + 50)
 
     def test_read_file_path_escape_is_rejected(self):
-        result = webui.execute_tool_call(self.workspace, "read_file", {"path": "../outside.txt"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "read_file", {"path": "../outside.txt"})
         self.assertTrue(result.startswith("error:"))
 
     def test_write_file_creates_a_new_file_including_parent_dirs(self):
-        result = webui.execute_tool_call(self.workspace, "write_file", {"path": "nested/dir/new.txt", "content": "hi"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "write_file", {"path": "nested/dir/new.txt", "content": "hi"})
         self.assertIn("wrote", result)
         self.assertEqual((self.workspace / "nested" / "dir" / "new.txt").read_text(encoding="utf-8"), "hi")
 
     def test_write_file_overwrites_an_existing_file(self):
         (self.workspace / "b.txt").write_text("old", encoding="utf-8")
-        webui.execute_tool_call(self.workspace, "write_file", {"path": "b.txt", "content": "new"})
+        webui_api_key_mode.execute_tool_call(self.workspace, "write_file", {"path": "b.txt", "content": "new"})
         self.assertEqual((self.workspace / "b.txt").read_text(encoding="utf-8"), "new")
 
     def test_write_file_path_escape_is_rejected(self):
-        result = webui.execute_tool_call(self.workspace, "write_file", {"path": "/etc/passwd", "content": "x"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "write_file", {"path": "/etc/passwd", "content": "x"})
         self.assertTrue(result.startswith("error:"))
         self.assertFalse(Path("/etc/passwd_should_never_exist").exists())
 
     def test_edit_file_replaces_a_unique_match(self):
         (self.workspace / "c.txt").write_text("foo bar baz", encoding="utf-8")
-        result = webui.execute_tool_call(self.workspace, "edit_file", {"path": "c.txt", "old_string": "bar", "new_string": "qux"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "edit_file", {"path": "c.txt", "old_string": "bar", "new_string": "qux"})
         self.assertIn("edited", result)
         self.assertEqual((self.workspace / "c.txt").read_text(encoding="utf-8"), "foo qux baz")
 
     def test_edit_file_zero_matches_is_an_error_and_leaves_the_file_untouched(self):
         (self.workspace / "d.txt").write_text("unchanged", encoding="utf-8")
-        result = webui.execute_tool_call(self.workspace, "edit_file", {"path": "d.txt", "old_string": "missing", "new_string": "x"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "edit_file", {"path": "d.txt", "old_string": "missing", "new_string": "x"})
         self.assertTrue(result.startswith("error:"))
         self.assertEqual((self.workspace / "d.txt").read_text(encoding="utf-8"), "unchanged")
 
     def test_edit_file_ambiguous_match_is_rejected_not_guessed(self):
         (self.workspace / "e.txt").write_text("dup dup", encoding="utf-8")
-        result = webui.execute_tool_call(self.workspace, "edit_file", {"path": "e.txt", "old_string": "dup", "new_string": "x"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "edit_file", {"path": "e.txt", "old_string": "dup", "new_string": "x"})
         self.assertTrue(result.startswith("error:"))
         self.assertEqual((self.workspace / "e.txt").read_text(encoding="utf-8"), "dup dup")
 
     def test_edit_file_nonexistent_file_is_an_error(self):
-        result = webui.execute_tool_call(self.workspace, "edit_file", {"path": "nope.txt", "old_string": "a", "new_string": "b"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "edit_file", {"path": "nope.txt", "old_string": "a", "new_string": "b"})
         self.assertTrue(result.startswith("error:"))
 
     def test_run_shell_returns_exit_code_and_output(self):
-        result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "echo hello-from-shell-tool"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "echo hello-from-shell-tool"})
         self.assertIn("exit code: 0", result)
         self.assertIn("hello-from-shell-tool", result)
 
     def test_run_shell_runs_in_the_workspace_directory(self):
         (self.workspace / "marker.txt").write_text("x", encoding="utf-8")
-        result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "ls"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "ls"})
         self.assertIn("marker.txt", result)
 
     def test_run_shell_nonzero_exit_is_reported_not_treated_as_a_tool_error(self):
-        result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "exit 3"})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "exit 3"})
         self.assertIn("exit code: 3", result)
 
     def test_run_shell_timeout_is_reported_as_an_error_string(self):
         with mock.patch(
-            "handoff_webui.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="sleep 999", timeout=webui.TOOL_EXEC_TIMEOUT_SECONDS),
+            "webui_api_key_mode.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="sleep 999", timeout=webui_api_key_mode.TOOL_EXEC_TIMEOUT_SECONDS),
         ):
-            result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "sleep 999"})
+            result = webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "sleep 999"})
         self.assertTrue(result.startswith("error:"))
         self.assertIn("timed out", result)
 
     def test_run_shell_output_over_the_cap_is_truncated_not_silently_cut(self):
         with mock.patch(
-            "handoff_webui.subprocess.run",
-            return_value=subprocess.CompletedProcess(args="x", returncode=0, stdout="a" * (webui.TOOL_OUTPUT_MAX_CHARS + 500), stderr=""),
+            "webui_api_key_mode.subprocess.run",
+            return_value=subprocess.CompletedProcess(args="x", returncode=0, stdout="a" * (webui_api_key_mode.TOOL_OUTPUT_MAX_CHARS + 500), stderr=""),
         ):
-            result = webui.execute_tool_call(self.workspace, "run_shell", {"command": "x"})
+            result = webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "x"})
         self.assertIn("(output truncated)", result)
-        self.assertLessEqual(len(result), webui.TOOL_OUTPUT_MAX_CHARS + 200)
+        self.assertLessEqual(len(result), webui_api_key_mode.TOOL_OUTPUT_MAX_CHARS + 200)
 
     def test_run_shell_pins_utf8_encoding(self):
         # Regression coverage for a real crash class (2026-08-14, see
@@ -2668,15 +2674,15 @@ class ToolExecutorTests(unittest.TestCase):
         # model-issued shell command (or the files it reads) can easily
         # produce non-ASCII output.
         with mock.patch(
-            "handoff_webui.subprocess.run",
+            "webui_api_key_mode.subprocess.run",
             return_value=subprocess.CompletedProcess(args="x", returncode=0, stdout="ok", stderr=""),
         ) as run_spy:
-            webui.execute_tool_call(self.workspace, "run_shell", {"command": "echo ok"})
+            webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "echo ok"})
         self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
 
     def test_unknown_tool_name_is_an_error_not_a_crash(self):
-        result = webui.execute_tool_call(self.workspace, "delete_everything", {})
+        result = webui_api_key_mode.execute_tool_call(self.workspace, "delete_everything", {})
         self.assertTrue(result.startswith("error:"))
 
     def test_an_exception_inside_an_executor_is_caught_not_propagated(self):
@@ -2685,9 +2691,9 @@ class ToolExecutorTests(unittest.TestCase):
         # the dispatcher's already-stored reference -- the dict entry
         # itself has to be swapped.
         with mock.patch.dict(
-            "handoff_webui._TOOL_EXECUTORS", {"read_file": mock.Mock(side_effect=RuntimeError("boom"))}
+            "webui_api_key_mode._TOOL_EXECUTORS", {"read_file": mock.Mock(side_effect=RuntimeError("boom"))}
         ):
-            result = webui.execute_tool_call(self.workspace, "read_file", {"path": "a.txt"})
+            result = webui_api_key_mode.execute_tool_call(self.workspace, "read_file", {"path": "a.txt"})
         self.assertTrue(result.startswith("error:"))
         self.assertIn("boom", result)
 
@@ -2714,10 +2720,10 @@ class AgenticLoopTests(unittest.TestCase):
             },
         )
         final_response = (200, {"content": [{"type": "text", "text": "the file says hi"}]})
-        with mock.patch("handoff_webui._http_post_json", side_effect=[tool_use_response, final_response]), mock.patch(
-            "handoff_webui.execute_tool_call", return_value="hi"
+        with mock.patch("webui_api_key_mode._http_post_json", side_effect=[tool_use_response, final_response]), mock.patch(
+            "webui_api_key_mode.execute_tool_call", return_value="hi"
         ) as exec_spy:
-            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "read a.txt"}], self.workspace)
+            result = webui_api_key_mode.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "read a.txt"}], self.workspace)
         self.assertTrue(result["ok"])
         exec_spy.assert_called_once_with(self.workspace, "read_file", {"path": "a.txt"})
         self.assertIn("the file says hi", result["text"])
@@ -2728,13 +2734,13 @@ class AgenticLoopTests(unittest.TestCase):
             200,
             {"content": [{"type": "tool_use", "id": "toolu_x", "name": "run_shell", "input": {"command": "echo hi"}}]},
         )
-        with mock.patch("handoff_webui._http_post_json", return_value=always_calls_tool), mock.patch(
-            "handoff_webui.execute_tool_call", return_value="ok"
+        with mock.patch("webui_api_key_mode._http_post_json", return_value=always_calls_tool), mock.patch(
+            "webui_api_key_mode.execute_tool_call", return_value="ok"
         ) as exec_spy:
-            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "loop forever"}], self.workspace)
+            result = webui_api_key_mode.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "loop forever"}], self.workspace)
         self.assertTrue(result["ok"])
-        self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
-        self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
+        self.assertEqual(exec_spy.call_count, webui_api_key_mode.MAX_TOOL_ITERATIONS)
+        self.assertIn(f"stopped after {webui_api_key_mode.MAX_TOOL_ITERATIONS}", result["text"])
 
     def test_anthropic_feeds_tool_result_back_with_the_matching_tool_use_id(self):
         tool_use_response = (
@@ -2743,9 +2749,9 @@ class AgenticLoopTests(unittest.TestCase):
         )
         final_response = (200, {"content": [{"type": "text", "text": "done"}]})
         with mock.patch(
-            "handoff_webui._http_post_json", side_effect=[tool_use_response, final_response]
-        ) as http_spy, mock.patch("handoff_webui.execute_tool_call", return_value="file contents"):
-            webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+            "webui_api_key_mode._http_post_json", side_effect=[tool_use_response, final_response]
+        ) as http_spy, mock.patch("webui_api_key_mode.execute_tool_call", return_value="file contents"):
+            webui_api_key_mode.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
         second_call_body = http_spy.call_args_list[1].args[2]
         tool_result_message = second_call_body["messages"][-1]
         self.assertEqual(tool_result_message["role"], "user")
@@ -2772,9 +2778,9 @@ class AgenticLoopTests(unittest.TestCase):
         )
         final_response = (200, {"content": [{"type": "text", "text": "done"}]})
         with mock.patch(
-            "handoff_webui._http_post_json", side_effect=[two_tool_use_response, final_response]
-        ) as http_spy, mock.patch("handoff_webui.execute_tool_call", return_value="ok") as exec_spy:
-            webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+            "webui_api_key_mode._http_post_json", side_effect=[two_tool_use_response, final_response]
+        ) as http_spy, mock.patch("webui_api_key_mode.execute_tool_call", return_value="ok") as exec_spy:
+            webui_api_key_mode.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertEqual(exec_spy.call_count, 2)
         second_call_body = http_spy.call_args_list[1].args[2]
         tool_result_message = second_call_body["messages"][-1]
@@ -2787,23 +2793,23 @@ class AgenticLoopTests(unittest.TestCase):
             {
                 "content": [
                     {"type": "tool_use", "id": f"toolu_{i}", "name": "run_shell", "input": {"command": "echo hi"}}
-                    for i in range(webui.MAX_TOOL_ITERATIONS + 10)
+                    for i in range(webui_api_key_mode.MAX_TOOL_ITERATIONS + 10)
                 ]
             },
         )
-        with mock.patch("handoff_webui._http_post_json", return_value=batch_response), mock.patch(
-            "handoff_webui.execute_tool_call", return_value="ok"
+        with mock.patch("webui_api_key_mode._http_post_json", return_value=batch_response), mock.patch(
+            "webui_api_key_mode.execute_tool_call", return_value="ok"
         ) as exec_spy:
-            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+            result = webui_api_key_mode.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertTrue(result["ok"])
-        self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
-        self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
+        self.assertEqual(exec_spy.call_count, webui_api_key_mode.MAX_TOOL_ITERATIONS)
+        self.assertIn(f"stopped after {webui_api_key_mode.MAX_TOOL_ITERATIONS}", result["text"])
 
     def test_anthropic_no_tool_use_returns_on_the_first_call(self):
         with mock.patch(
-            "handoff_webui._http_post_json", return_value=(200, {"content": [{"type": "text", "text": "just chatting"}]})
+            "webui_api_key_mode._http_post_json", return_value=(200, {"content": [{"type": "text", "text": "just chatting"}]})
         ) as http_spy:
-            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+            result = webui_api_key_mode.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertEqual(http_spy.call_count, 1)
         self.assertEqual(result["text"], "just chatting")
 
@@ -2819,17 +2825,17 @@ class AgenticLoopTests(unittest.TestCase):
             {"content": [{"type": "tool_use", "id": "toolu_1", "name": "run_shell", "input": {"command": "rm important.txt"}}]},
         )
         with mock.patch(
-            "handoff_webui._http_post_json", side_effect=[tool_use_response, urllib.error.URLError("boom")]
-        ), mock.patch("handoff_webui.execute_tool_call", return_value="deleted"):
-            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+            "webui_api_key_mode._http_post_json", side_effect=[tool_use_response, urllib.error.URLError("boom")]
+        ), mock.patch("webui_api_key_mode.execute_tool_call", return_value="deleted"):
+            result = webui_api_key_mode.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("run_shell", result["message"])
         self.assertIn("deleted", result["message"])
         self.assertIn("network error", result["message"])
 
     def test_anthropic_error_before_any_tool_runs_has_no_transcript_prefix(self):
-        with mock.patch("handoff_webui._http_post_json", side_effect=urllib.error.URLError("boom")):
-            result = webui.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
+        with mock.patch("webui_api_key_mode._http_post_json", side_effect=urllib.error.URLError("boom")):
+            result = webui_api_key_mode.call_anthropic_messages_api("sk-x", "claude-sonnet-5", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertFalse(result["ok"])
         self.assertTrue(result["message"].startswith("network error calling Anthropic Messages API:"))
 
@@ -2839,9 +2845,9 @@ class AgenticLoopTests(unittest.TestCase):
             {"output": [{"type": "function_call", "call_id": "call_1", "name": "run_shell", "arguments": '{"command": "rm important.txt"}'}]},
         )
         with mock.patch(
-            "handoff_webui._http_post_json", side_effect=[function_call_response, urllib.error.URLError("boom")]
-        ), mock.patch("handoff_webui.execute_tool_call", return_value="deleted"):
-            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
+            "webui_api_key_mode._http_post_json", side_effect=[function_call_response, urllib.error.URLError("boom")]
+        ), mock.patch("webui_api_key_mode.execute_tool_call", return_value="deleted"):
+            result = webui_api_key_mode.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertFalse(result["ok"])
         self.assertIn("run_shell", result["message"])
         self.assertIn("deleted", result["message"])
@@ -2857,9 +2863,9 @@ class AgenticLoopTests(unittest.TestCase):
             {"output": [{"type": "message", "content": [{"type": "output_text", "text": "the file says hi"}]}]},
         )
         with mock.patch(
-            "handoff_webui._http_post_json", side_effect=[function_call_response, final_response]
-        ), mock.patch("handoff_webui.execute_tool_call", return_value="hi") as exec_spy:
-            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "read a.txt"}], self.workspace)
+            "webui_api_key_mode._http_post_json", side_effect=[function_call_response, final_response]
+        ), mock.patch("webui_api_key_mode.execute_tool_call", return_value="hi") as exec_spy:
+            result = webui_api_key_mode.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "read a.txt"}], self.workspace)
         self.assertTrue(result["ok"])
         exec_spy.assert_called_once_with(self.workspace, "read_file", {"path": "a.txt"})
         self.assertIn("the file says hi", result["text"])
@@ -2876,9 +2882,9 @@ class AgenticLoopTests(unittest.TestCase):
         )
         final_response = (200, {"output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}]})
         with mock.patch(
-            "handoff_webui._http_post_json", side_effect=[two_calls_response, final_response]
-        ), mock.patch("handoff_webui.execute_tool_call", return_value="ok") as exec_spy:
-            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
+            "webui_api_key_mode._http_post_json", side_effect=[two_calls_response, final_response]
+        ), mock.patch("webui_api_key_mode.execute_tool_call", return_value="ok") as exec_spy:
+            result = webui_api_key_mode.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertTrue(result["ok"])
         self.assertEqual(exec_spy.call_count, 2)
 
@@ -2887,13 +2893,13 @@ class AgenticLoopTests(unittest.TestCase):
             200,
             {"output": [{"type": "function_call", "call_id": "call_x", "name": "run_shell", "arguments": '{"command": "echo hi"}'}]},
         )
-        with mock.patch("handoff_webui._http_post_json", return_value=always_calls_function), mock.patch(
-            "handoff_webui.execute_tool_call", return_value="ok"
+        with mock.patch("webui_api_key_mode._http_post_json", return_value=always_calls_function), mock.patch(
+            "webui_api_key_mode.execute_tool_call", return_value="ok"
         ) as exec_spy:
-            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "loop forever"}], self.workspace)
+            result = webui_api_key_mode.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "loop forever"}], self.workspace)
         self.assertTrue(result["ok"])
-        self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
-        self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
+        self.assertEqual(exec_spy.call_count, webui_api_key_mode.MAX_TOOL_ITERATIONS)
+        self.assertIn(f"stopped after {webui_api_key_mode.MAX_TOOL_ITERATIONS}", result["text"])
 
     def test_openai_max_iterations_bounds_executions_not_just_http_round_trips(self):
         # A self-review round found that bounding the outer HTTP-call loop
@@ -2906,17 +2912,17 @@ class AgenticLoopTests(unittest.TestCase):
             {
                 "output": [
                     {"type": "function_call", "call_id": f"call_{i}", "name": "run_shell", "arguments": '{"command": "echo hi"}'}
-                    for i in range(webui.MAX_TOOL_ITERATIONS + 10)
+                    for i in range(webui_api_key_mode.MAX_TOOL_ITERATIONS + 10)
                 ]
             },
         )
-        with mock.patch("handoff_webui._http_post_json", return_value=batch_response), mock.patch(
-            "handoff_webui.execute_tool_call", return_value="ok"
+        with mock.patch("webui_api_key_mode._http_post_json", return_value=batch_response), mock.patch(
+            "webui_api_key_mode.execute_tool_call", return_value="ok"
         ) as exec_spy:
-            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
+            result = webui_api_key_mode.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertTrue(result["ok"])
-        self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
-        self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
+        self.assertEqual(exec_spy.call_count, webui_api_key_mode.MAX_TOOL_ITERATIONS)
+        self.assertIn(f"stopped after {webui_api_key_mode.MAX_TOOL_ITERATIONS}", result["text"])
 
     def test_openai_malformed_arguments_json_does_not_crash_the_loop(self):
         bad_args_response = (
@@ -2925,18 +2931,18 @@ class AgenticLoopTests(unittest.TestCase):
         )
         final_response = (200, {"output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}]})
         with mock.patch(
-            "handoff_webui._http_post_json", side_effect=[bad_args_response, final_response]
-        ), mock.patch("handoff_webui.execute_tool_call", return_value="ok") as exec_spy:
-            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
+            "webui_api_key_mode._http_post_json", side_effect=[bad_args_response, final_response]
+        ), mock.patch("webui_api_key_mode.execute_tool_call", return_value="ok") as exec_spy:
+            result = webui_api_key_mode.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertTrue(result["ok"])
         exec_spy.assert_called_once_with(self.workspace, "read_file", {})
 
     def test_openai_no_function_call_returns_on_the_first_call(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(200, {"output": [{"type": "message", "content": [{"type": "output_text", "text": "just chatting"}]}]}),
         ) as http_spy:
-            result = webui.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
+            result = webui_api_key_mode.call_openai_responses_api("sk-x", "gpt-5.1-codex", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertEqual(http_spy.call_count, 1)
         self.assertEqual(result["text"], "just chatting")
 
@@ -2955,9 +2961,9 @@ class AgenticLoopTests(unittest.TestCase):
         )
         final_response = (200, {"candidates": [{"content": {"parts": [{"text": "the file says hi"}]}}]})
         with mock.patch(
-            "handoff_webui._http_post_json", side_effect=[function_call_response, final_response]
-        ) as post_spy, mock.patch("handoff_webui.execute_tool_call", return_value="hi") as exec_spy:
-            result = webui.call_gemini_api(
+            "webui_api_key_mode._http_post_json", side_effect=[function_call_response, final_response]
+        ) as post_spy, mock.patch("webui_api_key_mode.execute_tool_call", return_value="hi") as exec_spy:
+            result = webui_api_key_mode.call_gemini_api(
                 "sk-x", "gemini-2.5-flash", [{"role": "user", "content": "read a.txt"}], self.workspace
             )
         self.assertTrue(result["ok"])
@@ -2990,9 +2996,9 @@ class AgenticLoopTests(unittest.TestCase):
         )
         final_response = (200, {"candidates": [{"content": {"parts": [{"text": "done"}]}}]})
         with mock.patch(
-            "handoff_webui._http_post_json", side_effect=[two_calls_response, final_response]
-        ), mock.patch("handoff_webui.execute_tool_call", return_value="ok") as exec_spy:
-            result = webui.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
+            "webui_api_key_mode._http_post_json", side_effect=[two_calls_response, final_response]
+        ), mock.patch("webui_api_key_mode.execute_tool_call", return_value="ok") as exec_spy:
+            result = webui_api_key_mode.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertTrue(result["ok"])
         self.assertEqual(exec_spy.call_count, 2)
 
@@ -3005,27 +3011,27 @@ class AgenticLoopTests(unittest.TestCase):
                         "content": {
                             "parts": [
                                 {"functionCall": {"name": "run_shell", "args": {"command": "echo hi"}}}
-                                for _ in range(webui.MAX_TOOL_ITERATIONS + 10)
+                                for _ in range(webui_api_key_mode.MAX_TOOL_ITERATIONS + 10)
                             ]
                         }
                     }
                 ]
             },
         )
-        with mock.patch("handoff_webui._http_post_json", return_value=batch_response), mock.patch(
-            "handoff_webui.execute_tool_call", return_value="ok"
+        with mock.patch("webui_api_key_mode._http_post_json", return_value=batch_response), mock.patch(
+            "webui_api_key_mode.execute_tool_call", return_value="ok"
         ) as exec_spy:
-            result = webui.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
+            result = webui_api_key_mode.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertTrue(result["ok"])
-        self.assertEqual(exec_spy.call_count, webui.MAX_TOOL_ITERATIONS)
-        self.assertIn(f"stopped after {webui.MAX_TOOL_ITERATIONS}", result["text"])
+        self.assertEqual(exec_spy.call_count, webui_api_key_mode.MAX_TOOL_ITERATIONS)
+        self.assertIn(f"stopped after {webui_api_key_mode.MAX_TOOL_ITERATIONS}", result["text"])
 
     def test_gemini_no_function_call_returns_on_the_first_call(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(200, {"candidates": [{"content": {"parts": [{"text": "just chatting"}]}}]}),
         ) as http_spy:
-            result = webui.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
+            result = webui_api_key_mode.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
         self.assertEqual(http_spy.call_count, 1)
         self.assertEqual(result["text"], "just chatting")
 
@@ -3039,9 +3045,9 @@ class AgenticLoopTests(unittest.TestCase):
         )
         final_response = (200, {"candidates": [{"content": {"parts": [{"text": "done"}]}}]})
         with mock.patch(
-            "handoff_webui._http_post_json", side_effect=[no_id_response, final_response]
-        ) as post_spy, mock.patch("handoff_webui.execute_tool_call", return_value="ok"):
-            webui.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
+            "webui_api_key_mode._http_post_json", side_effect=[no_id_response, final_response]
+        ) as post_spy, mock.patch("webui_api_key_mode.execute_tool_call", return_value="ok"):
+            webui_api_key_mode.call_gemini_api("sk-x", "gemini-2.5-flash", [{"role": "user", "content": "hi"}], self.workspace)
         second_call_body = post_spy.call_args_list[1].args[2]
         function_response_part = second_call_body["contents"][-1]["parts"][0]["functionResponse"]
         self.assertNotIn("id", function_response_part)
@@ -3051,8 +3057,8 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
     def test_success_produces_a_record_with_no_session_or_run_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with mock.patch("handoff_webui.call_anthropic_messages_api", return_value={"ok": True, "text": "hello back"}):
-                records = webui.run_provider_via_api_key(
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "hello back"}):
+                records = webui_api_key_mode.run_provider_via_api_key(
                     root, "claude", "hello", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue"
                 )
         self.assertEqual(len(records), 1)
@@ -3068,16 +3074,16 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with mock.patch(
-                "handoff_webui.call_anthropic_messages_api", return_value={"ok": False, "message": "401 authentication_error"}
+                "webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": False, "message": "401 authentication_error"}
             ) as spy:
-                records = webui.run_provider_via_api_key(
+                records = webui_api_key_mode.run_provider_via_api_key(
                     root, "claude", "hello", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue"
                 )
         spy.assert_called_once()  # confirms this exercised the real API-failure path, not the no-model-configured one
         record = records[0]
         self.assertTrue(record["reason"].startswith("tool_failure"))
         self.assertEqual(
-            webui.classify_run_status(record["handoff_needed"], record["reason"]), "fail"
+            webui_bridge_run.classify_run_status(record["handoff_needed"], record["reason"]), "fail"
         )
 
     def test_claude_with_no_model_configured_and_no_default_errors_without_calling_the_api(self):
@@ -3087,8 +3093,8 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
         # symmetry.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with mock.patch("handoff_webui.call_anthropic_messages_api") as spy:
-                records = webui.run_provider_via_api_key(root, "claude", "hello", {"key": "sk-x", "model": None}, "continue")
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api") as spy:
+                records = webui_api_key_mode.run_provider_via_api_key(root, "claude", "hello", {"key": "sk-x", "model": None}, "continue")
         spy.assert_not_called()
         self.assertTrue(records[0]["reason"].startswith("tool_failure"))
         self.assertIn("model", records[0]["final_text"])
@@ -3096,8 +3102,8 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
     def test_codex_with_no_model_configured_and_no_default_errors_without_calling_the_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with mock.patch("handoff_webui.call_openai_responses_api") as spy:
-                records = webui.run_provider_via_api_key(root, "codex", "hello", {"key": "sk-x", "model": None}, "continue")
+            with mock.patch("webui_api_key_mode.call_openai_responses_api") as spy:
+                records = webui_api_key_mode.run_provider_via_api_key(root, "codex", "hello", {"key": "sk-x", "model": None}, "continue")
         spy.assert_not_called()
         self.assertTrue(records[0]["reason"].startswith("tool_failure"))
         self.assertIn("model", records[0]["final_text"])
@@ -3105,8 +3111,8 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
     def test_codex_with_a_saved_model_calls_the_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with mock.patch("handoff_webui.call_openai_responses_api", return_value={"ok": True, "text": "ok"}) as spy:
-                records = webui.run_provider_via_api_key(
+            with mock.patch("webui_api_key_mode.call_openai_responses_api", return_value={"ok": True, "text": "ok"}) as spy:
+                records = webui_api_key_mode.run_provider_via_api_key(
                     root, "codex", "hello", {"key": "sk-x", "model": "gpt-5.1-codex"}, "continue"
                 )
         spy.assert_called_once()
@@ -3117,8 +3123,8 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
         # claude/codex go through their own caller.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with mock.patch("handoff_webui.call_gemini_api", return_value={"ok": True, "text": "ok"}) as spy:
-                records = webui.run_provider_via_api_key(
+            with mock.patch("webui_api_key_mode.call_gemini_api", return_value={"ok": True, "text": "ok"}) as spy:
+                records = webui_api_key_mode.run_provider_via_api_key(
                     root, "gemini", "hello", {"key": "sk-x", "model": "gemini-2.5-flash"}, "continue"
                 )
         spy.assert_called_once()
@@ -3127,8 +3133,8 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
     def test_gemini_with_no_model_configured_and_no_default_errors_without_calling_the_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with mock.patch("handoff_webui.call_gemini_api") as spy:
-                records = webui.run_provider_via_api_key(root, "gemini", "hello", {"key": "sk-x", "model": None}, "continue")
+            with mock.patch("webui_api_key_mode.call_gemini_api") as spy:
+                records = webui_api_key_mode.run_provider_via_api_key(root, "gemini", "hello", {"key": "sk-x", "model": None}, "continue")
         spy.assert_not_called()
         self.assertTrue(records[0]["reason"].startswith("tool_failure"))
         self.assertIn("model", records[0]["final_text"])
@@ -3136,8 +3142,8 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
     def test_model_override_takes_priority_over_the_saved_credential_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with mock.patch("handoff_webui.call_anthropic_messages_api", return_value={"ok": True, "text": "ok"}) as spy:
-                records = webui.run_provider_via_api_key(
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "ok"}) as spy:
+                records = webui_api_key_mode.run_provider_via_api_key(
                     root, "claude", "hello", {"key": "sk-x", "model": "claude-old"}, "continue", model_override="claude-new"
                 )
         self.assertEqual(records[0]["model"], "claude-new")
@@ -3154,7 +3160,7 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         self.setUpFakeProviders()
         self.tmp = tempfile.TemporaryDirectory()
         self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
-        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -3164,9 +3170,9 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
     def test_cli_available_provider_uses_subprocess_even_if_a_key_is_also_saved(self):
         # A saved key must never override an available CLI -- DEC-16.
         _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-        webui.save_credential("codex", "sk-should-be-unused", None)
-        with mock.patch("handoff_webui.call_openai_responses_api") as spy:
-            records = webui.run_provider_via_bridge(self.workspace, "codex", "hello", None, "continue")
+        webui_credentials.save_credential("codex", "sk-should-be-unused", None)
+        with mock.patch("webui_api_key_mode.call_openai_responses_api") as spy:
+            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "codex", "hello", None, "continue")
         spy.assert_not_called()
         self.assertEqual(records[0]["session_id"], "fake-codex-session")
 
@@ -3179,26 +3185,26 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         # every single /api/run request for a value that was discarded
         # unused. It must now be skipped entirely.
         _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-        webui.save_credential("codex", "sk-should-be-unused", None)
-        with mock.patch("handoff_webui.read_credentials", wraps=webui.read_credentials) as spy:
-            webui.run_provider_via_bridge(self.workspace, "codex", "hello", None, "continue")
+        webui_credentials.save_credential("codex", "sk-should-be-unused", None)
+        with mock.patch("webui_bridge_run.read_credentials", wraps=webui_bridge_run.read_credentials) as spy:
+            webui_bridge_run.run_provider_via_bridge(self.workspace, "codex", "hello", None, "continue")
         spy.assert_not_called()
 
     def test_auto_with_a_cli_available_never_reads_credentials_file(self):
         # Same efficiency invariant as above, for the "auto" branch: with at
         # least one CLI available, credentials.json must not be read at all.
         _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-        webui.save_credential("claude", "sk-should-be-unused", "claude-sonnet-5")
-        with mock.patch("handoff_webui.read_credentials", wraps=webui.read_credentials) as spy:
-            webui.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+        webui_credentials.save_credential("claude", "sk-should-be-unused", "claude-sonnet-5")
+        with mock.patch("webui_bridge_run.read_credentials", wraps=webui_bridge_run.read_credentials) as spy:
+            webui_bridge_run.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
         spy.assert_not_called()
 
     def test_cli_missing_provider_with_a_saved_key_uses_the_api_path(self):
-        webui.save_credential("claude", "sk-x", "claude-sonnet-5")
-        with mock.patch("handoff_webui.shutil.which", return_value=None), mock.patch(
-            "handoff_webui.call_anthropic_messages_api", return_value={"ok": True, "text": "api reply"}
+        webui_credentials.save_credential("claude", "sk-x", "claude-sonnet-5")
+        with mock.patch("webui_credentials.shutil.which", return_value=None), mock.patch(
+            "webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "api reply"}
         ) as spy:
-            records = webui.run_provider_via_bridge(self.workspace, "claude", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "claude", "hello", None, "continue")
         spy.assert_called_once()
         self.assertEqual(records[0]["final_text"], "api reply")
         self.assertIsNone(records[0]["run_dir"])
@@ -3207,7 +3213,7 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         # No fake binary for "claude" and no credential saved -- this falls
         # through to the pre-existing subprocess path unchanged, which
         # spawns a real handoff_bridge.py child process. That child inherits
-        # this process's PATH, so mock.patch("handoff_webui.shutil.which")
+        # this process's PATH, so mock.patch("webui_credentials.shutil.which")
         # alone would NOT be enough here (it only affects this parent
         # process's own dispatch check) -- if a real `claude` CLI happens to
         # be installed on this machine's PATH, the child could actually
@@ -3216,21 +3222,21 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         # either, and handoff_bridge.py's own FileNotFoundError -> exit_code
         # 127 handling is what's actually being exercised here.
         with mock.patch.dict(os.environ, {"PATH": str(self.fake_bin)}):
-            records = webui.run_provider_via_bridge(self.workspace, "claude", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "claude", "hello", None, "continue")
         self.assertEqual(records[0]["exit_code"], 127)
 
     def test_auto_with_no_cli_at_all_falls_back_to_a_provider_with_a_saved_key(self):
-        webui.save_credential("claude", "sk-x", "claude-sonnet-5")
-        with mock.patch("handoff_webui.shutil.which", return_value=None), mock.patch(
-            "handoff_webui.call_anthropic_messages_api", return_value={"ok": True, "text": "api reply"}
+        webui_credentials.save_credential("claude", "sk-x", "claude-sonnet-5")
+        with mock.patch("webui_credentials.shutil.which", return_value=None), mock.patch(
+            "webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "api reply"}
         ):
-            records = webui.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
         self.assertEqual(records[0]["provider"], "claude")
         self.assertEqual(records[0]["final_text"], "api reply")
 
     def test_auto_with_no_cli_and_no_saved_key_returns_a_clear_error_not_a_crash(self):
-        with mock.patch("handoff_webui.shutil.which", return_value=None):
-            records = webui.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+        with mock.patch("webui_credentials.shutil.which", return_value=None):
+            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
         self.assertEqual(len(records), 1)
         self.assertTrue(records[0]["reason"].startswith("tool_failure"))
         # Same invariant RunProviderViaBridgeTests::
@@ -3248,9 +3254,9 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         # choose_auto_provider()/--auto-fallback behavior completely
         # unchanged, even if a key happens to be saved for the other one.
         _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-        webui.save_credential("claude", "sk-should-be-unused", "claude-sonnet-5")
-        with mock.patch("handoff_webui.call_anthropic_messages_api") as spy:
-            records = webui.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+        webui_credentials.save_credential("claude", "sk-should-be-unused", "claude-sonnet-5")
+        with mock.patch("webui_api_key_mode.call_anthropic_messages_api") as spy:
+            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
         spy.assert_not_called()
         self.assertEqual(records[0]["provider"], "codex")
 
@@ -3262,7 +3268,7 @@ class ProviderApiLiveServerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
-        self.patcher = mock.patch("handoff_webui.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -3319,7 +3325,7 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         # here at the same _http_post_json seam CallProviderApiTests
         # already uses, so these HTTP-server tests never hit the network.
         return mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(200, {"content": [{"type": "text", "text": "ok"}]}),
         )
 
@@ -3369,7 +3375,7 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         # not content -- so this uses its own mocked response rather than
         # reusing _mock_valid_key_response().
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(200, {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}),
         ):
             status, data = self._post(
@@ -3384,7 +3390,7 @@ class ProviderApiLiveServerTests(unittest.TestCase):
 
     def test_a_gemini_key_that_fails_validation_is_rejected_with_400_and_not_saved(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(400, {"error": {"status": "INVALID_ARGUMENT", "message": "API key not valid"}}),
         ):
             status, data = self._post(
@@ -3413,7 +3419,7 @@ class ProviderApiLiveServerTests(unittest.TestCase):
 
     def test_a_key_that_fails_validation_is_rejected_with_400_and_not_saved(self):
         with mock.patch(
-            "handoff_webui._http_post_json",
+            "webui_api_key_mode._http_post_json",
             return_value=(401, {"error": {"type": "authentication_error", "message": "invalid x-api-key"}}),
         ):
             status, data = self._post(

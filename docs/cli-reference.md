@@ -107,8 +107,9 @@ python3 handoff_bridge.py --workspace /path/to/project resolve-auto-provider
 
 Thin, no-token, no-side-effect wrappers around pure decision logic
 (`check_for_update()`, `next_available_provider()`, `choose_auto_provider()`)
--- exist so every bridge-invoking consumer, including `handoff_webui.py`,
-reaches this logic through the same subprocess boundary instead of some
+-- exist so every bridge-invoking consumer, including the Web UI
+(`webui_common.py`/`webui_bridge_run.py`), reaches this logic through the
+same subprocess boundary instead of some
 consumers importing it in-process and others shelling out (a structure-audit
 finding). Not really meant for interactive use; `check-update` prints one
 line of JSON, the other two print a single provider name.
@@ -364,7 +365,7 @@ record(s) as structured data, including every record an auto-fallback chain
 produced in that one call.
 
 **Timeout**: the Web UI passes `--timeout-seconds 600`
-(`PROVIDER_RUN_TIMEOUT_SECONDS`, `handoff_webui.py`) to `handoff_bridge.py
+(`PROVIDER_RUN_TIMEOUT_SECONDS`, `webui_bridge_run.py`) to `handoff_bridge.py
 run`, so the 600s budget is enforced on the *actual* codex/claude
 subprocess, per provider call — killing only the outer bridge wrapper
 would leave a still-running, still-token-spending provider process behind,

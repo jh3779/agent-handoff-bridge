@@ -160,13 +160,13 @@ overlap, and unsynchronized reads-then-writes can silently drop an update.
   lock at `.handoff/.write.lock`) and `atomic_write_text` (write-to-temp,
   `os.replace`). `write_json` and `append_current` both go through these —
   never call `STATE_FILE.write_text(...)` or `CURRENT_FILE.open("a")`
-  directly. `handoff_webui.py` imports the same `WriteLock` (not a
+  directly. `webui_chat_storage.py` imports the same `WriteLock` (not a
   reimplementation) to guard `.handoff/webui/chat/` — see
   `append_chat_message()` and `archive_old_months()`.
 - **Test**: `tests/test_handoff_bridge.py::AtomicWriteTests` and
   `::WriteLockTests`; `tests/test_handoff_webui.py::ChatStorageTests`'s
   multi-month archive coverage and `EnsureChatGitignoreTests` for the
-  `handoff_webui.py` side.
+  Web UI side.
 
 Known residual limitation: the lock covers each individual write, not a full
 read-modify-write cycle across two separate `handoff_bridge.py` invocations.

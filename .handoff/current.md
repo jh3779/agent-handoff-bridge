@@ -1941,3 +1941,119 @@ risk" (not a session retrospective, not an architecture explainer).
   items above are explicitly left for the user's own judgment, not
   forgotten.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-16 (webui module split, the two deferred items)
+
+- **Task**: user asked to act on the two "판단 유보" (deferred-judgment)
+  items from the structure audit above. Asked which direction for each;
+  user chose the larger option both times: physically split
+  `handoff_webui.py` into modules, AND make it import only constants from
+  `handoff_bridge` (matching the other 5 consumers) rather than business
+  logic too.
+- **Import-consistency part** (done first, smaller): added 3 new
+  `handoff_bridge.py` CLI subcommands (`check-update`, `next-provider
+  <current>`, `resolve-auto-provider`) wrapping `check_for_update()`/
+  `next_available_provider()`/`choose_auto_provider()`; `handoff_webui.py`
+  now calls these via `short_run(bridge_command_prefix() + [...])`
+  instead of importing and calling the functions in-process. Named real
+  cost in the commit: trades a cheap in-process call for a subprocess
+  spawn, and made one existing test newly sensitive to the real
+  test-runner machine's installed CLIs (fixed by mocking the new wrapper
+  function directly instead of the subprocess internals).
+- **Module split** (the big one): extracted `handoff_webui.py` (2663
+  lines before) into `webui_common.py` (subprocess boundary + shared
+  utils), `webui_workspace.py` (file tree/preview, workspace validation,
+  auto-workspace creation), `webui_chat_storage.py` (chat history +
+  registry + history drawer), `webui_credentials.py` (API-key storage),
+  `webui_api_key_mode.py` (CLI-less provider HTTP clients + tool loop,
+  the biggest at ~950 lines), `webui_bridge_run.py` (dispatching a real
+  run, CLI or API-key mode). `handoff_webui.py` itself shrank to 649
+  lines -- HTTP routing layer, `AppState`/`Api`, process entry point.
+  - Mechanical approach: precise `sed`/Python line-range extraction from
+    the original file (not manual retyping) to avoid transcription
+    errors, verified each new file's syntax immediately after.
+  - **Real bugs the extraction itself introduced, all caught before
+    commit**: `webui_bridge_run.py` missing `import threading` (NameError
+    on module load); `webui_chat_storage.py` missing `from datetime
+    import datetime` and `import sys` (the latter only surfaced on the
+    error-handling path, `touch_registry()`'s failure branch); the
+    `_TOOL_EXECUTORS`-adjacent `_tool_read_file` missing a `read_file_
+    preview` import from `webui_workspace.py`; `webui_bridge_run.py`
+    missing `_api_key_mode_error_record` from `webui_api_key_mode.py`.
+    Found via `pip install pyflakes` + running it across all 7 files --
+    faster and more reliable than chasing each one through test
+    tracebacks individually. Ran pyflakes again after fixes: clean.
+  - **The one subtle cross-module bug worth remembering**: `AUTO_WORKSPACE_
+    BASE_DIR` moved to `webui_common.py`, and the three consumers
+    (`webui_workspace.py`/`webui_chat_storage.py`/`webui_credentials.py`)
+    initially did `from webui_common import AUTO_WORKSPACE_BASE_DIR` --
+    a value-copy import, immune to any later `mock.patch` on ANY module's
+    copy of the name, including the canonical one. This silently broke
+    ~23 tests' isolation (they patch this to redirect file I/O away from
+    the user's real `~/Documents/Agent Handoff Bridge/`) and, worse,
+    actually **wrote real test-fixture directories and a fake
+    credentials.json to that real path** before the fix -- caught by
+    checking that folder directly after a test run, not by any test
+    failure (the writes "succeeded"). Fixed by switching those three
+    modules to qualified access (`import webui_common; webui_common.
+    AUTO_WORKSPACE_BASE_DIR`) so a single patch on the canonical module
+    affects every consumer, matching the single-file version's implicit
+    "one patch affects everything" semantics the tests were written
+    against. Cleaned up the real-folder pollution each time it recurred
+    during iteration (`rm` the test-fixture-shaped entries + fake
+    credentials/registry files, never touched anything with an older
+    timestamp).
+  - **Mock-target retargeting in tests/test_handoff_webui.py** (~370
+    direct-call sites + ~150 mock.patch targets): the general rule that
+    actually mattered -- a regular function/constant's patch target must
+    be the module where the ACTUAL CALLING CODE does its lookup (often
+    the importer, not the definer), while a *stdlib module* patch
+    (`subprocess.run`, `shutil.which`, `urllib.request.urlopen`) can
+    target ANY module that did a plain `import` of it, since stdlib
+    modules are singletons shared process-wide -- mutating the attribute
+    via any reference affects all of them. Used the second fact to
+    resolve `subprocess`/`shutil`/`urllib` mocks by picking whichever new
+    module was semantically closest to what each test class actually
+    exercises, without needing to trace exact call chains for those.
+  - **Known pre-existing (not newly introduced) test-isolation gap**: a
+    `registry.json` (and occasionally a `credentials.json`) kept
+    reappearing in the real `~/Documents/Agent Handoff Bridge/` after full
+    -suite runs even after the `AUTO_WORKSPACE_BASE_DIR` fix above, from
+    some test/thread interaction not fully root-caused (every
+    individually-inspected test class's `AUTO_WORKSPACE_BASE_DIR`
+    patching looked correct). Cleaned up after every run this session;
+    left as a known flake for a future session to actually chase, not
+    silently ignored.
+  - **Packaging manifests updated to match** (would otherwise ship a
+    broken `handoff_webui.py` with missing sibling modules): added all 6
+    new files to `handoff_bridge.py`'s `INSTALL_FILES` and `scripts/
+    package_platforms.py`'s `COMMON_FILES`. Verified for real, not just
+    by inspection: rebuilt the source zip, extracted it standalone (no
+    git repo), confirmed `import handoff_webui` and `handoff_bridge.py
+    check` (429 tests, the zip's own bundled subset) both pass. PyInstaller
+    bundling (`agent-handoff-bridge-server` sidecar) was NOT verified end-
+    to-end this session (no PyInstaller toolchain run) -- static analysis
+    should auto-bundle plain top-level `import webui_X` statements the
+    same way it already does for every other local import in this
+    project, but this is asserted from the existing pattern, not
+    freshly confirmed against a real frozen build.
+  - Docs updated for the new file layout: `docs/architecture.md` (added a
+    File Roles entry for the 6 new modules, fixed 2 stale function
+    citations), `docs/quality-gates.md` and `docs/webui-chat-storage.md`
+    (fixed stale `handoff_webui.py` citations for functions/constants that
+    moved), `docs/cli-reference.md` (2 stale citations fixed).
+- **Verified**: `python3 -m pyflakes` clean across all 7 touched .py
+  files. `python3 -m unittest discover -s tests` -> 466 tests, OK.
+  `python3 handoff_bridge.py check` -> PASS (secret scan + doc
+  consistency too). Standalone extracted-zip check also passes (429
+  tests, the zip's smaller bundled subset).
+- **Remaining**: the pre-existing test-isolation flake noted above
+  (occasional stray `~/Documents/Agent Handoff Bridge/registry.json`
+  after a full suite run) is not root-caused, just cleaned up each time
+  it appeared. Real PyInstaller sidecar build not exercised this session
+  (would need the full Tauri/PyInstaller toolchain, not available here)
+  -- worth a real `scripts/build_sidecars.py` run before the next release
+  cut, to confirm the new local-module imports bundle cleanly into the
+  frozen `agent-handoff-bridge-server` binary the same way the existing
+  ones already do.
+- **Blocked**: none.
