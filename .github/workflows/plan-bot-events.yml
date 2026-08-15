@@ -1,0 +1,44 @@
+name: plan-bot-events
+# 플랜봇 P2 — 코멘트·리뷰 이벤트를 Discord #git-events로 전달.
+# 표시명 형식(`repo PR# comment <actor>` / `repo PR# review-<state> <actor>`)이
+# review-bot-notify.yml의 push 규격(`repo PR# SHA`)과 불일치하므로 review-bot은 무시한다.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  comment:
+    # PR에 달린 코멘트만 (일반 이슈 제외), Actions 봇 코멘트 제외
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request && github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify plan bot (comment)
+        env:
+          HOOK: ${{ secrets.DISCORD_EVENT_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+        run: |
+          [ -n "$HOOK" ] || { echo "DISCORD_EVENT_WEBHOOK 시크릿 없음 — 생략"; exit 0; }
+          NAME="$REPO $PR comment $ACTOR"
+          curl -sS -X POST "$HOOK" -H "Content-Type: application/json" \
+            -d "$(printf '{"username":"%s","content":"comment event"}' "${NAME:0:80}")"
+
+  review:
+    if: github.event_name == 'pull_request_review'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Notify plan bot (review)
+        env:
+          HOOK: ${{ secrets.DISCORD_EVENT_WEBHOOK }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          STATE: ${{ github.event.review.state }}
+          ACTOR: ${{ github.event.review.user.login }}
+        run: |
+          [ -n "$HOOK" ] || { echo "DISCORD_EVENT_WEBHOOK 시크릿 없음 — 생략"; exit 0; }
+          NAME="$REPO $PR review-$(echo "$STATE" | tr "A-Z" "a-z") $ACTOR"
+          curl -sS -X POST "$HOOK" -H "Content-Type: application/json" \
+            -d "$(printf '{"username":"%s","content":"review event"}' "${NAME:0:80}")"
