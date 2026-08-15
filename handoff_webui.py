@@ -40,9 +40,6 @@ from handoff_bridge import (
     PROVIDERS,
     WriteLock,
     atomic_write_text,
-    check_for_update,
-    choose_auto_provider,
-    next_available_provider,
     normalize_path,
     short_run,
 )
@@ -88,6 +85,42 @@ def bridge_command_prefix() -> list[str]:
         pure_path = PureWindowsPath if sys.platform == "win32" else PurePosixPath
         return [str(pure_path(sys.executable).parent / cli_name)]
     return [sys.executable, str(BRIDGE_SCRIPT)]
+
+
+# Structure audit: this module used to be the one bridge-invoking consumer
+# that imported handoff_bridge's pure decision-logic functions
+# (check_for_update/choose_auto_provider/next_available_provider) and
+# called them in-process, while every other consumer only ever reached
+# handoff_bridge.py's behavior through a subprocess call. The three
+# wrappers below close that asymmetry by going through
+# handoff_bridge.py's own check-update/resolve-auto-provider/next-provider
+# subcommands instead -- same bridge_command_prefix()/short_run() pattern
+# every other subprocess call in this file already uses.
+
+
+def _bridge_check_for_update() -> dict:
+    exit_code, stdout, _stderr = short_run(bridge_command_prefix() + ["check-update"])
+    if exit_code == 0:
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            return data
+    return {"status": "unavailable"}
+
+
+def _bridge_resolve_auto_provider(workspace: Path) -> str:
+    exit_code, stdout, _stderr = short_run(
+        bridge_command_prefix() + ["--workspace", str(workspace), "resolve-auto-provider"]
+    )
+    return stdout.strip() if exit_code == 0 and stdout.strip() else "codex"
+
+
+def _bridge_next_provider(current: str) -> str:
+    exit_code, stdout, _stderr = short_run(bridge_command_prefix() + ["next-provider", current])
+    return stdout.strip() if exit_code == 0 and stdout.strip() else current
+
 
 try:
     import webview  # type: ignore[import-not-found]
@@ -2030,7 +2063,7 @@ def _run_provider_via_bridge_locked(
             # installed either. Reusing the same function here (rather
             # than reimplementing the guess) is the only way this stays
             # correct if PROVIDERS' order or installed set ever changes.
-            timed_out_provider = next_available_provider(new_records[-1]["provider"])
+            timed_out_provider = _bridge_next_provider(new_records[-1]["provider"])
             new_records.append(
                 {
                     "provider": timed_out_provider,
@@ -2050,7 +2083,7 @@ def _run_provider_via_bridge_locked(
     # here -- otherwise a synthetic record could persist "auto" as a
     # chat-log `provider` value, which callers never expect to see.
     resolved_provider = (
-        choose_auto_provider(read_state_dict(workspace)) if provider == "auto" else provider
+        _bridge_resolve_auto_provider(workspace) if provider == "auto" else provider
     )
     return [
         {
@@ -2540,7 +2573,7 @@ def _check_for_update_in_background(state: "AppState") -> None:
     Sets `update_info` before `update_checked` -- a reader that observes
     `update_checked is True` must never see a stale/uninitialized
     `update_info` alongside it."""
-    state.update_info = check_for_update()
+    state.update_info = _bridge_check_for_update()
     state.update_checked = True
 
 

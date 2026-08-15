@@ -1349,16 +1349,16 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         # call hangs. Without the timeout branch, the caller would silently
         # see only the codex record and have no idea a fallback ever started.
         #
-        # The "claude hangs" premise only makes sense if claude's CLI was
-        # actually launchable in the first place -- if it weren't installed,
-        # the real recursive call would fail near-instantly (FileNotFoundError
-        # -> exit 127), not hang until the outer timeout. handoff_webui's
-        # timed-out-provider guess now uses next_available_provider() (review
-        # fix: the naive next-in-PROVIDERS-order guess could name an
-        # uninstalled provider), so shutil.which() is pinned here to make
-        # that premise concrete and this test deterministic regardless of
-        # what's actually installed on whatever machine runs the suite.
-        with mock.patch("handoff_bridge.shutil.which", side_effect=lambda name: name in ("codex", "claude") and f"/usr/bin/{name}"), tempfile.TemporaryDirectory() as tmp:
+        # The timed-out-provider guess now goes through
+        # _bridge_next_provider(), a subprocess call to handoff_bridge.py's
+        # own next-provider subcommand (structure audit: this used to be an
+        # in-process next_available_provider() import) -- that subprocess
+        # would do its own real shutil.which() against whatever's actually
+        # installed on the machine running this test, which isn't
+        # deterministic, so _bridge_next_provider() itself is mocked
+        # directly rather than trying to mock shutil.which() inside a
+        # process this test never controls.
+        with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             state_path = root / ".handoff" / "state.json"
             state_path.parent.mkdir(parents=True)
@@ -1386,7 +1386,9 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
                 )
                 raise subprocess.TimeoutExpired(cmd="handoff_bridge.py", timeout=600)
 
-            with mock.patch("handoff_webui.subprocess.run", side_effect=_seed_partial_history_then_hang):
+            with mock.patch("handoff_webui.subprocess.run", side_effect=_seed_partial_history_then_hang), mock.patch(
+                "handoff_webui._bridge_next_provider", return_value="claude"
+            ):
                 records = webui.run_provider_via_bridge(root, "codex", "hello", None, "continue")
 
             self.assertEqual(len(records), 2)
@@ -3454,7 +3456,7 @@ class CheckForUpdateInBackgroundTests(unittest.TestCase):
     def test_sets_state_update_info_from_check_for_update(self):
         state = webui.AppState(None)
         with mock.patch(
-            "handoff_webui.check_for_update",
+            "handoff_webui._bridge_check_for_update",
             return_value={
                 "status": "available",
                 "latest_version": "0.2.0",
@@ -3476,7 +3478,7 @@ class CheckForUpdateInBackgroundTests(unittest.TestCase):
         # above).
         state = webui.AppState(None)
         with mock.patch(
-            "handoff_webui.check_for_update", return_value={"status": "unavailable", "current_version": "0.1.0"}
+            "handoff_webui._bridge_check_for_update", return_value={"status": "unavailable", "current_version": "0.1.0"}
         ):
             webui._check_for_update_in_background(state)
         self.assertEqual(state.update_info, {"status": "unavailable", "current_version": "0.1.0"})
@@ -3561,7 +3563,7 @@ class UpdateCheckLiveServerTests(unittest.TestCase):
             release.wait(timeout=5)
             return {"status": "available", "latest_version": "0.2.0", "current_version": "0.1.0", "url": "https://example.invalid"}
 
-        with mock.patch("handoff_webui.check_for_update", side_effect=_delayed_check):
+        with mock.patch("handoff_webui._bridge_check_for_update", side_effect=_delayed_check):
             bg_thread = threading.Thread(
                 target=webui._check_for_update_in_background, args=(self.state,), daemon=True
             )

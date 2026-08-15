@@ -11,6 +11,8 @@ manual QA step that would catch a silent regression).
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -408,6 +410,58 @@ class CheckCommandTests(unittest.TestCase):
         command = run_spy.call_args.args[0]
         expected = PureWindowsPath("/apps/agent-handoff-bridge") / "agent-handoff-bridge-validate.exe"
         self.assertEqual(command[0], str(expected))
+
+
+class NewCliQuerySubcommandsTests(unittest.TestCase):
+    """check-update / next-provider / resolve-auto-provider: thin CLI
+    wrappers added so handoff_webui.py can reach check_for_update()/
+    next_available_provider()/choose_auto_provider() through the same
+    subprocess boundary every other bridge-invoking consumer already uses,
+    instead of importing and calling them in-process (a structure-audit
+    finding)."""
+
+    def _stdout_of(self, func, args) -> str:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            exit_code = func(args)
+        self.assertEqual(exit_code, 0)
+        return buffer.getvalue().strip()
+
+    def test_check_update_prints_check_for_update_result_as_json(self):
+        fake_result = {"status": "current", "current_version": "1.2.3"}
+        with mock.patch.object(hb, "check_for_update", return_value=fake_result):
+            output = self._stdout_of(hb.check_update_command, mock.Mock())
+        self.assertEqual(json.loads(output), fake_result)
+
+    def test_next_provider_prints_the_next_available_provider(self):
+        with mock.patch.object(hb, "next_available_provider", return_value="claude") as spy:
+            output = self._stdout_of(hb.next_provider_command, mock.Mock(current="codex"))
+        spy.assert_called_once_with("codex")
+        self.assertEqual(output, "claude")
+
+    def test_resolve_auto_provider_prints_choose_auto_providers_result(self):
+        fake_state = {"primary_provider": "codex"}
+        with mock.patch.object(hb, "load_state", return_value=fake_state), mock.patch.object(
+            hb, "choose_auto_provider", return_value="codex"
+        ) as spy:
+            output = self._stdout_of(hb.resolve_auto_provider_command, mock.Mock())
+        spy.assert_called_once_with(fake_state)
+        self.assertEqual(output, "codex")
+
+    def test_all_three_are_reachable_through_a_real_subprocess_invocation(self):
+        # Not mocked: confirms the argparse wiring itself (subcommand name,
+        # positional arg, --workspace chdir) actually works end to end, the
+        # same shape handoff_webui.py's short_run() calls will use.
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parent.parent / "handoff_bridge.py"),
+                 "--workspace", tmp, "resolve-auto-provider"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout.strip(), "codex")
 
 
 class WriteLockTests(unittest.TestCase):

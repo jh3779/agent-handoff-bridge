@@ -1224,6 +1224,33 @@ def status(_: argparse.Namespace) -> int:
     return 0
 
 
+def check_update_command(_: argparse.Namespace) -> int:
+    """CLI wrapper around check_for_update() -- prints its result as one
+    line of JSON. Structure audit: handoff_webui.py used to be the one
+    consumer that imported and called check_for_update() in-process while
+    every other bridge-invoking consumer only ever reached the bridge's
+    behavior through a subprocess call to this CLI; this subcommand closes
+    that asymmetry."""
+    print(json.dumps(check_for_update(), ensure_ascii=False))
+    return 0
+
+
+def next_provider_command(args: argparse.Namespace) -> int:
+    """CLI wrapper around next_available_provider() -- prints the chosen
+    provider name (plain text; a single token needs no JSON envelope)."""
+    print(next_available_provider(args.current))
+    return 0
+
+
+def resolve_auto_provider_command(_: argparse.Namespace) -> int:
+    """CLI wrapper around choose_auto_provider() -- reads this workspace's
+    state.json (via the already-applied --workspace chdir, same as
+    status()) and prints which real provider "auto" currently resolves
+    to."""
+    print(choose_auto_provider(load_state()))
+    return 0
+
+
 def check(_: argparse.Namespace) -> int:
     if getattr(sys, "frozen", False):
         # Phase 7a (DEC-22, docs/research-phase7-framework.md): frozen as
@@ -1295,6 +1322,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_check = sub.add_parser("check", help="Validate bridge files without calling model providers.")
     p_check.set_defaults(func=check)
+
+    p_check_update = sub.add_parser("check-update", help="Check for a newer release; prints JSON.")
+    p_check_update.set_defaults(func=check_update_command)
+
+    p_next_provider = sub.add_parser("next-provider", help="Print the next available provider after <current>.")
+    p_next_provider.add_argument("current", choices=PROVIDERS)
+    p_next_provider.set_defaults(func=next_provider_command)
+
+    p_resolve_auto = sub.add_parser(
+        "resolve-auto-provider", help="Print which provider 'auto' currently resolves to for this workspace."
+    )
+    p_resolve_auto.set_defaults(func=resolve_auto_provider_command)
 
     return parser
 

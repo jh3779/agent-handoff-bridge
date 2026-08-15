@@ -97,6 +97,22 @@ Runs no-token consistency checks: required files, JSON, Python syntax, the
 secret scan, handoff failure-classification consistency, and `tests/`. See
 [Quality Gates](quality-gates.md).
 
+### Internal Query Subcommands
+
+```bash
+python3 handoff_bridge.py check-update
+python3 handoff_bridge.py next-provider codex
+python3 handoff_bridge.py --workspace /path/to/project resolve-auto-provider
+```
+
+Thin, no-token, no-side-effect wrappers around pure decision logic
+(`check_for_update()`, `next_available_provider()`, `choose_auto_provider()`)
+-- exist so every bridge-invoking consumer, including `handoff_webui.py`,
+reaches this logic through the same subprocess boundary instead of some
+consumers importing it in-process and others shelling out (a structure-audit
+finding). Not really meant for interactive use; `check-update` prints one
+line of JSON, the other two print a single provider name.
+
 ## Quality Gate Scripts
 
 ```bash
