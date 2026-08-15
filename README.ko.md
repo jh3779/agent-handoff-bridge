@@ -11,8 +11,8 @@ Claude Code CLI, Codex CLI, Gemini CLI는 현재 "남은 토큰을 공유하고
 실행하고, 할당량/rate/컨텍스트 실패를 감지한 뒤, 현재 워크스페이스
 상태와 함께 작업을 다른 CLI로 넘깁니다. Gemini CLI는 Phase 5에서 세
 번째 provider로 추가됐습니다 — Codex/Claude와의 실질적인 차이점(실제
-ID로 세션 재개 불가, 무료 인증 상태 확인 없음, 웹 UI의 API 키 모드
-아직 미지원)은
+ID로 세션 재개 불가, 무료 인증 상태 확인 없음 — 웹 UI의 API 키 모드는
+v0.3.0부터 Gemini도 지원)은
 [docs/research-gemini-cli.md](docs/research-gemini-cli.md) 참고.
 
 ## 다운로드
