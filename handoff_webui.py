@@ -43,6 +43,8 @@ from handoff_bridge import (
     check_for_update,
     choose_auto_provider,
     next_available_provider,
+    normalize_path,
+    short_run,
 )
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
@@ -202,10 +204,13 @@ def validate_workspace_candidate(raw_path: str) -> Path:
     """
     if not raw_path or not raw_path.strip():
         raise WorkspaceError("no path given")
-    candidate = Path(raw_path).expanduser()
-    if not candidate.is_absolute():
+    # The is_absolute() check happens before normalize_path()'s resolve()
+    # step (not after) so a relative path is rejected on its own terms,
+    # with the original raw_path in the error message, rather than
+    # silently resolved against this process's cwd first.
+    if not Path(raw_path).expanduser().is_absolute():
         raise WorkspaceError(f"must be an absolute path: {raw_path}")
-    resolved = candidate.resolve()
+    resolved = normalize_path(raw_path)
     if not resolved.exists():
         raise WorkspaceError(f"does not exist: {raw_path}")
     if not resolved.is_dir():
@@ -356,8 +361,15 @@ def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Pa
         raise WorkspaceError(f"failed to create new workspace directory: {exc}") from exc
 
     task = resolve_task_for_first_message(text, attachments)
+    # short_run(), not a direct subprocess.run() call: normalizes both a
+    # missing binary (FileNotFoundError -> exit 127, previously uncaught
+    # here) and a timeout (-> exit 124) into a plain (exit_code, stdout,
+    # stderr) tuple, the same UTF-8-safe wrapper handoff_bridge.py's own
+    # git/gh calls use -- see short_run()'s own docstring for why this
+    # consolidation happened (a structure audit found this exact wrapper
+    # reimplemented independently in several files).
     try:
-        result = subprocess.run(
+        exit_code, _stdout, stderr = short_run(
             # "--" guarantees `task` is always treated as the positional
             # argument, even if the user's first message happens to be (or
             # start with) something that looks like one of init's own
@@ -365,27 +377,15 @@ def create_workspace_for_first_message(text: str, attachments: list[dict]) -> Pa
             # argparse would consume that as an option instead and fail
             # with "the following arguments are required: task".
             bridge_command_prefix() + ["--workspace", str(new_workspace), "init", "--", task],
-            capture_output=True,
-            text=True,
-            # Without an explicit encoding, subprocess falls back to
-            # locale.getpreferredencoding() to decode stdout/stderr -- not
-            # UTF-8 on a non-UTF-8-locale Windows machine (e.g. cp949 on
-            # Korean Windows) -- and `task` is the user's own first
-            # message, arbitrary Unicode text. See run_provider()'s
-            # matching fix in handoff_bridge.py for the confirmed crash
-            # this class of bug produces.
-            encoding="utf-8",
-            errors="replace",
             timeout=30,
-            check=False,
         )
-    except (subprocess.TimeoutExpired, OSError) as exc:
+    except OSError as exc:
         shutil.rmtree(new_workspace, ignore_errors=True)
         raise WorkspaceError(f"failed to scaffold new workspace: {exc}") from exc
-    if result.returncode != 0:
+    if exit_code != 0:
         shutil.rmtree(new_workspace, ignore_errors=True)
-        stderr_tail = (result.stderr or "").strip()[-500:]
-        raise WorkspaceError(f"failed to scaffold new workspace (exit {result.returncode}): {stderr_tail}")
+        stderr_tail = stderr.strip()[-500:]
+        raise WorkspaceError(f"failed to scaffold new workspace (exit {exit_code}): {stderr_tail}")
 
     # Defense in depth beyond the exit code: `init` succeeding is *supposed*
     # to mean these two files exist (handoff_bridge.init_handoff() writes
@@ -2225,7 +2225,14 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 info = state.update_info if checked else None
                 self._send_json(200, {"checked": checked, **(info or {})})
             else:
-                self.send_error(404, "not found")
+                # _send_json(), not send_error(): every other /api/* branch
+                # in do_GET responds with a JSON body, and webui/app.js's
+                # fetchJSON() unconditionally calls res.json() on whatever
+                # comes back -- send_error()'s HTML body would surface as a
+                # confusing JSON-parse error instead of a real "not found"
+                # message if this branch is ever actually reached (a typo'd
+                # path, a stale cached bundle hitting a renamed endpoint).
+                self._send_json(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -2405,7 +2412,9 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             else:
-                self.send_error(405, "unsupported POST endpoint")
+                # _send_json(), matching do_GET's fallback fix above and
+                # every other /api/* branch's JSON-error contract.
+                self._send_json(405, {"error": "unsupported POST endpoint"})
 
     return Handler
 

@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import secrets
-import subprocess
 import sys
 import threading
 from datetime import datetime, timezone
@@ -22,7 +21,7 @@ from urllib.parse import urlparse
 # scan_secrets.py are -- see scripts/build_sidecars.py), so importing
 # handoff_bridge directly here is safe: it always runs unfrozen, next to
 # handoff_bridge.py, the same way handoff_webui.py already does this.
-from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS, WriteLock, atomic_write_text, decode_timeout_output
+from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS, WriteLock, atomic_write_text, normalize_path, short_run
 
 BRIDGE_ROOT = Path(__file__).resolve().parent
 BRIDGE_SCRIPT = BRIDGE_ROOT / "handoff_bridge.py"
@@ -201,18 +200,23 @@ def normalize_task(payload: dict[str, Any], server: RemoteHandoffServer) -> dict
     provider = str(payload.get("provider", "auto")).strip().lower()
     primary = str(payload.get("primary", "codex")).strip().lower()
     if provider not in PROVIDERS:
-        raise ValueError("provider must be one of: auto, codex, claude")
+        # Built from the actual PROVIDERS set, not a second hardcoded
+        # string -- this used to say "auto, codex, claude" even after
+        # PROVIDERS itself was fixed to include gemini, telling a caller
+        # gemini wasn't allowed when it actually was.
+        raise ValueError(f"provider must be one of: {', '.join(sorted(PROVIDERS))}")
     if primary not in PRIMARY_PROVIDERS:
-        raise ValueError("primary must be one of: codex, claude")
+        raise ValueError(f"primary must be one of: {', '.join(sorted(PRIMARY_PROVIDERS))}")
     execute = bool(payload.get("execute", False))
     if execute and not server.allow_execute:
         raise ValueError("server was not started with --allow-execute")
 
     raw_workspace = str(payload.get("workspace", ".")).strip() or "."
-    workspace = Path(raw_workspace).expanduser()
-    if not workspace.is_absolute():
-        workspace = Path.cwd() / workspace
-    workspace = workspace.resolve()
+    # normalize_path(): expanduser + resolve already handles a relative
+    # path against this process's cwd on its own (Path.resolve() does that
+    # internally) -- the explicit is_absolute()/Path.cwd()-join this used
+    # to do first was redundant with what resolve() already does.
+    workspace = normalize_path(raw_workspace)
     if not any(is_relative_to(workspace, root) for root in server.allow_roots):
         allowed = ", ".join(str(root) for root in server.allow_roots)
         raise ValueError(f"workspace must be under an allowed root: {allowed}")
@@ -261,40 +265,21 @@ def run_command(task: dict[str, Any], args: list[str], timeout: int) -> int:
     }
     task["commands"].append(command_record)
     update_task(task)
-    try:
-        result = subprocess.run(
-            command,
-            text=True,
-            # Without an explicit encoding, subprocess falls back to
-            # locale.getpreferredencoding() to decode stdout/stderr -- not
-            # UTF-8 on a non-UTF-8-locale Windows machine -- and this
-            # shells out to handoff_bridge.py, whose own output can
-            # reflect arbitrary task/prompt content. See
-            # handoff_bridge.py's run_provider() for the confirmed crash
-            # this class of bug produces.
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            timeout=None if timeout == 0 else timeout,
-            check=False,
-        )
-        command_record["exit_code"] = result.returncode
-        command_record["stdout"] = result.stdout[-8000:]
-        command_record["stderr"] = result.stderr[-8000:]
-        update_task(task)
-        return result.returncode
-    except subprocess.TimeoutExpired as exc:
-        # decode_timeout_output(), not a bare `exc.stdout or ""`: CPython's
-        # subprocess.TimeoutExpired.stdout/.stderr can still be `bytes` even
-        # though text=True was passed above -- storing bytes into
-        # command_record then json.dumps()-ing it in write_json() raised an
-        # uncaught TypeError here, silently wedging the task at its last
-        # good status ("running") forever with no failure ever recorded.
-        command_record["exit_code"] = 124
-        command_record["stdout"] = decode_timeout_output(exc.stdout)[-8000:]
-        command_record["stderr"] = (decode_timeout_output(exc.stderr) or "command timed out")[-8000:]
-        update_task(task)
-        return 124
+    # short_run(), not a direct subprocess.run() call: the same UTF-8-safe
+    # wrapper handoff_bridge.py's own git/gh calls use, which also
+    # normalizes a missing binary (FileNotFoundError -> exit 127 with a
+    # clean message, previously left this command_record dangling at
+    # exit_code=None forever if it happened) and a timeout (-> exit 124,
+    # decoding TimeoutExpired.stdout/.stderr the same
+    # bytes-even-with-text=True-safe way this file used to do by hand) --
+    # see short_run()'s own docstring; a structure audit found this exact
+    # wrapper reimplemented independently in several files.
+    exit_code, stdout, stderr = short_run(command, timeout=None if timeout == 0 else timeout)
+    command_record["exit_code"] = exit_code
+    command_record["stdout"] = stdout[-8000:]
+    command_record["stderr"] = stderr[-8000:]
+    update_task(task)
+    return exit_code
 
 
 def run_task(task: dict[str, Any], server: RemoteHandoffServer) -> None:

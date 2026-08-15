@@ -258,6 +258,64 @@ class AtomicWriteTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "second")
 
 
+class NormalizePathTests(unittest.TestCase):
+    def test_expands_home_and_resolves_relative(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = Path.cwd()
+            os.chdir(tmp)
+            try:
+                (Path(tmp) / "sub").mkdir()
+                result = hb.normalize_path("sub")
+                self.assertEqual(result, (Path(tmp) / "sub").resolve())
+            finally:
+                os.chdir(original_cwd)
+
+    def test_resolve_workspace_uses_the_same_normalization(self):
+        # resolve_workspace() used to inline Path(path).expanduser().resolve()
+        # itself -- a structure audit found the same expression independently
+        # reimplemented in handoff_control.py/handoff_webui.py/
+        # remote_handoff_server.py. Confirm resolve_workspace() now goes
+        # through the shared helper rather than a parallel copy that could
+        # silently drift from it.
+        with mock.patch.object(hb, "normalize_path", wraps=hb.normalize_path) as spy:
+            with tempfile.TemporaryDirectory() as tmp:
+                hb.resolve_workspace(tmp)
+        spy.assert_called_once_with(tmp)
+
+
+class LoadStateTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(os.chdir, self._orig_cwd)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_missing_state_file_returns_default_state(self):
+        state = hb.load_state()
+        self.assertEqual(state["status"], "new")
+        self.assertEqual(state["history"], [])
+
+    def test_corrupted_state_file_degrades_to_default_instead_of_raising(self):
+        # Regression (structure audit): load_state() used to have no
+        # try/except around its json.loads() call at all, unlike its two
+        # peripheral counterparts (handoff_webui.py's read_state_dict(),
+        # remote_handoff_server.py's read_json()), which both already
+        # degraded gracefully on a corrupted/partially-written file.
+        hb.HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+        hb.STATE_FILE.write_text('{"task": "truncated', encoding="utf-8")
+        state = hb.load_state()
+        self.assertEqual(state["status"], "new")
+        self.assertEqual(state["history"], [])
+
+    def test_valid_state_file_is_read_as_is(self):
+        hb.HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+        hb.STATE_FILE.write_text('{"task": "real task", "status": "ready"}', encoding="utf-8")
+        state = hb.load_state()
+        self.assertEqual(state["task"], "real task")
+        self.assertEqual(state["status"], "ready")
+
+
 class VersionTests(unittest.TestCase):
     def test_cli_version_flag_reports_bridge_version(self):
         result = subprocess.run(
@@ -459,6 +517,24 @@ class ShortRunTimeoutTests(unittest.TestCase):
             hb.short_run(["fake"])
         self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
+
+    def test_cwd_is_passed_through(self):
+        # Added so short_run() can absorb handoff_desktop.py's own
+        # subprocess wrapper (a structure-audit finding: several files
+        # reimplemented this same wrapper without the FileNotFoundError->127
+        # normalization) -- must not silently drop a caller-supplied cwd.
+        with mock.patch.object(
+            hb.subprocess, "run", return_value=subprocess.CompletedProcess(["fake"], returncode=0, stdout="", stderr="")
+        ) as run_spy:
+            hb.short_run(["fake"], cwd="/some/dir")
+        self.assertEqual(run_spy.call_args.kwargs["cwd"], "/some/dir")
+
+    def test_none_timeout_means_no_timeout(self):
+        with mock.patch.object(
+            hb.subprocess, "run", return_value=subprocess.CompletedProcess(["fake"], returncode=0, stdout="", stderr="")
+        ) as run_spy:
+            hb.short_run(["fake"], timeout=None)
+        self.assertIsNone(run_spy.call_args.kwargs["timeout"])
 
 
 class RunProviderTimeoutIntegrationTests(unittest.TestCase):

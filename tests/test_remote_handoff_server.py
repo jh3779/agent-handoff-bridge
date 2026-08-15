@@ -11,6 +11,7 @@ Gemini-excluding stale copy of handoff_bridge.PROVIDERS.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import handoff_bridge as hb  # noqa: E402
 import remote_handoff_server as rhs  # noqa: E402
 
 
@@ -128,6 +130,12 @@ class WriteReadJsonTests(unittest.TestCase):
 
 
 class RunCommandTimeoutDecodeTests(unittest.TestCase):
+    """run_command() now delegates to handoff_bridge.short_run() (a
+    structure audit found this file's own subprocess.run() wrapper
+    reimplemented handoff_bridge.py's short_run() independently) -- so
+    these mock the underlying subprocess.run() in handoff_bridge's own
+    namespace, the same real dependency short_run() actually has."""
+
     def test_bytes_timeout_output_does_not_crash_the_json_write(self):
         # Regression: TimeoutExpired.stdout/.stderr can still be `bytes`
         # even with text=True on the subprocess.run() call above (CPython
@@ -137,7 +145,7 @@ class RunCommandTimeoutDecodeTests(unittest.TestCase):
         # the task at its last good status forever.
         task = {"id": "t1", "workspace": "/tmp/ws", "commands": []}
         timeout_exc = subprocess.TimeoutExpired(cmd=["run"], timeout=1, output=b"partial\xffbytes", stderr=b"stderr\xffbytes")
-        with mock.patch.object(rhs.subprocess, "run", side_effect=timeout_exc), mock.patch.object(rhs, "update_task"):
+        with mock.patch.object(hb.subprocess, "run", side_effect=timeout_exc), mock.patch.object(rhs, "update_task"):
             exit_code = rhs.run_command(task, ["run", "codex"], timeout=1)
 
         self.assertEqual(exit_code, 124)
@@ -158,7 +166,7 @@ class RunCommandTimeoutDecodeTests(unittest.TestCase):
         # task/prompt content.
         task = {"id": "t1", "workspace": "/tmp/ws", "commands": []}
         with mock.patch.object(
-            rhs.subprocess,
+            hb.subprocess,
             "run",
             return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
         ) as run_spy, mock.patch.object(rhs, "update_task"):
@@ -174,6 +182,43 @@ class ProviderListTests(unittest.TestCase):
         # handoff_bridge.PROVIDERS, silently rejecting it on this server.
         self.assertIn("gemini", rhs.PROVIDERS)
         self.assertIn("gemini", rhs.PRIMARY_PROVIDERS)
+
+
+class NormalizeTaskTests(unittest.TestCase):
+    def _fake_server(self, allow_roots):
+        return types.SimpleNamespace(allow_execute=False, allow_roots=allow_roots)
+
+    def test_gemini_provider_and_primary_are_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = self._fake_server([Path(tmp).resolve()])
+            task = rhs.normalize_task(
+                {"task": "do it", "provider": "gemini", "primary": "gemini", "workspace": tmp}, server
+            )
+        self.assertEqual(task["provider"], "gemini")
+        self.assertEqual(task["primary"], "gemini")
+
+    def test_invalid_provider_error_message_lists_gemini(self):
+        # Regression (structure audit): the error message used to be a
+        # second hardcoded string ("auto, codex, claude") that fell out of
+        # sync with PROVIDERS itself once gemini was added -- telling a
+        # caller gemini wasn't allowed when it actually was. Now built
+        # from PROVIDERS directly, so it can't drift again.
+        server = self._fake_server([Path(".")])
+        with self.assertRaises(ValueError) as ctx:
+            rhs.normalize_task({"task": "do it", "provider": "not-a-real-provider"}, server)
+        self.assertIn("gemini", str(ctx.exception))
+
+    def test_relative_workspace_resolves_against_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_cwd = Path.cwd()
+            os.chdir(tmp)
+            try:
+                (Path(tmp) / "sub").mkdir()
+                server = self._fake_server([Path(tmp).resolve()])
+                task = rhs.normalize_task({"task": "do it", "workspace": "sub"}, server)
+            finally:
+                os.chdir(original_cwd)
+        self.assertEqual(task["workspace"], str((Path(tmp) / "sub").resolve()))
 
 
 if __name__ == "__main__":

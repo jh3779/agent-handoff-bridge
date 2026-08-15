@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS
+from handoff_bridge import normalize_path
 
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
@@ -21,7 +22,7 @@ PROVIDERS = ("auto",) + BRIDGE_PROVIDERS
 
 
 def resolve_workspace(raw_path: str, create: bool = False) -> Path:
-    path = Path(raw_path).expanduser().resolve()
+    path = normalize_path(raw_path)
     if path.exists() and path.is_dir():
         return path
     if path.exists():

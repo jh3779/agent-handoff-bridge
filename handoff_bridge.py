@@ -272,20 +272,35 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
         atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 
+def default_state() -> dict[str, Any]:
+    return {
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+        "cwd": str(Path.cwd()),
+        "task": "",
+        "primary_provider": "codex",
+        "last_provider": None,
+        "status": "new",
+        "sessions": {provider: None for provider in PROVIDERS},
+        "history": [],
+    }
+
+
 def load_state() -> dict[str, Any]:
     if not STATE_FILE.exists():
-        return {
-            "created_at": utc_now(),
-            "updated_at": utc_now(),
-            "cwd": str(Path.cwd()),
-            "task": "",
-            "primary_provider": "codex",
-            "last_provider": None,
-            "status": "new",
-            "sessions": {provider: None for provider in PROVIDERS},
-            "history": [],
-        }
-    return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return default_state()
+    try:
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        # A corrupted/partially-written state.json (crash mid-write,
+        # concurrent process killed) must degrade to "start fresh," the
+        # same way a missing file already does, not propagate an uncaught
+        # exception -- found via a structure audit that the two peripheral
+        # copies of "read JSON state with a default" (handoff_webui.py's
+        # read_state_dict(), remote_handoff_server.py's read_json()) both
+        # already caught this, while this more central implementation
+        # didn't.
+        return default_state()
 
 
 def save_state(state: dict[str, Any]) -> None:
@@ -309,7 +324,20 @@ def decode_timeout_output(value: str | bytes | None) -> str:
     return value
 
 
-def short_run(args: list[str], timeout: int = 10) -> tuple[int, str, str]:
+def short_run(args: list[str], timeout: float | None = 10, cwd: "str | Path | None" = None) -> tuple[int, str, str]:
+    """Shared subprocess wrapper: UTF-8-safe, normalizes a missing binary
+    (FileNotFoundError) to exit 127 and a timeout to exit 124, the same
+    way every direct caller of this class of subprocess call across the
+    project needs to (found via a structure audit: handoff_desktop.py,
+    remote_handoff_server.py, and handoff_webui.py each reimplemented this
+    independently, with the FileNotFoundError normalization missing from
+    all three copies). Not every subprocess call in the project fits this
+    shape, though -- callers that need `input=`/stdin (the actual provider
+    CLI invocation in run_provider()) or `shell=True` (the LLM tool loop's
+    run_shell) are deliberately NOT migrated to this helper; folding those
+    in would either lose behavior or widen this helper's interface for a
+    single caller's sake.
+    """
     try:
         result = subprocess.run(
             args,
@@ -328,6 +356,7 @@ def short_run(args: list[str], timeout: int = 10) -> tuple[int, str, str]:
             errors="replace",
             capture_output=True,
             timeout=timeout,
+            cwd=cwd,
             check=False,
         )
     except FileNotFoundError:
@@ -407,8 +436,22 @@ def check_for_update() -> "dict[str, str]":
     }
 
 
+def normalize_path(raw_path: str) -> Path:
+    """Turn a raw path string into a normalized absolute Path: expand `~`,
+    then resolve (symlinks + relative-to-cwd) -- the one piece of "what
+    does a path string actually mean" logic every workspace-path consumer
+    in the project needs, shared here so it only has one definition
+    (found via a structure audit: handoff_control.py, handoff_webui.py,
+    and remote_handoff_server.py each recomputed this same expression).
+    What happens next -- raise vs. prompt vs. create, which exception type
+    -- still varies legitimately per caller and is deliberately NOT
+    unified here.
+    """
+    return Path(raw_path).expanduser().resolve()
+
+
 def resolve_workspace(path: str, create: bool = False) -> Path:
-    workspace = Path(path).expanduser().resolve()
+    workspace = normalize_path(path)
     if create:
         workspace.mkdir(parents=True, exist_ok=True)
     if not workspace.exists():

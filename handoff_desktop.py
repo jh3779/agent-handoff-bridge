@@ -15,6 +15,7 @@ from pathlib import Path
 
 from handoff_bridge import INSTRUCTION_TYPES
 from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS
+from handoff_bridge import short_run
 
 try:
     import tkinter as tk
@@ -203,21 +204,15 @@ class HandoffDesktop(TK_BASE):
 
         def worker() -> None:
             try:
-                result = subprocess.run(
-                    command,
-                    cwd=str(BRIDGE_ROOT),
-                    text=True,
-                    # Without an explicit encoding, subprocess falls back
-                    # to locale.getpreferredencoding() -- not UTF-8 on a
-                    # non-UTF-8-locale Windows machine -- and this runs
-                    # handoff_bridge.py commands whose output can reflect
-                    # arbitrary task/prompt text.
-                    encoding="utf-8",
-                    errors="replace",
-                    capture_output=True,
-                    check=False,
-                )
-                self.after(0, self.finish_command, result.returncode, result.stdout, result.stderr)
+                # short_run(), not a direct subprocess.run() call: the same
+                # UTF-8-safe, FileNotFoundError/timeout-normalizing wrapper
+                # handoff_bridge.py's own git/gh calls use (a structure
+                # audit found this exact wrapper reimplemented
+                # independently here, without that normalization). No
+                # timeout here -- an --execute run can legitimately take
+                # minutes and the user is watching the GUI's busy state.
+                exit_code, stdout, stderr = short_run(command, timeout=None, cwd=str(BRIDGE_ROOT))
+                self.after(0, self.finish_command, exit_code, stdout, stderr)
             except Exception as exc:  # pragma: no cover - defensive GUI path
                 self.after(0, self.finish_command, 1, "", str(exc))
             finally:
