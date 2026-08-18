@@ -15,9 +15,6 @@
       </button>
       <select class="provider-select" id="provider-select" title="Provider">
         <option value="auto">auto</option>
-        <option value="codex">codex</option>
-        <option value="claude">claude</option>
-        <option value="gemini">gemini</option>
       </select>
       <button class="tbtn update-btn" id="update-btn" type="button" title="업데이트 확인">
         <span>⬇️</span> 업데이트
@@ -26,8 +23,11 @@
       <button class="tbtn" id="history-btn" type="button" title="다른 프로젝트의 최근 대화">
         <span>🕐</span> History
       </button>
-      <button class="tbtn" id="diagnose-btn" type="button" title="provider 연결 상태 확인 · API 키 연결">
+      <button class="tbtn" id="diagnose-btn" type="button" title="provider 연결 상태 확인 · API 키 연결 · 커스텀 provider 추가">
         <span>🔌</span> Diagnose
+      </button>
+      <button class="tbtn" id="context-btn" type="button" title="이 프로젝트에 항상 적용될 공용 context 작성">
+        <span>📝</span> Context
       </button>
       <span class="badge">Phase 6 · 자동 업데이트 확인</span>
     </div>
@@ -56,7 +56,7 @@
             <textarea id="composer-input" placeholder="메시지를 입력하세요…" rows="1"></textarea>
             <button class="send" id="send-btn" type="button" disabled>➤</button>
           </div>
-          <div class="composer-note">전송은 선택한 provider(Codex/Claude)를 실제로 호출합니다 — 토큰이 소비될 수 있습니다. 이 세션의 첫 전송만 확인을 거치고, 이후는 바로 실행됩니다.</div>
+          <div class="composer-note">전송은 선택한 provider를 실제로 호출합니다 — 토큰이 소비될 수 있습니다. 이 세션의 첫 전송만 확인을 거치고, 이후는 바로 실행됩니다.</div>
         </div>
       </div>
       <div class="scrim" id="history-scrim"></div>
@@ -69,14 +69,31 @@
   <div class="toast" id="toast"></div>
 
   <div class="folder-prompt-overlay" id="provider-panel-overlay">
-    <div class="folder-prompt" id="provider-panel" style="width:420px">
+    <div class="folder-prompt" id="provider-panel" style="width:460px">
       <h3>연결된 AI 모델</h3>
-      <p>CLI가 없는 provider는 API 키로 직접 연결할 수 있습니다. API 키 모드는 현재 <b>채팅 전용</b>입니다 —
-         파일을 읽거나 편집하지 않습니다. 향후 단계에서 CLI 모드와 동등한 에이전트 기능(파일 편집·명령 실행)을
-         추가할 계획입니다.</p>
+      <p>CLI가 없는 provider는 API 키로 직접 연결할 수 있습니다. 파일 읽기/쓰기/수정, 명령 실행 등
+         CLI 모드와 동일한 도구 사용을 지원합니다.</p>
       <div id="provider-panel-list"></div>
+      <div class="pp-divider"></div>
+      <p><b>커스텀 provider</b> — CLI 없이 토큰을 직접 구매해 쓰는 OpenAI/Anthropic 호환 endpoint
+         (OpenRouter, Groq, 로컬 Ollama/LM Studio 등)를 원하는 이름으로 여러 개 등록할 수 있습니다.</p>
+      <div id="custom-provider-panel-list"></div>
+      <div id="custom-provider-add-form"></div>
       <div class="row" style="justify-content:flex-end;margin-top:10px">
         <button type="button" id="provider-panel-close">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="folder-prompt-overlay" id="context-panel-overlay">
+    <div class="folder-prompt" id="context-panel" style="width:520px">
+      <h3>공용 Context</h3>
+      <p>이 프로젝트에서 어떤 provider를 쓰든(CLI든 커스텀 API 키든) 항상 함께 전달되는 내용입니다.
+         프로젝트별로 저장되며, <code>.handoff/shared-context.md</code>로 워크스페이스에 남습니다.</p>
+      <textarea id="context-textarea" rows="10" placeholder="예: legacy/ 폴더는 절대 수정하지 마세요. 이 프로젝트는 4-space indent를 씁니다…" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
+      <div class="row" style="justify-content:flex-end;margin-top:10px;gap:8px">
+        <button type="button" id="context-panel-close">닫기</button>
+        <button type="button" id="context-panel-save" class="primary">저장</button>
       </div>
     </div>
   </div>

@@ -311,6 +311,104 @@ response body or exception text. The key itself is never interpolated into
 anything that could end up in `.handoff/webui/chat/*.jsonl`, the history
 drawer, a `POST /api/provider-key` error response, or a toast.
 
+### Custom Providers (DEC-26)
+
+For users who buy API tokens directly rather than installing a vendor CLI,
+or who want a model none of codex/claude/gemini cover: an arbitrary
+OpenAI-compatible (Chat Completions — OpenRouter, Groq, Together, a local
+Ollama/LM Studio server, etc.) or Anthropic-compatible HTTP endpoint,
+registered under a user-chosen name. Unlike the fixed three, there can be
+any number of these.
+
+Stored in the *same* `credentials.json` (one file, one lock), under a
+`custom_providers` key sibling to the fixed-provider entries:
+
+```json
+{
+  "claude": {"key": "sk-ant-...", "model": "claude-sonnet-5"},
+  "custom_providers": {
+    "openrouter": {
+      "key": "sk-or-...",
+      "model": "meta-llama/llama-3",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_format": "openai"
+    }
+  }
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `api_format` | `"openai"` \| `"anthropic"` | picked per entry, not fixed globally — chosen by the user when registering |
+| `base_url` | string | **meaning differs by format**, matching each format's own existing caller function's parameter rather than inventing a third convention: for `"openai"`, the root that `/chat/completions` is appended to (the same "OpenAI SDK `base_url`" convention OpenRouter/Groq/Ollama/LM Studio all document); for `"anthropic"`, the *complete* messages-endpoint URL (`call_anthropic_messages_api()`'s `base_url` param is already a full POST target for the real Anthropic case — a custom entry stays consistent with that instead of a base+append pattern) |
+| `key`, `model` | string | same meaning as the fixed providers' fields; `model` is required (no default exists for an arbitrary endpoint) |
+
+A custom provider's `provider` value everywhere else in this codebase
+(chat records, `POST /api/run`'s `provider` field, `webui_bridge_run.py`'s
+dispatch) is `custom:<name>` (`webui_credentials.CUSTOM_PROVIDER_PREFIX`) —
+unambiguous against the fixed strings without threading a second "kind"
+field through every function that takes `provider: str`. It has no CLI
+concept at all: `_run_provider_via_bridge_locked()` checks
+`is_custom_provider()` first, before any `cli_available()` call, and
+always dispatches straight to `run_provider_via_api_key()`.
+
+`POST /api/custom-provider` mirrors `POST /api/provider-key`'s contract
+exactly (validate-then-save on a non-empty key, empty key removes,
+`400`/no-write on a failed validation) — see `validate_custom_provider_name()`
+for the name rules (1-40 chars, `[A-Za-z0-9_-]`, can't collide with a
+fixed provider name).
+
+`call_openai_compatible_chat_api()` (Chat Completions, *not* the Responses
+API `call_openai_responses_api()` targets — most third-party/self-hosted
+servers only implement the former) and `call_anthropic_messages_api()`
+(reused with a custom `base_url`, not duplicated) are the two callers;
+which one runs is picked by `api_format` in `run_provider_via_api_key()`.
+Same tool-use turn loop, same `{"ok"/"text"}` contract as the fixed three.
+Not every custom endpoint will actually support tool calls — one that
+ignores `tools` in the request and just replies with plain text is
+already handled the same as "no tool calls in the response" (the loop's
+existing first-iteration return), no separate code path needed.
+
+### Shared Project Context (DEC-27)
+
+Free-form, per-*workspace* text that reaches every provider call
+regardless of mode — CLI (codex/claude/gemini binaries) or API-key mode
+(fixed or custom). Lives at:
+
+```
+<workspace>/.handoff/shared-context.md
+```
+
+Unlike `current.md` (the handoff *log* — what changed, what's next,
+machine-appended), this is free-form context the user writes once
+("this project uses 4-space indent", "never touch `legacy/`") and is
+never auto-generated. Tracked in git like `current.md` (not gitignored) —
+meant to travel with the project and be visible to teammates/other
+agents, the same reasoning `current.md` already uses.
+
+Two independent read paths reach the same file, because CLI mode and
+API-key mode assemble their prompts in fundamentally different ways and
+neither reuses the other's machinery:
+
+- **CLI mode**: `handoff_bridge.py`'s `build_prompt()` reads it via
+  `read_text(SHARED_CONTEXT_FILE, "")`; if non-empty (after stripping),
+  it's folded in as a `## Project Context` section. Absent entirely — not
+  an empty placeholder section — when the file doesn't exist or is
+  whitespace-only.
+- **API-key mode**: `webui_common.read_shared_context(workspace)` reads
+  the same file directly and `run_provider_via_api_key()` passes it as
+  `system=` to whichever `call_X_api()` runs. Each caller puts it in its
+  own vendor-specific system-prompt field/shape — Anthropic's top-level
+  `system` string, the Responses API's `instructions` field, Gemini's
+  `systemInstruction`, Chat Completions' `{"role": "system", ...}`
+  message (its only equivalent, since Chat Completions has no top-level
+  system parameter of its own).
+
+`GET`/`POST /api/shared-context` are the panel's read/write endpoints —
+`GET` with no workspace open returns `{"text": ""}` (not an error, same
+posture as `/api/chat`'s empty-state); `POST` with no workspace returns
+`400` (there is nowhere to write it).
+
 One exception text is deliberately **not** forwarded: `http.client` raises
 a bare `ValueError` (not `HTTPError`/`URLError`) if a header value
 contains characters it rejects — e.g. a saved key with an embedded CR/LF

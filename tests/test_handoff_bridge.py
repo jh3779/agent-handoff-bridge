@@ -318,6 +318,38 @@ class LoadStateTests(unittest.TestCase):
         self.assertEqual(state["status"], "ready")
 
 
+class BuildPromptSharedContextTests(unittest.TestCase):
+    """`.handoff/shared-context.md` -- free-form, user-authored, per-
+    workspace project context folded into every CLI-mode prompt
+    regardless of provider. API-key mode reads the same file directly
+    (webui_api_key_mode.py), not through this module."""
+
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(os.chdir, self._orig_cwd)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _prompt(self):
+        return hb.build_prompt("codex", {"task": "do the thing"}, "hello")
+
+    def test_missing_file_adds_no_project_context_section(self):
+        self.assertNotIn("## Project Context", self._prompt())
+
+    def test_whitespace_only_file_adds_no_section_either(self):
+        hb.HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+        hb.SHARED_CONTEXT_FILE.write_text("   \n\n", encoding="utf-8")
+        self.assertNotIn("## Project Context", self._prompt())
+
+    def test_real_content_is_folded_into_the_prompt(self):
+        hb.HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+        hb.SHARED_CONTEXT_FILE.write_text("Never touch the legacy/ folder.", encoding="utf-8")
+        prompt = self._prompt()
+        self.assertIn("## Project Context", prompt)
+        self.assertIn("Never touch the legacy/ folder.", prompt)
+
+
 class VersionTests(unittest.TestCase):
     def test_cli_version_flag_reports_bridge_version(self):
         result = subprocess.run(

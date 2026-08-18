@@ -20,7 +20,7 @@ from handoff_bridge import PROVIDERS
 
 from webui_api_key_mode import _api_key_mode_error_record, run_provider_via_api_key
 from webui_common import bridge_command_prefix, _bridge_next_provider, _bridge_resolve_auto_provider
-from webui_credentials import cli_available, read_credentials
+from webui_credentials import cli_available, custom_provider_name, is_custom_provider, read_credentials, read_custom_providers
 
 PROVIDER_RUN_TIMEOUT_SECONDS = 600
 
@@ -151,7 +151,23 @@ def _run_provider_via_bridge_locked(
     genuinely absent and a key is saved for it, so every previously-existing
     behavior (a CLI-available provider, or a CLI-missing one with no key
     saved) is completely unchanged by this branch.
+
+    A custom provider (DEC-26, `provider` shaped "custom:<name>") always
+    goes through API-key mode -- it has no CLI/binary of its own, so
+    none of the cli_available()/auto-fallback logic below applies to it
+    at all; this check runs first and returns before any of that.
     """
+    if is_custom_provider(provider):
+        name = custom_provider_name(provider)
+        credential = read_custom_providers().get(name)
+        if credential is None:
+            return [
+                _api_key_mode_error_record(
+                    provider, None, instruction_type, f"custom provider {name!r} is not configured (was it deleted?)"
+                )
+            ]
+        return run_provider_via_api_key(workspace, provider, prompt, credential, instruction_type, model)
+
     if provider == "auto":
         if not any(cli_available(p) for p in PROVIDERS):
             # Only read credentials.json once we already know no CLI is

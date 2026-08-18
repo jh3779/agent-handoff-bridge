@@ -37,6 +37,17 @@ RUNS_DIR = HANDOFF_DIR / "runs"
 STATE_FILE = HANDOFF_DIR / "state.json"
 CURRENT_FILE = HANDOFF_DIR / "current.md"
 NEXT_PROMPT_FILE = HANDOFF_DIR / "next-prompt.md"
+# User-editable, workspace-local project context that should reach every
+# provider regardless of how it's invoked -- CLI mode via build_prompt()
+# below, API-key mode via webui_api_key_mode.py's own read of this same
+# file (never through this module in-process; see handoff_webui.py's
+# state-boundary comment for why). Distinct from CURRENT_FILE (the
+# handoff *log* -- what changed, what's next) and from the docs/ files
+# folded into every prompt (shared, repo-wide contract/protocol text) --
+# this is free-form, per-workspace context the user writes once
+# ("this project uses X style", "never touch the legacy/ folder") rather
+# than something either provider or this bridge generates.
+SHARED_CONTEXT_FILE = HANDOFF_DIR / "shared-context.md"
 WRITE_LOCK_FILE = HANDOFF_DIR / ".write.lock"
 # Separate from WRITE_LOCK_FILE on purpose: WRITE_LOCK_FILE is held only for
 # the instant of an atomic file write, but a `run` invocation's
@@ -707,12 +718,18 @@ def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason:
     verification = read_workspace_or_bridge(str(VERIFICATION_FILE), "(no docs/verification-playbook.md yet)")
     current = read_text(CURRENT_FILE, "(no .handoff/current.md yet)")
     reason_block = f"\n## Handoff Reason\n\n{reason}\n" if reason else ""
+    # Free-form, user-authored, per-workspace -- absent entirely (not an
+    # empty/placeholder section) when the file doesn't exist or is
+    # whitespace-only, so a workspace that never set one up doesn't carry
+    # dead weight in every prompt.
+    shared_context = read_text(SHARED_CONTEXT_FILE, "").strip()
+    shared_context_block = f"\n## Project Context\n\n{shared_context}\n" if shared_context else ""
     return f"""You are {provider} continuing a shared CLI handoff task.
 
 ## Task
 
 {task}
-
+{shared_context_block}
 ## User Prompt For This Turn
 
 {user_prompt or "Continue from the shared handoff packet and current workspace."}

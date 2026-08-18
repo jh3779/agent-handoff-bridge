@@ -55,6 +55,10 @@ for folder selection and mobile prompt generation.
 - `.handoff/current.md`: current task packet and handoff log.
 - `.handoff/state.json`: local runtime state; ignored by git.
 - `.handoff/runs/`: raw provider outputs; ignored by git.
+- `.handoff/shared-context.md` (DEC-27): free-form, user-authored project
+  context -- not git-ignored (meant to travel with the project); reaches
+  every provider call regardless of mode, see
+  [webui-chat-storage.md § Shared Project Context](webui-chat-storage.md#shared-project-context-dec-27).
 
 ## Prompt Construction
 
@@ -66,6 +70,7 @@ for folder selection and mobile prompt generation.
 - `docs/shared-agent-contract.md`;
 - `docs/verification-playbook.md`;
 - `.handoff/current.md`;
+- `.handoff/shared-context.md`, when non-empty (DEC-27);
 - `git status --short` and `git diff --stat`.
 
 This gives both models the same source of truth even when their private
@@ -103,7 +108,7 @@ provider transcripts, or hidden app state. Each provider continues from
 files on disk and the current git state. This remains true of the bridge
 itself — the one deliberate exception lives one layer up, in the Web UI's
 Phase 4 API-key mode (`webui_credentials.py`), which stores a provider
-credential for CLI-less use. See
+credential for CLI-less use (including a custom provider's, DEC-26). See
 [Security Model § Credential Boundaries](security-model.md#credential-boundaries)
 for what that exception actually stores, where, and why.
 

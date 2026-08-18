@@ -2075,6 +2075,122 @@ class CredentialsTests(unittest.TestCase):
         self.assertEqual(creds["codex"]["key"], "sk-codex")
 
 
+class CustomProviderCredentialsTests(unittest.TestCase):
+    """Custom providers (DEC-26): a user-named, user-supplied HTTP
+    endpoint stored alongside the fixed codex/claude/gemini entries in
+    the same credentials.json, under its own "custom_providers" key."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_save_then_read_round_trips_all_fields(self):
+        webui_credentials.save_custom_provider(
+            "openrouter", "sk-or-test", "meta-llama/llama-3", "https://openrouter.ai/api/v1", "openai"
+        )
+        entry = webui_credentials.read_custom_providers()["openrouter"]
+        self.assertEqual(
+            entry,
+            {"key": "sk-or-test", "model": "meta-llama/llama-3", "base_url": "https://openrouter.ai/api/v1", "api_format": "openai"},
+        )
+
+    def test_base_url_trailing_slash_is_stripped(self):
+        webui_credentials.save_custom_provider("local", "k", "m", "http://localhost:8080/v1/", "openai")
+        self.assertEqual(webui_credentials.read_custom_providers()["local"]["base_url"], "http://localhost:8080/v1")
+
+    def test_empty_key_deletes_the_entry(self):
+        webui_credentials.save_custom_provider("temp", "k", "m", "https://example.invalid", "openai")
+        webui_credentials.delete_custom_provider("temp")
+        self.assertNotIn("temp", webui_credentials.read_custom_providers())
+
+    def test_custom_providers_coexist_with_fixed_provider_credentials(self):
+        webui_credentials.save_credential("claude", "sk-claude", None)
+        webui_credentials.save_custom_provider("groq", "k", "m", "https://api.groq.com/openai/v1", "openai")
+        self.assertEqual(webui_bridge_run.read_credentials()["claude"]["key"], "sk-claude")
+        self.assertEqual(webui_credentials.read_custom_providers()["groq"]["key"], "k")
+
+    def test_name_colliding_with_a_builtin_provider_is_rejected(self):
+        with self.assertRaises(ValueError):
+            webui_credentials.save_custom_provider("claude", "k", "m", "https://example.invalid", "openai")
+
+    def test_blank_name_is_rejected(self):
+        with self.assertRaises(ValueError):
+            webui_credentials.save_custom_provider("   ", "k", "m", "https://example.invalid", "openai")
+
+    def test_name_with_invalid_characters_is_rejected(self):
+        with self.assertRaises(ValueError):
+            webui_credentials.save_custom_provider("has spaces", "k", "m", "https://example.invalid", "openai")
+
+    def test_unknown_api_format_is_rejected(self):
+        with self.assertRaises(ValueError):
+            webui_credentials.save_custom_provider("x", "k", "m", "https://example.invalid", "not-a-real-format")
+
+    def test_base_url_without_scheme_is_rejected(self):
+        with self.assertRaises(ValueError):
+            webui_credentials.save_custom_provider("x", "k", "m", "example.invalid/v1", "openai")
+
+    def test_missing_model_is_rejected(self):
+        with self.assertRaises(ValueError):
+            webui_credentials.save_custom_provider("x", "k", "", "https://example.invalid", "openai")
+
+    def test_malformed_stored_entry_is_skipped_not_fatal(self):
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "credentials.json").write_text(
+            json.dumps(
+                {
+                    "custom_providers": {
+                        "good": {"key": "k", "model": "m", "base_url": "https://x.invalid", "api_format": "openai"},
+                        "bad_no_key": {"model": "m", "base_url": "https://x.invalid", "api_format": "openai"},
+                        "bad_format": {"key": "k", "model": "m", "base_url": "https://x.invalid", "api_format": "carrier-pigeon"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(list(webui_credentials.read_custom_providers()), ["good"])
+
+    def test_is_custom_provider_and_id_helpers_round_trip(self):
+        provider_id = webui_credentials.custom_provider_id("openrouter")
+        self.assertEqual(provider_id, "custom:openrouter")
+        self.assertTrue(webui_credentials.is_custom_provider(provider_id))
+        self.assertFalse(webui_credentials.is_custom_provider("claude"))
+        self.assertEqual(webui_credentials.custom_provider_name(provider_id), "openrouter")
+
+
+class SharedContextTests(unittest.TestCase):
+    """webui_common.read_shared_context()/write_shared_context() (DEC-27):
+    the API-key-mode read path for `.handoff/shared-context.md` -- the
+    same file handoff_bridge.py's build_prompt() folds into every CLI-
+    mode prompt (see BuildPromptSharedContextTests in
+    tests/test_handoff_bridge.py for that side)."""
+
+    def test_missing_file_returns_empty_string(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(webui_common.read_shared_context(Path(tmp)), "")
+
+    def test_write_then_read_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            webui_common.write_shared_context(root, "Never touch legacy/.")
+            self.assertEqual(webui_common.read_shared_context(root), "Never touch legacy/.")
+
+    def test_whitespace_only_content_reads_back_as_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            webui_common.write_shared_context(root, "   \n\n  ")
+            self.assertEqual(webui_common.read_shared_context(root), "")
+
+    def test_write_creates_the_handoff_directory_if_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            webui_common.write_shared_context(root, "hello")
+            self.assertTrue((root / ".handoff" / "shared-context.md").exists())
+
+
 class BuildApiMessageHistoryTests(unittest.TestCase):
     def test_empty_log_produces_just_the_current_prompt(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2506,6 +2622,41 @@ class ValidateProviderApiKeyTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("INVALID_ARGUMENT", result["message"])
         self.assertNotIn("sk-super-secret-value", result["message"])
+
+    def test_custom_openai_format_posts_to_chat_completions_under_base_url(self):
+        with mock.patch(
+            "webui_api_key_mode._http_post_json",
+            return_value=(200, {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}),
+        ) as spy:
+            result = webui_api_key_mode.validate_provider_api_key(
+                "openrouter", "sk-or", "meta-llama/llama-3", api_format="openai", base_url="https://openrouter.ai/api/v1"
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "ok")
+        self.assertEqual(spy.call_args.args[0], "https://openrouter.ai/api/v1/chat/completions")
+        self.assertNotIn("tools", spy.call_args.args[2])
+
+    def test_custom_anthropic_format_posts_to_the_given_full_url(self):
+        with mock.patch(
+            "webui_api_key_mode._http_post_json",
+            return_value=(200, {"content": [{"type": "text", "text": "ok"}]}),
+        ) as spy:
+            result = webui_api_key_mode.validate_provider_api_key(
+                "proxy", "sk-x", "m", api_format="anthropic", base_url="https://proxy.example/v1/messages"
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(spy.call_args.args[0], "https://proxy.example/v1/messages")
+
+    def test_custom_openai_format_invalid_key_never_echoes_the_key(self):
+        with mock.patch(
+            "webui_api_key_mode._http_post_json",
+            return_value=(401, {"error": {"type": "invalid_api_key", "message": "bad key"}}),
+        ):
+            result = webui_api_key_mode.validate_provider_api_key(
+                "openrouter", "sk-super-secret", "m", api_format="openai", base_url="https://openrouter.ai/api/v1"
+            )
+        self.assertFalse(result["ok"])
+        self.assertNotIn("sk-super-secret", result["message"])
 
 
 class ToolCallTranscriptTests(unittest.TestCase):
@@ -3077,6 +3228,123 @@ class AgenticLoopTests(unittest.TestCase):
         self.assertNotIn("id", function_response_part)
 
 
+class CustomOpenAiCompatibleApiTests(unittest.TestCase):
+    """call_openai_compatible_chat_api() (DEC-26): custom providers'
+    OpenAI-compatible (Chat Completions, not Responses API) caller. Same
+    control-flow coverage style as AgenticLoopTests above, minus the
+    cases already proven identical there (max-iterations bound, every-
+    tool-call-in-a-batch-executed defensiveness) -- this focuses on what's
+    actually different about Chat Completions' shape."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_posts_to_chat_completions_under_the_given_base_url(self):
+        with mock.patch(
+            "webui_api_key_mode._http_post_json", return_value=(200, {"choices": [{"message": {"role": "assistant", "content": "hi"}}]})
+        ) as http_spy:
+            webui_api_key_mode.call_openai_compatible_chat_api(
+                "https://openrouter.ai/api/v1", "sk-or", "meta-llama/llama-3", [{"role": "user", "content": "hi"}], self.workspace
+            )
+        self.assertEqual(http_spy.call_args.args[0], "https://openrouter.ai/api/v1/chat/completions")
+
+    def test_no_tool_calls_returns_the_plain_content_on_the_first_call(self):
+        with mock.patch(
+            "webui_api_key_mode._http_post_json",
+            return_value=(200, {"choices": [{"message": {"role": "assistant", "content": "just chatting"}}]}),
+        ) as http_spy:
+            result = webui_api_key_mode.call_openai_compatible_chat_api(
+                "https://x.invalid", "sk-x", "m", [{"role": "user", "content": "hi"}], self.workspace
+            )
+        self.assertEqual(http_spy.call_count, 1)
+        self.assertEqual(result["text"], "just chatting")
+
+    def test_system_prompt_is_prepended_as_a_system_role_message(self):
+        with mock.patch(
+            "webui_api_key_mode._http_post_json", return_value=(200, {"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+        ) as http_spy:
+            webui_api_key_mode.call_openai_compatible_chat_api(
+                "https://x.invalid", "sk-x", "m", [{"role": "user", "content": "hi"}], self.workspace, system="be terse"
+            )
+        sent_messages = http_spy.call_args.args[2]["messages"]
+        self.assertEqual(sent_messages[0], {"role": "system", "content": "be terse"})
+
+    def test_no_system_prompt_does_not_add_a_system_message(self):
+        with mock.patch(
+            "webui_api_key_mode._http_post_json", return_value=(200, {"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+        ) as http_spy:
+            webui_api_key_mode.call_openai_compatible_chat_api(
+                "https://x.invalid", "sk-x", "m", [{"role": "user", "content": "hi"}], self.workspace
+            )
+        sent_messages = http_spy.call_args.args[2]["messages"]
+        self.assertEqual([m["role"] for m in sent_messages], ["user"])
+
+    def test_executes_a_tool_call_then_feeds_the_result_back_as_a_tool_role_message(self):
+        tool_call_response = (
+            200,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'}}
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+        final_response = (200, {"choices": [{"message": {"role": "assistant", "content": "the file says hi"}}]})
+        with mock.patch(
+            "webui_api_key_mode._http_post_json", side_effect=[tool_call_response, final_response]
+        ) as http_spy, mock.patch("webui_api_key_mode.execute_tool_call", return_value="hi") as exec_spy:
+            result = webui_api_key_mode.call_openai_compatible_chat_api(
+                "https://x.invalid", "sk-x", "m", [{"role": "user", "content": "read a.txt"}], self.workspace
+            )
+        exec_spy.assert_called_once_with(self.workspace, "read_file", {"path": "a.txt"})
+        self.assertIn("the file says hi", result["text"])
+        second_call_messages = http_spy.call_args_list[1].args[2]["messages"]
+        tool_result_message = second_call_messages[-1]
+        self.assertEqual(tool_result_message, {"role": "tool", "tool_call_id": "call_1", "content": "hi"})
+
+    def test_server_that_ignores_tools_and_replies_in_plain_text_is_not_treated_as_an_error(self):
+        # Not every custom endpoint supports tool calls -- one that just
+        # ignores the `tools` field in the request and replies normally
+        # must be handled the same as "no tool_calls in the response",
+        # not surfaced as a failure.
+        with mock.patch(
+            "webui_api_key_mode._http_post_json",
+            return_value=(200, {"choices": [{"message": {"role": "assistant", "content": "sure, here you go"}}]}),
+        ):
+            result = webui_api_key_mode.call_openai_compatible_chat_api(
+                "https://x.invalid", "sk-x", "m", [{"role": "user", "content": "hi"}], self.workspace
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["text"], "sure, here you go")
+
+    def test_network_error_is_reported_not_raised(self):
+        with mock.patch("webui_api_key_mode._http_post_json", side_effect=urllib.error.URLError("boom")):
+            result = webui_api_key_mode.call_openai_compatible_chat_api(
+                "https://x.invalid", "sk-x", "m", [{"role": "user", "content": "hi"}], self.workspace
+            )
+        self.assertFalse(result["ok"])
+        self.assertNotIn("sk-x", result["message"])
+
+    def test_api_error_status_is_reported_with_the_error_body(self):
+        with mock.patch(
+            "webui_api_key_mode._http_post_json", return_value=(401, {"error": {"type": "invalid_api_key", "message": "bad key"}})
+        ):
+            result = webui_api_key_mode.call_openai_compatible_chat_api(
+                "https://x.invalid", "sk-x", "m", [{"role": "user", "content": "hi"}], self.workspace
+            )
+        self.assertFalse(result["ok"])
+        self.assertIn("bad key", result["message"])
+
+
 class RunProviderViaApiKeyTests(unittest.TestCase):
     def test_success_produces_a_record_with_no_session_or_run_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3172,6 +3440,58 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
                 )
         self.assertEqual(records[0]["model"], "claude-new")
         self.assertEqual(spy.call_args.args[1], "claude-new")
+
+    def test_shared_context_is_threaded_into_the_caller_as_system(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".handoff").mkdir()
+            (root / ".handoff" / "shared-context.md").write_text("Never touch legacy/.", encoding="utf-8")
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "ok"}) as spy:
+                webui_api_key_mode.run_provider_via_api_key(
+                    root, "claude", "hello", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue"
+                )
+        self.assertEqual(spy.call_args.kwargs.get("system"), "Never touch legacy/.")
+
+    def test_missing_shared_context_file_passes_empty_system(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "ok"}) as spy:
+                webui_api_key_mode.run_provider_via_api_key(
+                    root, "claude", "hello", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue"
+                )
+        self.assertEqual(spy.call_args.kwargs.get("system"), "")
+
+    def test_custom_openai_format_provider_dispatches_to_the_chat_completions_caller(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            credential = {"key": "sk-or", "model": "meta-llama/llama-3", "base_url": "https://openrouter.ai/api/v1", "api_format": "openai"}
+            with mock.patch("webui_api_key_mode.call_openai_compatible_chat_api", return_value={"ok": True, "text": "ok"}) as spy:
+                records = webui_api_key_mode.run_provider_via_api_key(root, "custom:openrouter", "hello", credential, "continue")
+        spy.assert_called_once()
+        self.assertEqual(spy.call_args.args[0], "https://openrouter.ai/api/v1")
+        self.assertEqual(records[0]["provider"], "custom:openrouter")
+        self.assertEqual(records[0]["model"], "meta-llama/llama-3")
+
+    def test_custom_anthropic_format_provider_dispatches_to_the_messages_caller_with_its_base_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            credential = {"key": "sk-x", "model": "some-model", "base_url": "https://proxy.example/v1/messages", "api_format": "anthropic"}
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "ok"}) as spy:
+                webui_api_key_mode.run_provider_via_api_key(root, "custom:proxy", "hello", credential, "continue")
+        spy.assert_called_once()
+        self.assertEqual(spy.call_args.kwargs.get("base_url"), "https://proxy.example/v1/messages")
+
+    def test_custom_provider_with_unknown_api_format_errors_without_calling_anything(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            credential = {"key": "sk-x", "model": "m", "base_url": "https://x.invalid", "api_format": "carrier-pigeon"}
+            with mock.patch("webui_api_key_mode.call_openai_compatible_chat_api") as openai_spy, mock.patch(
+                "webui_api_key_mode.call_anthropic_messages_api"
+            ) as anthropic_spy:
+                records = webui_api_key_mode.run_provider_via_api_key(root, "custom:bad", "hello", credential, "continue")
+        openai_spy.assert_not_called()
+        anthropic_spy.assert_not_called()
+        self.assertTrue(records[0]["reason"].startswith("tool_failure"))
 
 
 class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
@@ -3283,6 +3603,30 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
             records = webui_bridge_run.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
         spy.assert_not_called()
         self.assertEqual(records[0]["provider"], "codex")
+
+    def test_custom_provider_never_checks_cli_availability_at_all(self):
+        # A custom provider (DEC-26) has no binary/CLI concept whatsoever
+        # -- confirms cli_available() is never even consulted for one,
+        # unlike every fixed-provider branch above.
+        webui_credentials.save_custom_provider("openrouter", "sk-or", "meta-llama/llama-3", "https://openrouter.ai/api/v1", "openai")
+        with mock.patch("webui_bridge_run.cli_available") as cli_spy, mock.patch(
+            "webui_api_key_mode.call_openai_compatible_chat_api", return_value={"ok": True, "text": "custom reply"}
+        ):
+            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "custom:openrouter", "hello", None, "continue")
+        cli_spy.assert_not_called()
+        self.assertEqual(records[0]["provider"], "custom:openrouter")
+        self.assertEqual(records[0]["final_text"], "custom reply")
+
+    def test_deleted_custom_provider_returns_a_clear_error_not_a_crash(self):
+        # Selecting a custom provider in the composer, then deleting it in
+        # the connection panel before sending, must not KeyError/crash --
+        # a clear tool_failure record instead.
+        with mock.patch("webui_api_key_mode.call_openai_compatible_chat_api") as spy:
+            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "custom:never-configured", "hello", None, "continue")
+        spy.assert_not_called()
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["reason"].startswith("tool_failure"))
+        self.assertIn("never-configured", records[0]["final_text"])
 
 
 class ProviderApiLiveServerTests(unittest.TestCase):
@@ -3472,6 +3816,227 @@ class ProviderApiLiveServerTests(unittest.TestCase):
             )
         self.assertEqual(status, 400)
         self.assertIn("error", data)
+
+
+class CustomProviderLiveServerTests(unittest.TestCase):
+    """POST /api/custom-provider and GET /api/providers' `custom_providers`
+    field over a real HTTP server -- same pattern as
+    ProviderApiLiveServerTests (its fixed-provider counterpart)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+        self.state = webui.AppState(None)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def _get(self, path: str) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def _post(self, path: str, payload: dict) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def _mock_valid_key_response(self):
+        return mock.patch(
+            "webui_api_key_mode._http_post_json",
+            return_value=(200, {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}),
+        )
+
+    def test_new_server_has_no_custom_providers(self):
+        status, data = self._get("/api/providers")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["custom_providers"], [])
+
+    def test_saving_a_custom_provider_never_echoes_the_key(self):
+        with self._mock_valid_key_response():
+            status, data = self._post(
+                "/api/custom-provider",
+                {"name": "openrouter", "key": "sk-secret", "model": "meta-llama/llama-3", "base_url": "https://openrouter.ai/api/v1", "api_format": "openai"},
+            )
+        self.assertEqual(status, 200)
+        self.assertNotIn("key", data)
+        self.assertEqual(data["provider"], "custom:openrouter")
+        self.assertTrue(data["api_key_configured"])
+        self.assertEqual(data["confirmation"], "ok")
+
+    def test_saved_custom_provider_is_reflected_in_the_providers_list(self):
+        with self._mock_valid_key_response():
+            self._post(
+                "/api/custom-provider",
+                {"name": "openrouter", "key": "sk-secret", "model": "meta-llama/llama-3", "base_url": "https://openrouter.ai/api/v1", "api_format": "openai"},
+            )
+        _, data = self._get("/api/providers")
+        entry = next(p for p in data["custom_providers"] if p["provider"] == "custom:openrouter")
+        self.assertEqual(entry["name"], "openrouter")
+        self.assertEqual(entry["api_format"], "openai")
+        self.assertEqual(entry["base_url"], "https://openrouter.ai/api/v1")
+        self.assertEqual(entry["model"], "meta-llama/llama-3")
+        self.assertTrue(entry["api_key_configured"])
+        # Fixed providers are unaffected by adding a custom one.
+        self.assertEqual({p["provider"] for p in data["providers"]}, {"codex", "claude", "gemini"})
+
+    def test_empty_key_deletes_a_previously_saved_custom_provider(self):
+        with self._mock_valid_key_response():
+            self._post(
+                "/api/custom-provider",
+                {"name": "temp", "key": "sk-x", "model": "m", "base_url": "https://x.invalid", "api_format": "openai"},
+            )
+        status, data = self._post("/api/custom-provider", {"name": "temp", "key": ""})
+        self.assertEqual(status, 200)
+        self.assertFalse(data["api_key_configured"])
+        _, providers = self._get("/api/providers")
+        self.assertEqual(providers["custom_providers"], [])
+
+    def test_name_colliding_with_a_builtin_provider_is_rejected_with_400(self):
+        status, data = self._post(
+            "/api/custom-provider",
+            {"name": "claude", "key": "sk-x", "model": "m", "base_url": "https://x.invalid", "api_format": "openai"},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_unknown_api_format_is_rejected_with_400(self):
+        status, data = self._post(
+            "/api/custom-provider",
+            {"name": "x", "key": "sk-x", "model": "m", "base_url": "https://x.invalid", "api_format": "carrier-pigeon"},
+        )
+        self.assertEqual(status, 400)
+
+    def test_base_url_without_scheme_is_rejected_with_400(self):
+        status, data = self._post(
+            "/api/custom-provider", {"name": "x", "key": "sk-x", "model": "m", "base_url": "x.invalid", "api_format": "openai"}
+        )
+        self.assertEqual(status, 400)
+
+    def test_a_key_that_fails_validation_is_rejected_with_400_and_not_saved(self):
+        with mock.patch(
+            "webui_api_key_mode._http_post_json", return_value=(401, {"error": {"type": "invalid_api_key", "message": "bad key"}})
+        ):
+            status, data = self._post(
+                "/api/custom-provider",
+                {"name": "openrouter", "key": "sk-wrong", "model": "m", "base_url": "https://openrouter.ai/api/v1", "api_format": "openai"},
+            )
+        self.assertEqual(status, 400)
+        self.assertNotIn("sk-wrong", data["error"])
+        _, providers = self._get("/api/providers")
+        self.assertEqual(providers["custom_providers"], [])
+
+
+class SharedContextLiveServerTests(unittest.TestCase):
+    """GET/POST /api/shared-context (DEC-27) over a real HTTP server."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.state = webui.AppState(self.root)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def _get(self, path: str) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def _post(self, path: str, payload: dict) -> tuple[int, dict]:
+        url = f"http://127.0.0.1:{self.port}{path}"
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def test_fresh_workspace_has_empty_shared_context(self):
+        status, data = self._get("/api/shared-context")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["text"], "")
+
+    def test_save_then_read_round_trips(self):
+        self._post("/api/shared-context", {"text": "Never touch legacy/."})
+        status, data = self._get("/api/shared-context")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["text"], "Never touch legacy/.")
+
+    def test_saved_content_is_actually_on_disk_under_the_workspace(self):
+        self._post("/api/shared-context", {"text": "hello"})
+        self.assertEqual((self.root / ".handoff" / "shared-context.md").read_text(encoding="utf-8"), "hello")
+
+
+class NoWorkspaceSharedContextLiveServerTests(unittest.TestCase):
+    def setUp(self):
+        self.state = webui.AppState(None)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+    def test_get_with_no_workspace_returns_empty_text_not_an_error(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/shared-context", timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(json.loads(resp.read().decode("utf-8")), {"text": ""})
+
+    def test_post_with_no_workspace_is_rejected_with_400(self):
+        body = json.dumps({"text": "hello"}).encode("utf-8")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/shared-context", data=body, method="POST", headers={"Content-Type": "application/json"}
+        )
+        try:
+            urllib.request.urlopen(req, timeout=5)
+            self.fail("expected an HTTPError")
+        except urllib.error.HTTPError as exc:
+            with exc:
+                self.assertEqual(exc.code, 400)
 
 
 class CheckForUpdateInBackgroundTests(unittest.TestCase):

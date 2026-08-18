@@ -4,6 +4,22 @@
 
 ## Unreleased
 
+- API-key mode: **custom providers** (DEC-26) — register any number of
+  arbitrary OpenAI-compatible (Chat Completions -- OpenRouter, Groq,
+  Together, a local Ollama/LM Studio server, etc.) or Anthropic-compatible
+  HTTP endpoints under a name you choose, for buying API tokens directly
+  rather than installing a vendor CLI. Same tool-use turn loop (read/write/
+  edit files, run shell commands) as codex/claude/gemini's API-key mode.
+  Manage them from the connection panel (Diagnose button); `POST
+  /api/custom-provider` for the API contract. See
+  [webui-chat-storage.md](webui-chat-storage.md#custom-providers-dec-26).
+- **Shared project context** (DEC-27) — a new "Context" button opens a
+  per-workspace, free-form text box (`.handoff/shared-context.md`,
+  git-tracked) that's folded into every provider call regardless of mode:
+  CLI (via `handoff_bridge.py`'s own prompt construction) and API-key mode
+  (fixed or custom, as each provider's own system-prompt field). See
+  [webui-chat-storage.md](webui-chat-storage.md#shared-project-context-dec-27).
+
 ## v0.3.0 — 2026-08-14
 
 - `handoff_bridge.py`'s `--instruction-type` (on both `init` and `run`)

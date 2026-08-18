@@ -70,6 +70,16 @@ Full schema, dispatch priority (a detected CLI always wins over a saved
 key), and removal semantics:
 [Web UI Chat Storage § Credentials & API-Key Mode](webui-chat-storage.md#credentials--api-key-mode-phase-4).
 
+**Custom providers (DEC-26)** extend this same file/exception with a
+user-supplied `base_url` per entry — a deliberate trust boundary, not an
+oversight: the user who registers a custom provider is the same person
+who chooses what `base_url` and API key to pair it with (this is a local,
+single-user app, not a hosted service accepting untrusted input), so
+there is no separate validation of the URL beyond requiring an
+`http://`/`https://` scheme. The key is still sent only to whatever host
+the user configured, over that connection, the same as the fixed three.
+See [Web UI Chat Storage § Custom Providers](webui-chat-storage.md#custom-providers-dec-26).
+
 ## Mobile Remote Boundaries
 
 Official mobile remote surfaces are preferred:

@@ -55,8 +55,25 @@ from webui_chat_storage import (
     read_month_messages,
     touch_registry,
 )
-from webui_common import AUTO_WORKSPACE_BASE_DIR, WorkspaceError, _bridge_check_for_update, month_key, utc_now
-from webui_credentials import API_KEY_MODE_PROVIDERS, cli_available, read_credentials, save_credential
+from webui_common import (
+    AUTO_WORKSPACE_BASE_DIR,
+    WorkspaceError,
+    _bridge_check_for_update,
+    month_key,
+    read_shared_context,
+    utc_now,
+    write_shared_context,
+)
+from webui_credentials import (
+    API_KEY_MODE_PROVIDERS,
+    CUSTOM_PROVIDER_API_FORMATS,
+    cli_available,
+    custom_provider_id,
+    read_credentials,
+    read_custom_providers,
+    save_credential,
+    save_custom_provider,
+)
 from webui_workspace import (
     _WORKSPACE_CREATE_LOCK,
     create_workspace_for_first_message,
@@ -198,7 +215,23 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                             "model": (entry or {}).get("model") if entry else None,
                         }
                     )
-                self._send_json(200, {"providers": providers})
+                # Custom providers (DEC-26) have no CLI concept at all --
+                # cli_detected/api_key_mode_supported are meaningless for
+                # them (always API-key mode), so they get their own
+                # response key rather than forcing those two fields into
+                # every entry of `providers` above.
+                custom_providers = [
+                    {
+                        "provider": custom_provider_id(name),
+                        "name": name,
+                        "api_format": entry["api_format"],
+                        "base_url": entry["base_url"],
+                        "model": entry["model"],
+                        "api_key_configured": True,
+                    }
+                    for name, entry in sorted(read_custom_providers().items())
+                ]
+                self._send_json(200, {"providers": providers, "custom_providers": custom_providers})
             elif parsed.path == "/api/update-check":
                 # Phase 6 (SCR-07): reads the cached result of the
                 # background check main() kicked off at startup -- never
@@ -243,6 +276,16 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 # collapsing into the same response).
                 info = state.update_info if checked else None
                 self._send_json(200, {"checked": checked, **(info or {})})
+            elif parsed.path == "/api/shared-context":
+                # DEC-27: `.handoff/shared-context.md`, free-form per-
+                # workspace context folded into every provider call
+                # (CLI mode via handoff_bridge.py's build_prompt(),
+                # API-key mode via run_provider_via_api_key() -- see
+                # webui_common.read_shared_context()'s own docstring).
+                # No workspace yet: empty, not an error, same posture as
+                # /api/chat's "no workspace selected" branch above.
+                text = read_shared_context(workspace) if workspace is not None else ""
+                self._send_json(200, {"text": text})
             else:
                 # _send_json(), not send_error(): every other /api/* branch
                 # in do_GET responds with a JSON body, and webui/app.js's
@@ -428,6 +471,67 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         response["verified"] = True
                         response["confirmation"] = confirmation
                     self._send_json(200, response)
+                except WorkspaceError as exc:
+                    self._send_json(400, {"error": str(exc)})
+            elif parsed.path == "/api/custom-provider":
+                # DEC-26. Same shape/contract as /api/provider-key above --
+                # empty `key` removes (save_custom_provider()'s own
+                # contract, doubling as "delete this custom provider" so
+                # there's no separate delete endpoint), a non-empty key is
+                # validated with a real minimal call before ever being
+                # written to disk. Name/format/base_url/model validation
+                # (blank name, unknown api_format, missing scheme, missing
+                # model) lives in save_custom_provider()/
+                # validate_custom_provider_name() -- both raise a plain
+                # ValueError with a client-facing message, caught here the
+                # same way WorkspaceError is caught everywhere else.
+                try:
+                    body = self._read_json_body()
+                    name = str(body.get("name") or "")
+                    key = str(body.get("key") or "").strip()
+                    model = str(body.get("model") or "").strip() or None
+                    base_url = str(body.get("base_url") or "").strip()
+                    api_format = str(body.get("api_format") or "")
+                    confirmation: str | None = None
+                    if key:
+                        if api_format not in CUSTOM_PROVIDER_API_FORMATS:
+                            raise WorkspaceError(f"api_format must be one of: {', '.join(CUSTOM_PROVIDER_API_FORMATS)}")
+                        if not base_url.startswith(("http://", "https://")):
+                            raise WorkspaceError("base_url must start with http:// or https://")
+                        if not model:
+                            raise WorkspaceError("a model is required to save and verify a custom provider")
+                        result = validate_provider_api_key(name, key, model, api_format=api_format, base_url=base_url)
+                        if not result["ok"]:
+                            raise WorkspaceError(result["message"])
+                        confirmation = result["text"]
+                    try:
+                        save_custom_provider(name, key, model, base_url, api_format)
+                    except OSError as exc:
+                        raise WorkspaceError(f"failed to save custom provider: {exc}") from exc
+                    except ValueError as exc:
+                        raise WorkspaceError(str(exc)) from exc
+                    response = {
+                        "provider": custom_provider_id(name.strip()),
+                        "api_key_configured": bool(key),
+                        "model": model if key else None,
+                    }
+                    if confirmation is not None:
+                        response["verified"] = True
+                        response["confirmation"] = confirmation
+                    self._send_json(200, response)
+                except WorkspaceError as exc:
+                    self._send_json(400, {"error": str(exc)})
+            elif parsed.path == "/api/shared-context":
+                try:
+                    if state.workspace is None:
+                        raise WorkspaceError("no workspace selected")
+                    body = self._read_json_body()
+                    text = str(body.get("text") or "")
+                    try:
+                        write_shared_context(state.workspace, text)
+                    except OSError as exc:
+                        raise WorkspaceError(f"failed to save shared context: {exc}") from exc
+                    self._send_json(200, {"text": text})
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             else:

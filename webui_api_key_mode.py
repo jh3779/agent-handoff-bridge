@@ -22,7 +22,8 @@ from datetime import datetime
 from pathlib import Path
 
 from webui_chat_storage import list_available_months, read_month_messages
-from webui_common import WorkspaceError, utc_now
+from webui_common import WorkspaceError, read_shared_context, utc_now
+from webui_credentials import is_custom_provider
 from webui_workspace import read_file_preview, safe_join
 
 
@@ -327,6 +328,27 @@ def openai_tool_definitions() -> list[dict]:
     ]
 
 
+def openai_chat_completions_tool_definitions() -> list[dict]:
+    """Chat Completions nests name/description/parameters under
+    "function" (unlike openai_tool_definitions() above, which is the
+    Responses API's flatter shape) -- confirmed against
+    https://platform.openai.com/docs/guides/function-calling. Used only
+    by call_openai_compatible_chat_api() (DEC-26, custom providers):
+    most third-party/self-hosted OpenAI-compatible servers implement
+    Chat Completions, not OpenAI's own newer Responses API."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": spec["name"],
+                "description": spec["description"],
+                "parameters": {"type": "object", "properties": spec["params"], "required": spec["required"]},
+            },
+        }
+        for spec in _TOOL_SPECS
+    ]
+
+
 def gemini_tool_definitions() -> list[dict]:
     # One Tool object holding every functionDeclaration, not one Tool per
     # function -- confirmed against https://ai.google.dev/api/generate-content
@@ -542,7 +564,9 @@ def _error_with_transcript(transcript_parts: list[str], message: str) -> dict:
     return {"ok": False, "message": f"{transcript_so_far}\n\n{message}"}
 
 
-def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict], workspace: Path) -> dict:
+def call_anthropic_messages_api(
+    api_key: str, model: str, messages: list[dict], workspace: Path, system: str = "", base_url: str = ANTHROPIC_MESSAGES_URL
+) -> dict:
     """Returns {"ok": True, "text": str} or {"ok": False, "message": str} --
     `message` is built only from the response body/exception text, never
     from `api_key`, so a saved key can never leak into a chat log entry via
@@ -576,6 +600,15 @@ def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict], 
     the next call would 400 on mismatched IDs), matching the defensive
     posture call_openai_responses_api() already needs for the same
     reason on its side.
+
+    `system` (DEC-27, shared project context -- see webui_common.
+    read_shared_context()) is sent as the Messages API's own top-level
+    `system` string field when non-empty, never folded into `messages`
+    itself. `base_url` defaults to the real Anthropic endpoint but is
+    overridable for a custom Anthropic-*compatible* provider (DEC-26) --
+    kept as one implementation rather than a separate near-duplicate
+    function, since a compatible endpoint is defined by speaking this
+    exact request/response shape.
     """
     headers = {
         "x-api-key": api_key,
@@ -594,8 +627,10 @@ def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict], 
             "tools": tools,
             "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
         }
+        if system:
+            body["system"] = system
         try:
-            status, data = _http_post_json(ANTHROPIC_MESSAGES_URL, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
+            status, data = _http_post_json(base_url, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             # _http_post_json() already retried transient failures
             # (API_KEY_MODE_MAX_RETRIES times) before re-raising this.
@@ -629,7 +664,7 @@ def call_anthropic_messages_api(api_key: str, model: str, messages: list[dict], 
         working_messages.append({"role": "user", "content": tool_results})
 
 
-def call_openai_responses_api(api_key: str, model: str, messages: list[dict], workspace: Path) -> dict:
+def call_openai_responses_api(api_key: str, model: str, messages: list[dict], workspace: Path, system: str = "") -> dict:
     """Same contract and same tool-use turn loop as
     call_anthropic_messages_api() -- see its docstring for the shared
     reasoning (MAX_TOOL_ITERATIONS bounds actual tool *executions*, not
@@ -649,6 +684,10 @@ def call_openai_responses_api(api_key: str, model: str, messages: list[dict], wo
     each is executed and given a matching `function_call_output` before
     the next call -- OpenAI's contract otherwise has no way to answer
     only some of a batch.
+
+    `system` (DEC-27) is sent as the Responses API's top-level
+    `instructions` string field -- its documented system-prompt
+    equivalent -- when non-empty.
     """
     headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
     working_input = list(messages)
@@ -657,6 +696,8 @@ def call_openai_responses_api(api_key: str, model: str, messages: list[dict], wo
     tool_calls_executed = 0
     while True:
         body = {"model": model, "input": working_input, "tools": tools}
+        if system:
+            body["instructions"] = system
         try:
             status, data = _http_post_json(OPENAI_RESPONSES_URL, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
@@ -714,7 +755,7 @@ def _gemini_contents_from_messages(messages: list[dict]) -> list[dict]:
     return [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]} for m in messages]
 
 
-def call_gemini_api(api_key: str, model: str, messages: list[dict], workspace: Path) -> dict:
+def call_gemini_api(api_key: str, model: str, messages: list[dict], workspace: Path, system: str = "") -> dict:
     """Same {"ok": True, "text": str} / {"ok": False, "message": str}
     contract and the same tool-use turn loop shape as
     call_anthropic_messages_api()/call_openai_responses_api() -- see
@@ -737,6 +778,10 @@ def call_gemini_api(api_key: str, model: str, messages: list[dict], workspace: P
     (the shared, provider-agnostic executor contract all three providers
     use), so it is wrapped as {"result": <text>} here rather than
     changing that shared contract for one provider's stricter schema.
+
+    `system` (DEC-27) is sent as the documented top-level
+    `systemInstruction` field ({"parts": [{"text": ...}]}, the same Content
+    shape as a regular turn but with no `role`) when non-empty.
     """
     url = GEMINI_GENERATE_CONTENT_URL_TEMPLATE.format(model=model)
     headers = {"x-goog-api-key": api_key, "content-type": "application/json"}
@@ -746,6 +791,8 @@ def call_gemini_api(api_key: str, model: str, messages: list[dict], workspace: P
     tool_calls_executed = 0
     while True:
         body = {"contents": working_contents, "tools": tools}
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
         try:
             status, data = _http_post_json(url, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
@@ -800,7 +847,98 @@ def call_gemini_api(api_key: str, model: str, messages: list[dict], workspace: P
         working_contents.append({"role": "user", "parts": response_parts})
 
 
-def validate_provider_api_key(provider: str, api_key: str, model: str) -> dict:
+def call_openai_compatible_chat_api(
+    base_url: str, api_key: str, model: str, messages: list[dict], workspace: Path, system: str = ""
+) -> dict:
+    """Custom providers, OpenAI-compatible format (DEC-26): most third-
+    party aggregators (OpenRouter, Groq, Together) and self-hosted
+    servers (Ollama, LM Studio, vLLM) implement the Chat Completions
+    endpoint (POST {base_url}/chat/completions), not OpenAI's own newer
+    Responses API that call_openai_responses_api() above targets -- a
+    genuinely separate implementation, not a thin wrapper, even though
+    both are "OpenAI-shaped." Same {"ok": True, "text": str} /
+    {"ok": False, "message": str} contract and the same
+    MAX_TOOL_ITERATIONS-bounded tool-use turn loop as the other
+    call_X_api() functions -- see call_anthropic_messages_api()'s
+    docstring for the shared reasoning.
+
+    Request/response shapes (nested tools[].function, an assistant
+    message's `tool_calls` array, a tool result sent back as
+    {"role":"tool","tool_call_id":...,"content":...}) confirmed against
+    https://platform.openai.com/docs/guides/function-calling, not
+    assumed. Not every custom endpoint will actually support tool calls
+    -- a server that doesn't understand `tools` in the request is
+    expected to just ignore it and reply with plain text (no
+    `tool_calls` in the response), which this loop already treats as
+    "done" on its first iteration, so no separate no-tools code path is
+    needed.
+
+    `system`, when non-empty, is prepended as a {"role": "system", ...}
+    message rather than a separate top-level field -- Chat Completions
+    has no top-level system-prompt parameter of its own (unlike the
+    Anthropic/Responses/Gemini APIs), a plain system-role message is its
+    documented equivalent.
+    """
+    url = f"{base_url}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
+    working_messages = list(messages)
+    if system:
+        working_messages = [{"role": "system", "content": system}] + working_messages
+    transcript_parts: list[str] = []
+    tools = openai_chat_completions_tool_definitions()
+    tool_calls_executed = 0
+    while True:
+        body = {"model": model, "messages": working_messages, "tools": tools}
+        try:
+            status, data = _http_post_json(url, headers, body, API_KEY_MODE_TIMEOUT_SECONDS)
+        except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            return _error_with_transcript(transcript_parts, f"network error calling custom provider: {exc}")
+        except json.JSONDecodeError as exc:
+            return _error_with_transcript(transcript_parts, f"custom provider returned a non-JSON response: {exc}")
+        if status != 200:
+            error = data.get("error") if isinstance(data, dict) else None
+            error_type = (error or {}).get("type", "api_error") if isinstance(error, dict) else "api_error"
+            error_message = (
+                (error or {}).get("message", json.dumps(data, ensure_ascii=False))
+                if isinstance(error, dict)
+                else json.dumps(data, ensure_ascii=False)
+            )
+            return _error_with_transcript(transcript_parts, f"custom provider API error ({status} {error_type}): {error_message}")
+        choices = data.get("choices", []) if isinstance(data, dict) else []
+        if not choices or not isinstance(choices[0], dict):
+            return {"ok": True, "text": "\n\n".join(transcript_parts)}
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            transcript_parts.append(content)
+        tool_calls = message.get("tool_calls") or []
+        if not tool_calls:
+            return {"ok": True, "text": "\n\n".join(transcript_parts)}
+        working_messages.append(message)
+        for call in tool_calls:
+            if tool_calls_executed >= MAX_TOOL_ITERATIONS:
+                transcript_parts.append(
+                    f"(stopped after {MAX_TOOL_ITERATIONS} tool calls in one turn -- send another message to continue)"
+                )
+                return {"ok": True, "text": "\n\n".join(transcript_parts)}
+            function = call.get("function") or {} if isinstance(call, dict) else {}
+            name = function.get("name", "")
+            raw_args = function.get("arguments", "{}")
+            try:
+                tool_input = json.loads(raw_args) if isinstance(raw_args, str) else {}
+            except json.JSONDecodeError:
+                tool_input = {}
+            result_text = execute_tool_call(workspace, name, tool_input)
+            tool_calls_executed += 1
+            transcript_parts.append(
+                _tool_call_transcript_block(name, raw_args if isinstance(raw_args, str) else "{}", result_text)
+            )
+            working_messages.append({"role": "tool", "tool_call_id": call.get("id"), "content": result_text})
+
+
+def validate_provider_api_key(
+    provider: str, api_key: str, model: str, api_format: str | None = None, base_url: str | None = None
+) -> dict:
     """Makes one real, minimal, tool-free call to the provider's own API
     with `api_key`/`model` to confirm the key actually works -- POST
     /api/provider-key calls this before save_credential() ever writes a
@@ -812,9 +950,29 @@ def validate_provider_api_key(provider: str, api_key: str, model: str) -> dict:
     their tool-use turn loop entirely: this has no workspace to act on
     and no reason to grant tool access just to check a key, so it is a
     single HTTP call with no `tools` in the request body at all.
+
+    `api_format`/`base_url` (DEC-26): when given, `provider` is treated
+    purely as a display label (used in the error/message text only) and
+    dispatch goes by `api_format` ("openai" -> Chat Completions,
+    "anthropic" -> Messages API at `base_url`) instead of the fixed
+    codex/claude/gemini branches below -- POST /api/custom-provider calls
+    this before save_custom_provider() the same way the fixed-provider
+    save path already does.
     """
     ping_message = [{"role": "user", "content": "Reply with only the single word: ok"}]
-    if provider == "claude":
+    if api_format == "anthropic":
+        url = base_url or ANTHROPIC_MESSAGES_URL
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_API_VERSION,
+            "content-type": "application/json",
+        }
+        body = {"model": model, "max_tokens": API_KEY_VALIDATION_MAX_TOKENS, "messages": ping_message}
+    elif api_format == "openai":
+        url = f"{base_url}/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
+        body = {"model": model, "messages": ping_message, "max_tokens": API_KEY_VALIDATION_MAX_TOKENS}
+    elif provider == "claude":
         url = ANTHROPIC_MESSAGES_URL
         headers = {
             "x-api-key": api_key,
@@ -855,7 +1013,13 @@ def validate_provider_api_key(provider: str, api_key: str, model: str) -> dict:
         )
         return {"ok": False, "message": f"{provider} API key validation failed ({status} {error_type}): {error_message}"}
     text = ""
-    if provider == "claude":
+    if api_format == "openai":
+        choices = data.get("choices", []) if isinstance(data, dict) else []
+        if choices and isinstance(choices[0], dict):
+            content = (choices[0].get("message") or {}).get("content")
+            if isinstance(content, str):
+                text = content
+    elif provider == "claude" or api_format == "anthropic":
         content = data.get("content", []) if isinstance(data, dict) else []
         text = "".join(block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text")
     elif provider == "gemini":
@@ -903,8 +1067,25 @@ def run_provider_via_api_key(
     over the model saved alongside the credential when the caller supplies
     one (not reachable through the shipped composer UI today, same as CLI
     mode's `model` parameter -- see run_provider_via_bridge()'s docstring).
+
+    `credential` for a custom provider (DEC-26, `provider` shaped
+    "custom:<name>", see webui_credentials.is_custom_provider())
+    additionally carries "base_url"/"api_format" -- dispatch below picks
+    the OpenAI-compatible or Anthropic-compatible caller by that field
+    instead of one of the three fixed-provider branches. A custom
+    provider has no built-in default model (API_KEY_MODE_DEFAULT_MODELS
+    only covers the fixed three), matching save_custom_provider()
+    already requiring one at save time.
+
+    `system` (DEC-27, shared project context) is read once per call via
+    webui_common.read_shared_context() and threaded into whichever
+    call_X_api() runs -- kept as a plain file read here rather than
+    folded into build_api_message_history()'s own message list, since
+    every call_X_api() already has its own vendor-specific "this is the
+    system prompt" field/shape to put it in.
     """
-    model = model_override or credential.get("model") or API_KEY_MODE_DEFAULT_MODELS.get(provider)
+    is_custom = is_custom_provider(provider)
+    model = model_override or credential.get("model") or (None if is_custom else API_KEY_MODE_DEFAULT_MODELS.get(provider))
     if not model:
         return [
             _api_key_mode_error_record(
@@ -916,12 +1097,30 @@ def run_provider_via_api_key(
             )
         ]
     messages = build_api_message_history(workspace, prompt, utc_now())
-    callers = {
-        "claude": call_anthropic_messages_api,
-        "codex": call_openai_responses_api,
-        "gemini": call_gemini_api,
-    }
-    result = callers[provider](credential["key"], model, messages, workspace)
+    system = read_shared_context(workspace)
+    if is_custom:
+        api_format = credential.get("api_format")
+        base_url = credential.get("base_url") or ""
+        if api_format == "openai":
+            result = call_openai_compatible_chat_api(base_url, credential["key"], model, messages, workspace, system=system)
+        elif api_format == "anthropic":
+            # Full endpoint URL, not a base+append pattern (unlike the
+            # openai branch above) -- call_anthropic_messages_api()'s own
+            # `base_url` param is already a complete POST target for the
+            # real Anthropic case (ANTHROPIC_MESSAGES_URL itself is a full
+            # URL, not a root), so a custom entry's stored base_url is
+            # kept consistent with that rather than inventing a second
+            # convention for the same parameter.
+            result = call_anthropic_messages_api(credential["key"], model, messages, workspace, system=system, base_url=base_url)
+        else:
+            return [_api_key_mode_error_record(provider, model, instruction_type, f"unknown custom provider api_format: {api_format!r}")]
+    else:
+        callers = {
+            "claude": call_anthropic_messages_api,
+            "codex": call_openai_responses_api,
+            "gemini": call_gemini_api,
+        }
+        result = callers[provider](credential["key"], model, messages, workspace, system=system)
     if not result["ok"]:
         return [_api_key_mode_error_record(provider, model, instruction_type, result["message"])]
     return [

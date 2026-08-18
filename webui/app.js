@@ -35,6 +35,13 @@
   const providerPanelOverlay = document.getElementById("provider-panel-overlay");
   const providerPanelList = document.getElementById("provider-panel-list");
   const providerPanelClose = document.getElementById("provider-panel-close");
+  const customProviderPanelList = document.getElementById("custom-provider-panel-list");
+  const customProviderAddForm = document.getElementById("custom-provider-add-form");
+  const contextBtn = document.getElementById("context-btn");
+  const contextPanelOverlay = document.getElementById("context-panel-overlay");
+  const contextTextarea = document.getElementById("context-textarea");
+  const contextPanelClose = document.getElementById("context-panel-close");
+  const contextPanelSave = document.getElementById("context-panel-save");
   const updateBtn = document.getElementById("update-btn");
   const updateDot = document.getElementById("update-dot");
   const updatePopover = document.getElementById("update-popover");
@@ -378,6 +385,88 @@
     return row;
   }
 
+  // 커스텀 provider (DEC-26): CLI 없이 토큰을 직접 구매해 쓰는
+  // OpenAI/Anthropic 호환 endpoint를 사용자가 원하는 이름으로 여러 개
+  // 등록. renderProviderRow()(고정 3개, CLI 감지 여부에 따라 분기)와
+  // 달리 커스텀 provider는 CLI 개념이 아예 없어 항상 API 키 입력 폼을
+  // 보여준다.
+  function renderCustomProviderRow(info) {
+    const row = el("div", { class: "pp-row" }, []);
+    row.appendChild(
+      el("div", { class: "pp-top" }, [
+        el("span", { class: "pp-name", text: info.name }, []),
+        el("span", { class: "status-badge status-success", text: info.api_format === "openai" ? "OpenAI 호환" : "Anthropic 호환" }, []),
+      ])
+    );
+    row.appendChild(el("div", { class: "pp-note", text: `${info.base_url} · model: ${info.model}` }, []));
+    const removeBtn = el("button", { type: "button", text: "삭제" }, []);
+    removeBtn.addEventListener("click", async () => {
+      try {
+        await postJSON("/api/custom-provider", { name: info.name, key: "" });
+        showToast(`${info.name}가 삭제되었습니다.`);
+        await refreshProviderPanel();
+      } catch (err) {
+        showToast(`삭제 실패: ${err.message}`);
+      }
+    });
+    row.appendChild(el("div", { class: "row", style: "justify-content:flex-end;margin-top:4px" }, [removeBtn]));
+    return row;
+  }
+
+  function renderAddCustomProviderForm() {
+    const nameInput = el("input", { type: "text", placeholder: "이름 (예: openrouter)", "data-field": "name" }, []);
+    const formatSelect = el("select", { "data-field": "api_format" }, [
+      el("option", { value: "openai", text: "OpenAI 호환" }, []),
+      el("option", { value: "anthropic", text: "Anthropic 호환" }, []),
+    ]);
+    const baseUrlInput = el("input", { type: "text", placeholder: "base URL (예: https://openrouter.ai/api/v1)", "data-field": "base_url" }, []);
+    const modelInput = el("input", { type: "text", placeholder: "model", "data-field": "model" }, []);
+    const keyInput = el("input", { type: "password", placeholder: "API 키", "data-field": "key" }, []);
+    const addBtn = el("button", { type: "button", class: "primary", text: "추가" }, []);
+    addBtn.addEventListener("click", async () => {
+      const name = nameInput.value.trim();
+      const key = keyInput.value.trim();
+      const model = modelInput.value.trim();
+      const base_url = baseUrlInput.value.trim();
+      const api_format = formatSelect.value;
+      if (!name || !key || !model || !base_url) {
+        showToast("이름/API 키/model/base URL을 모두 입력하세요.");
+        return;
+      }
+      try {
+        const result = await postJSON("/api/custom-provider", { name, key, model, base_url, api_format });
+        const suffix = result.verified ? ` (확인 응답: "${result.confirmation}")` : "";
+        showToast(`${name}가 확인되어 추가되었습니다.${suffix}`);
+        await refreshProviderPanel();
+      } catch (err) {
+        showToast(`추가 실패: ${err.message}`);
+      }
+    });
+    const row1 = el("div", { class: "pp-key-row wrap" }, [nameInput, formatSelect]);
+    const row2 = el("div", { class: "pp-key-row wrap" }, [baseUrlInput]);
+    const row3 = el("div", { class: "pp-key-row wrap" }, [modelInput, keyInput, addBtn]);
+    return el("div", {}, [row1, row2, row3]);
+  }
+
+  // provider-select(작성 상자 상단)를 서버가 실제로 아는 provider 목록
+  // (고정 3개 + auto + 커스텀 전부)으로 다시 채운다 -- index.html은
+  // "auto"만 하드코딩해두고 나머지는 항상 이 함수가 채운다. 현재
+  // 선택값은 목록에 남아 있는 한 유지한다.
+  function refreshProviderSelect(data) {
+    const previous = providerSelect.value;
+    providerSelect.innerHTML = "";
+    providerSelect.appendChild(el("option", { value: "auto", text: "auto" }, []));
+    for (const info of data.providers) {
+      providerSelect.appendChild(el("option", { value: info.provider, text: info.provider }, []));
+    }
+    for (const info of data.custom_providers) {
+      providerSelect.appendChild(el("option", { value: info.provider, text: info.name }, []));
+    }
+    if ([...providerSelect.options].some((opt) => opt.value === previous)) {
+      providerSelect.value = previous;
+    }
+  }
+
   // Monotonic token so an overlapping refresh (e.g. a "저장" click's own
   // await refreshProviderPanel() racing a fresh panel reopen) can't have
   // an earlier, slower response render its rows on top of a later one's
@@ -396,6 +485,8 @@
     }
     if (requestId !== providerPanelRequestId) return; // superseded by a newer refresh
     providerPanelList.innerHTML = "";
+    customProviderPanelList.innerHTML = "";
+    customProviderAddForm.innerHTML = "";
     if (error) {
       providerPanelList.appendChild(el("div", { class: "hd-empty", text: `불러올 수 없음: ${error.message}` }, []));
       return;
@@ -403,6 +494,11 @@
     for (const info of data.providers) {
       providerPanelList.appendChild(renderProviderRow(info));
     }
+    for (const info of data.custom_providers) {
+      customProviderPanelList.appendChild(renderCustomProviderRow(info));
+    }
+    customProviderAddForm.appendChild(renderAddCustomProviderForm());
+    refreshProviderSelect(data);
   }
 
   function openProviderPanel() {
@@ -418,6 +514,49 @@
   providerPanelClose.addEventListener("click", closeProviderPanel);
   providerPanelOverlay.addEventListener("click", (event) => {
     if (event.target === providerPanelOverlay) closeProviderPanel();
+  });
+
+  // ---------- shared context (DEC-27) ----------
+  // .handoff/shared-context.md -- free-form, per-workspace text folded
+  // into every provider call regardless of mode (CLI via
+  // handoff_bridge.py's build_prompt(), API-key mode via
+  // run_provider_via_api_key()). No workspace yet: GET returns "" (not
+  // an error), and the panel is still openable/editable, but saving
+  // requires a workspace (same "no workspace selected" 400 every other
+  // workspace-scoped POST already returns).
+
+  async function openContextPanel() {
+    contextPanelOverlay.classList.add("show");
+    contextTextarea.value = "불러오는 중…";
+    contextTextarea.disabled = true;
+    try {
+      const data = await fetchJSON("/api/shared-context");
+      contextTextarea.value = data.text;
+    } catch (err) {
+      contextTextarea.value = "";
+      showToast(`불러올 수 없음: ${err.message}`);
+    } finally {
+      contextTextarea.disabled = false;
+    }
+  }
+
+  function closeContextPanel() {
+    contextPanelOverlay.classList.remove("show");
+  }
+
+  contextBtn.addEventListener("click", openContextPanel);
+  contextPanelClose.addEventListener("click", closeContextPanel);
+  contextPanelOverlay.addEventListener("click", (event) => {
+    if (event.target === contextPanelOverlay) closeContextPanel();
+  });
+  contextPanelSave.addEventListener("click", async () => {
+    try {
+      await postJSON("/api/shared-context", { text: contextTextarea.value });
+      showToast("공용 context가 저장되었습니다.");
+      closeContextPanel();
+    } catch (err) {
+      showToast(`저장 실패: ${err.message}`);
+    }
   });
 
   // ---------- file tree ----------
@@ -924,6 +1063,11 @@
     // check already ran in main()'s background thread before this page
     // even loaded, so this fetch is normally near-instant either way.
     checkForUpdate();
+    // Same reasoning, also independent of workspace state (provider/
+    // credential config is app-level, not per-workspace): populates the
+    // composer's provider-select dropdown (index.html only hardcodes
+    // "auto") with the real fixed + custom provider list.
+    fetchJSON("/api/providers").then(refreshProviderSelect).catch(() => {});
 
     let info;
     try {

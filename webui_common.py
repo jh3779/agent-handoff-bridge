@@ -18,7 +18,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from handoff_bridge import short_run
+from handoff_bridge import SHARED_CONTEXT_FILE, short_run
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parent / "handoff_bridge.py"
 
@@ -99,6 +99,29 @@ def month_key(moment: datetime) -> str:
 
 class WorkspaceError(ValueError):
     """A path request fell outside the workspace root or doesn't exist."""
+
+
+def read_shared_context(workspace: Path) -> str:
+    """`.handoff/shared-context.md`'s content, stripped -- "" if missing,
+    unreadable, or whitespace-only. Same file handoff_bridge.py's own
+    build_prompt() folds into every CLI-mode prompt (SHARED_CONTEXT_FILE's
+    own docstring there); this is the API-key-mode read path, direct file
+    access rather than a subprocess call, since it's a plain read with no
+    decision logic worth a bridge subcommand of its own (contrast
+    _bridge_resolve_auto_provider() above, which wraps real logic)."""
+    path = workspace / SHARED_CONTEXT_FILE
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def write_shared_context(workspace: Path, text: str) -> None:
+    path = workspace / SHARED_CONTEXT_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
 
 
 # DEC-05: exact location the wireframe promises the user. Lives here (not
