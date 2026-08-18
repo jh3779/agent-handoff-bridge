@@ -290,8 +290,14 @@ class LoadStateTests(unittest.TestCase):
         self._orig_cwd = os.getcwd()
         self._tmp = tempfile.TemporaryDirectory()
         os.chdir(self._tmp.name)
-        self.addCleanup(os.chdir, self._orig_cwd)
+        # addCleanup runs LIFO: chdir back to _orig_cwd must be registered
+        # *after* (so it runs *before*) _tmp.cleanup() -- deleting a
+        # directory while it's still the process's cwd raises
+        # PermissionError on Windows (allowed on POSIX, which is why this
+        # was invisible until the suite first ran on Windows -- see
+        # RunProviderAutoFallbackBuildPromptCountTests for the same fix).
         self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
 
     def test_missing_state_file_returns_default_state(self):
         state = hb.load_state()
@@ -328,8 +334,10 @@ class BuildPromptSharedContextTests(unittest.TestCase):
         self._orig_cwd = os.getcwd()
         self._tmp = tempfile.TemporaryDirectory()
         os.chdir(self._tmp.name)
-        self.addCleanup(os.chdir, self._orig_cwd)
+        # addCleanup runs LIFO -- see LoadStateTests.setUp() above for why
+        # this order matters on Windows.
         self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
 
     def _prompt(self):
         return hb.build_prompt("codex", {"task": "do the thing"}, "hello")
