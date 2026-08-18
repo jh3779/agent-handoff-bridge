@@ -2105,3 +2105,78 @@ risk" (not a session retrospective, not an architecture explainer).
   The PyInstaller sidecar build still hasn't been exercised for real
   (same caveat as before).
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-18 (custom API-key providers + shared project context, DEC-26/27)
+
+- **Task**: after confirming Phases 0-7 of `docs/design-system/roadmap.md`
+  are fully complete, user asked for two new features beyond that plan:
+  (1) a "custom API key" provider mode for people who buy API tokens
+  directly rather than installing a vendor CLI, considering they may want
+  several different AI models/endpoints, not just one; (2) a single
+  shared/common project-context document instead of configuring context
+  per agent. `AskUserQuestion` resolved five concrete forks before any
+  code was written: multiple user-named custom providers (not one slot);
+  API format chosen per-entry (OpenAI-compatible or Anthropic-compatible,
+  not fixed); custom providers get the same tool-use loop
+  (read_file/write_file/edit_file/run_shell, DEC-21) as the existing
+  codex/claude/gemini API-key mode; shared context applies to every
+  provider in both CLI mode and API-key mode; stored per-workspace, not
+  app-global. Recorded as **DEC-26**/**DEC-27** in
+  `docs/design-system/flutter-mapping.html`.
+- **Changed**: `webui_credentials.py` -- any number of custom providers
+  identified as `custom:<name>` (`CUSTOM_PROVIDER_PREFIX`), stored in the
+  same `credentials.json` under a new `custom_providers` key (one
+  file/lock, not a second store); `read_credentials()`/`save_credential()`
+  refactored onto shared `_read_all_credentials_data()`/
+  `_write_all_credentials_data()` helpers along the way, no behavior
+  change. `webui_api_key_mode.py` -- new `call_openai_compatible_chat_api()`
+  (Chat Completions, since most third-party/self-hosted "OpenAI-compatible"
+  servers implement that, not OpenAI's own newer Responses API that
+  `call_openai_responses_api()` already targets), `base_url` param added to
+  `call_anthropic_messages_api()` instead of a near-duplicate function,
+  optional `system` param threaded into all four `call_X_api()` functions
+  (each vendor's own system-prompt shape: Anthropic's top-level `system`,
+  Responses' `instructions`, Gemini's `systemInstruction`, Chat
+  Completions' system-role message). `webui_bridge_run.py` -- custom
+  providers are dispatched before the `cli_available()`/auto-fallback
+  logic, since they have no CLI/binary concept at all. `handoff_bridge.py`
+  -- new `SHARED_CONTEXT_FILE` (`.handoff/shared-context.md`, git-tracked,
+  unlike `state.json`), folded into `build_prompt()` as a "## Project
+  Context" section when non-empty. `webui_common.py` -- matching
+  `read_shared_context()`/`write_shared_context()` for the API-key-mode
+  read path. `handoff_webui.py` -- `POST /api/custom-provider`,
+  `GET`/`POST /api/shared-context`, `GET /api/providers` extended with a
+  `custom_providers` list. `webui/index.html`/`app.js`/`app.css` --
+  connection panel gets a custom-provider list + add-form; the composer's
+  provider-select is now populated dynamically from `GET /api/providers`
+  instead of hardcoded `<option>`s; new "Context" toolbar button opens a
+  modal (textarea + save). Also fixed two pieces of stale copy found in
+  the same area: the connection panel's "API 키 모드는 현재 채팅 전용"
+  claim (DEC-21 already added the tool loop) and the composer note's
+  "provider(Codex/Claude)" (missing Gemini). Docs updated:
+  `docs/webui-chat-storage.md`, `docs/architecture.md`,
+  `docs/security-model.md`, `docs/release-notes.md`,
+  `docs/design-system/flutter-mapping.html`.
+- **Verified**: `python3 -m unittest discover -s tests` -> 516 tests (up
+  from 466), OK. `python3 handoff_bridge.py check` -> PASS. Manually
+  driven in a real headless Chromium (Playwright, installed fresh into
+  the scratch dir since neither `chromium-cli` nor an existing browser
+  was available here) against a real server on an isolated `HOME` (so
+  nothing touched the real `~/Documents/Agent Handoff Bridge/`): connection
+  panel's custom-provider section renders correctly (empty list +
+  add-form); submitting a fake OpenRouter key made a real network call
+  that correctly surfaced a real 401 and did not write `credentials.json`
+  (confirmed on disk); Context panel save/reopen round-tripped correctly
+  (confirmed `.handoff/shared-context.md`'s actual content on disk too);
+  composer's provider-select populates with codex/claude/gemini from the
+  live server. No unexpected console errors.
+- **Remaining**: none for this feature. Custom-provider tool-use parity
+  with fixed providers (DEC-21) was implemented but only exercised via
+  unit tests and the fake-key validation path above -- a real third-party
+  OpenAI-compatible endpoint's tool-calling behavior (e.g. an actual
+  OpenRouter/Ollama/LM Studio model) has not been exercised end-to-end.
+- **Blocked**: none. Committed directly to `main` (`6253fb7`, rebased onto
+  a concurrent unrelated CI-only commit `895e19e` and pushed as
+  `5917e14`) -- matches how this project has handled several other
+  cross-cutting sessions, and the user gave no branch/PR instruction this
+  time.
