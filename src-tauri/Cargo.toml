@@ -25,3 +25,10 @@ tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2.3.5"
 tauri-plugin-dialog = "2.7.2"
+# DEC-28: real self-update, superseding DEC-22's "keep gh-CLI-based
+# check_for_update() only, don't adopt Tauri's official updater" -- that
+# call was made while this repo was private, when Tauri's updater had no
+# documented private-repo support path. The repo has been public since
+# v0.2.0; the premise DEC-22 rested on no longer holds. See
+# docs/design-system/flutter-mapping.html's DEC-28 for the full record.
+tauri-plugin-updater = "2"

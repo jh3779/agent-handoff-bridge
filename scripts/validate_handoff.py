@@ -26,6 +26,7 @@ REQUIRED_FILES = [
     "scripts/handoff_hook.py",
     "scripts/package_platforms.py",
     "scripts/build_sidecars.py",
+    "scripts/build_updater_manifest.py",
     "scripts/scan_secrets.py",
     "scripts/check_branch_name.py",
     "docs/index.md",
@@ -53,6 +54,18 @@ REQUIRED_FILES = [
     "launchers/windows/handoff-bridge.ps1",
     "launchers/windows/install.ps1",
     "handoff_webui.py",
+    # Extracted out of handoff_webui.py by the 2026-08-16 module-split
+    # session (see .handoff/current.md) -- found missing from this
+    # specific list while adding scripts/build_updater_manifest.py (DEC-28);
+    # handoff_bridge.py's INSTALL_FILES and scripts/package_platforms.py's
+    # COMMON_FILES were both correctly updated at the time, this list was
+    # the one left behind.
+    "webui_common.py",
+    "webui_workspace.py",
+    "webui_chat_storage.py",
+    "webui_credentials.py",
+    "webui_api_key_mode.py",
+    "webui_bridge_run.py",
     "webui/index.html",
     "webui/app.css",
     "webui/app.js",
@@ -62,6 +75,7 @@ REQUIRED_FILES = [
     "tests/test_check_branch_name.py",
     "tests/test_handoff_webui.py",
     "tests/test_validate_handoff.py",
+    "tests/test_build_updater_manifest.py",
     ".handoff/current.md",
     ".handoff/task-template.md",
 ]
@@ -82,14 +96,22 @@ PYTHON_FILES = [
     "scripts/validate_handoff.py",
     "scripts/package_platforms.py",
     "scripts/build_sidecars.py",
+    "scripts/build_updater_manifest.py",
     "scripts/scan_secrets.py",
     "scripts/check_branch_name.py",
     "handoff_webui.py",
+    "webui_common.py",
+    "webui_workspace.py",
+    "webui_chat_storage.py",
+    "webui_credentials.py",
+    "webui_api_key_mode.py",
+    "webui_bridge_run.py",
     "tests/test_handoff_bridge.py",
     "tests/test_scan_secrets.py",
     "tests/test_check_branch_name.py",
     "tests/test_handoff_webui.py",
     "tests/test_validate_handoff.py",
+    "tests/test_build_updater_manifest.py",
 ]
 
 # Must match HANDOFF_LABELS in handoff_bridge.py and the enum documented in

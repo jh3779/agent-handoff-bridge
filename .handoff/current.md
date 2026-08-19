@@ -2180,3 +2180,94 @@ risk" (not a session retrospective, not an architecture explainer).
   `5917e14`) -- matches how this project has handled several other
   cross-cutting sessions, and the user gave no branch/PR instruction this
   time.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-19 (real self-update via tauri-plugin-updater, DEC-28)
+
+- **Task**: user asked whether the existing update-*check*-only feature
+  (DEC-19/20, `check_for_update()`) could become a real in-app *update*
+  instead of just detecting a newer release exists. Presented research
+  (Tauri's official `tauri-plugin-updater`: full-bundle download only, no
+  delta support) and confirmed proceeding
+  (`AskUserQuestion`: scope = desktop installer only, not the source zip
+  track; signing-key storage = GitHub Actions Secrets). Recorded as
+  **DEC-28** in `docs/design-system/flutter-mapping.html`, explicitly
+  superseding the "don't adopt Tauri's own updater" half of **DEC-22**
+  (a forward-reference note was added to DEC-22's own row).
+- **Changed**: `src-tauri/Cargo.toml`/`capabilities/default.json` add
+  `tauri-plugin-updater` + `updater:default`. `tauri.conf.json` adds
+  `bundle.createUpdaterArtifacts: true` and a `plugins.updater` block
+  (endpoint = this repo's `releases/latest/download/latest.json`).
+  `src-tauri/src/lib.rs` adds `spawn_update_check()`: checks on launch,
+  shows a Yes/No confirm dialog (`tauri-plugin-dialog`, via
+  `spawn_blocking` since the dialog call is blocking), downloads, and
+  restarts on acceptance. `.github/workflows/ci.yml`'s
+  `installer-build` job now signs bundle outputs and verifies `.sig`
+  files exist (Windows nsis `.exe`+`.msi`, macOS `.app.tar.gz` --
+  *not* the `.dmg` itself, Linux `.AppImage` only -- confirmed via
+  research, non-obvious). New `scripts/build_updater_manifest.py` (+ 7
+  new tests) assembles the static `latest.json` manifest published
+  alongside each release. `docs/release-process.md`/`security-model.md`/
+  `release-notes.md` updated; `validate_handoff.py`/`handoff_bridge.py`/
+  `package_platforms.py` register the 2 new files -- and, found as an
+  independent pre-existing gap while doing this,
+  `validate_handoff.py` was also missing 6 `webui_*.py` module files
+  from an earlier module-split session, fixed in the same pass.
+  **Signing key generation saga** (not part of the PR diff, pure
+  operational work): no local Rust toolchain exists to run
+  `tauri signer generate`, so a throwaway `workflow_dispatch` workflow
+  (`.github/workflows/_tmp-generate-updater-key.yml`) generated the
+  keypair in CI, encrypted the private key with a one-time random
+  passphrase (`openssl enc -aes-256-cbc -pbkdf2`, passphrase held only
+  as a temporary `TEMP_TRANSPORT_PASSPHRASE` secret) before it ever left
+  the CI job, uploaded only the encrypted artifact. **First attempt's
+  private key was permanently lost**: the local passphrase file was
+  written to `/tmp` (not this session's proper scratchpad dir) and was
+  gone by the time decryption was attempted after a long real-time gap
+  waiting on CI -- and GitHub Secrets are write-only, so the passphrase
+  was unrecoverable from the secret either. Abandoned that keypair
+  entirely (its orphaned public half was briefly left in
+  `tauri.conf.json`, now fully replaced) and regenerated: same
+  procedure, this time the passphrase saved to the session scratchpad
+  dir. **Second decrypt attempt also initially failed** ("bad decrypt")
+  -- root cause was a stray trailing `\r` (0x0d) left in the locally
+  saved passphrase file by `tr -d '\n'` on a CRLF-terminated
+  `openssl rand -base64` line on Windows; `gh secret set` had stripped
+  it when storing the GH secret side, so the two sides no longer
+  matched byte-for-byte. Fixed by stripping `\r`/`\n` from the local
+  copy before use; decrypted clean. Real private key stored as the
+  permanent `TAURI_SIGNING_PRIVATE_KEY` secret (no password, per the
+  documented design); real public key placed in `tauri.conf.json`.
+  Cleanup: both keygen runs' encrypted-artifact GitHub Actions
+  artifacts deleted, `TEMP_TRANSPORT_PASSPHRASE` deleted, all local
+  decrypted key material and passphrase files removed from the
+  scratchpad, and the temporary workflow file itself removed from
+  `main` via a small follow-up PR (#23, since it could not be deleted
+  by direct push -- see Blocked).
+- **Verified**: `python3 -m unittest tests.test_build_updater_manifest`
+  -> 7/7 pass. `python3 handoff_bridge.py check` -> 523/523 tests, PASS.
+  CI on PR #24 (the feature PR): `branch-name`/`validate`/`rust-build`/
+  all three `sidecar-build` legs all green -- this was the **first-ever
+  compile check** of the new Rust code (`spawn_update_check()`, plugin
+  registration, new imports), since no local Rust toolchain exists to
+  pre-verify it; `installer-build` correctly stayed skipped (manual-
+  trigger-only per DEC-22-era M3 gating, unrelated to this feature).
+  CI on PR #23 (temp-workflow removal): all checks green.
+- **Remaining**: neither PR is merged yet (see Blocked). Once merged,
+  the *next* real release cut needs to exercise the actual update flow
+  end-to-end for the first time (an older installed build detecting,
+  downloading, and installing an update via the new in-app dialog) --
+  nothing has verified that live path yet, only that the pieces compile
+  and the manifest builder's unit tests pass.
+- **Blocked**: merging PRs is denied to this session by the Claude Code
+  auto-mode classifier (same restriction hit earlier this project for a
+  direct push to `main` -- worked around then by opening a PR instead;
+  merging itself has no such workaround). **PR #23**
+  (https://github.com/jh3779/agent-handoff-bridge/pull/23, removes the
+  temp keygen workflow) and **PR #24**
+  (https://github.com/jh3779/agent-handoff-bridge/pull/24, the DEC-28
+  feature itself) are both open with fully green CI, ready to merge.
+  User explicitly said merging is not needed right now ("머지는 안해도
+  됨") -- so this is not an urgent blocker, just state for whoever picks
+  this up next (human or another CLI) to merge both (#23 before #24 is
+  not required -- they touch disjoint files -- but #23 first matches
+  the order they were opened in).

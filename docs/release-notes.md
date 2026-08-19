@@ -19,6 +19,16 @@
   CLI (via `handoff_bridge.py`'s own prompt construction) and API-key mode
   (fixed or custom, as each provider's own system-prompt field). See
   [webui-chat-storage.md](webui-chat-storage.md#shared-project-context-dec-27).
+- **Real self-update for the desktop app** (DEC-28) — the Tauri-packaged
+  installer now checks for a new version once per launch and, with your
+  confirmation, downloads, verifies, and installs it, then restarts.
+  Source-zip/browser-tab users are unaffected and keep the existing
+  update-check badge. Every update is cryptographically signed and
+  verified before install; see
+  [Security Model](security-model.md#tauri-shell-boundaries-phase-7a-dec-22)
+  for what that does and doesn't cover, and
+  [Release Process](release-process.md#signing-key-dec-28-one-time-setup--already-done)
+  for how the signing key is managed.
 
 ## v0.3.0 — 2026-08-14
 

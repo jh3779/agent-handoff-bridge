@@ -286,8 +286,24 @@ jobs:
       # (cargo-binstall, a curl|bash script) just to save time here.
       - name: Install tauri-cli
         run: cargo install tauri-cli --version "2.11.4" --locked
+      # DEC-28: tauri.conf.json's bundle.createUpdaterArtifacts=true makes
+      # this step also produce a signed *.sig file next to each
+      # updater-compatible bundle (nsis .exe + .msi on Windows, a separate
+      # .app.tar.gz -- not the .dmg itself -- on macOS, .AppImage on
+      # Linux), confirmed against
+      # https://v2.tauri.app/plugin/updater/ before relying on it. Signing
+      # is mandatory for Tauri's updater (cannot be disabled); without
+      # these two env vars the build fails outright rather than silently
+      # producing unsigned/unusable updater artifacts. The private key
+      # lives only as a GitHub Actions secret, generated once via `tauri
+      # signer generate` and never committed -- see
+      # docs/release-process.md's signing-key section for how it was
+      # created and how to rotate it.
       - name: cargo tauri build (real installer bundle)
         working-directory: src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri build
       - name: Verify expected installer artifacts were produced
         shell: bash
@@ -297,14 +313,19 @@ jobs:
             macos-latest)
               find src-tauri/target/release/bundle/dmg -name '*.dmg' | grep -q . || { echo "no .dmg produced"; exit 1; }
               find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | grep -q . || { echo "no .app produced"; exit 1; }
+              find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app.tar.gz' | grep -q . || { echo "no .app.tar.gz (updater artifact) produced"; exit 1; }
+              find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app.tar.gz.sig' | grep -q . || { echo "no .app.tar.gz.sig produced -- signing env vars missing/wrong?"; exit 1; }
               ;;
             windows-latest)
               find src-tauri/target/release/bundle/msi -name '*.msi' | grep -q . || { echo "no .msi produced"; exit 1; }
+              find src-tauri/target/release/bundle/msi -name '*.msi.sig' | grep -q . || { echo "no .msi.sig produced -- signing env vars missing/wrong?"; exit 1; }
               find src-tauri/target/release/bundle/nsis -name '*.exe' | grep -q . || { echo "no nsis .exe produced"; exit 1; }
+              find src-tauri/target/release/bundle/nsis -name '*.exe.sig' | grep -q . || { echo "no nsis .exe.sig produced -- signing env vars missing/wrong?"; exit 1; }
               ;;
             ubuntu-latest)
               find src-tauri/target/release/bundle/deb -name '*.deb' | grep -q . || { echo "no .deb produced"; exit 1; }
               find src-tauri/target/release/bundle/appimage -name '*.AppImage' | grep -q . || { echo "no .AppImage produced"; exit 1; }
+              find src-tauri/target/release/bundle/appimage -name '*.AppImage.sig' | grep -q . || { echo "no .AppImage.sig produced -- signing env vars missing/wrong?"; exit 1; }
               find src-tauri/target/release/bundle/rpm -name '*.rpm' | grep -q . || { echo "no .rpm produced"; exit 1; }
               ;;
           esac
@@ -315,10 +336,15 @@ jobs:
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
             src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.msi.sig
             src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sig
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
             src-tauri/target/release/bundle/rpm/*.rpm
           if-no-files-found: ignore
           retention-days: 7

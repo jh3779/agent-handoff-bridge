@@ -17,10 +17,28 @@ same version tag and the same GitHub Release:
    `docs/design-system/roadmap.md`'s 7b plan item 2), `.msi`/nsis `.exe`
    (Windows), `.deb`/`.AppImage`/`.rpm` (Linux). Bundles Python via
    PyInstaller sidecars, so end users need no Python installation at all.
-   For desktop GUI use. **Currently unsigned** (code signing is Phase 7c,
-   a separate decision gate per DEC-22/DEC-23) — expect Gatekeeper ("could
-   not verify")/SmartScreen ("unknown publisher") warnings until then; see
-   [Security Model](security-model.md).
+   For desktop GUI use. **Still unsigned at the OS level** (Apple
+   notarization / Windows Authenticode code signing is a permanent "no"
+   per DEC-24 — a real, ongoing cost this project's scale doesn't
+   justify) — expect Gatekeeper ("could not verify")/SmartScreen
+   ("unknown publisher") warnings on first launch; see
+   [Security Model](security-model.md). This is a **separate, unrelated**
+   signing concept from DEC-28's updater-artifact signing below — that
+   one verifies an in-app auto-update download came from this project's
+   own release process, not that the OS itself trusts the binary's
+   publisher identity; it does not touch Gatekeeper/SmartScreen at all.
+
+The desktop installer also gets **real, automatic self-update** as of
+DEC-28 (`docs/design-system/flutter-mapping.html#s1c`) — Tauri's official
+updater plugin, checking this same GitHub Release's `latest.json` once
+per app launch. Source-zip users are unaffected (they have no installed
+native binary for the updater to replace) and keep using
+`handoff_bridge.py`'s existing `check_for_update()` badge, unchanged.
+Every release from now on must include a signed `latest.json` (step 6b
+below) or installed apps will simply never see it as an available
+update — silently, not as an error, since a missing/unreachable manifest
+is treated the same as "already current" (see DEC-28's own record for
+why).
 
 Neither track replaces the other — see DEC-23
 (`docs/design-system/flutter-mapping.html#s1c`) for why both are kept.
@@ -155,12 +173,33 @@ bundling has real, previously-hit platform-specific failure modes (see
 been worked around, e.g. a known upstream `linuxdeploy`/AppImage issue on
 `ubuntu-latest`, tauri-apps/tauri#14796).
 
+## 6b. Build The Update Manifest (DEC-28)
+
+`installer-build`'s `cargo tauri build` step (with `TAURI_SIGNING_PRIVATE_KEY`
+already set as a repo secret — see "Signing Key" below, one-time setup)
+produces a `.sig` file next to each updater-compatible bundle, already
+downloaded as part of step 6's artifacts. Assemble them into the static
+manifest the updater plugin actually polls:
+
+```bash
+python3 scripts/build_updater_manifest.py \
+  --installers-dir /tmp/agent-handoff-bridge-installers \
+  --version X.Y.Z \
+  --notes "$(sed -n '/## vX.Y.Z/,/## /p' docs/release-notes.md | sed '$d' | tail -n +2)"
+```
+
+Writes `dist/latest.json`. Sanity-check it before uploading — `cat
+dist/latest.json`, confirm all three platform keys (`windows-x86_64`,
+`darwin-aarch64`, `linux-x86_64`) are present with non-empty `signature`
+fields and `url`s that point at this exact tag.
+
 ## 7. Publish The GitHub Release
 
 ```bash
 gh release create vX.Y.Z \
   dist/agent-handoff-bridge-macos.zip \
   dist/agent-handoff-bridge-windows.zip \
+  dist/latest.json \
   /tmp/agent-handoff-bridge-installers/installers-aarch64-apple-darwin/dmg/*.dmg \
   /tmp/agent-handoff-bridge-installers/installers-x86_64-pc-windows-msvc/nsis/*.exe \
   /tmp/agent-handoff-bridge-installers/installers-x86_64-unknown-linux-gnu/appimage/*.AppImage \
@@ -170,10 +209,15 @@ gh release create vX.Y.Z \
 
 Attaching one installer per OS (`.dmg`, nsis `.exe`, `.AppImage`) keeps the
 release page from being cluttered with near-duplicate formats — `.msi`,
-`.app`, `.deb`, `.rpm` are also produced and can be attached too
-(`gh release upload vX.Y.Z <file>`) if a user specifically asks for one of
-those formats. Note in the release notes that installers are unsigned and
-what warning each OS shows (see step 6's intro above).
+`.app`, `.app.tar.gz`, `.deb`, `.rpm` are also produced (and, apart from
+`.deb`, signed) and can be attached too (`gh release upload vX.Y.Z <file>`)
+if a user specifically asks for one of those formats. `dist/latest.json`
+**must** be attached under exactly that filename — the updater plugin's
+configured endpoint
+(`.../releases/latest/download/latest.json`) resolves it by name, not by
+asset order. Note in the release notes that installers are unsigned at
+the OS level and what warning each OS shows (see step 6's intro above) —
+that is unrelated to `latest.json` itself being signed.
 
 The `--notes-file` command extracts just the new version's section out of
 `docs/release-notes.md` so the release body and the changelog never drift
@@ -188,9 +232,49 @@ trusting it for release notes with unusual heading text).
 gh release view vX.Y.Z
 ```
 
-Confirm the zip assets and at least one installer per OS are attached, and
-the download links work — the repo is public, so this no longer requires
-an account with repo access (see [Security Model](security-model.md)).
+Confirm the zip assets, `latest.json`, and at least one installer per OS
+are attached, and the download links work — the repo is public, so this
+no longer requires an account with repo access (see
+[Security Model](security-model.md)). For the updater specifically
+(DEC-28): launch a build from the *previous* version (an already-installed
+older release, if one is available) and confirm it actually detects and
+offers this new one — `curl -sL
+https://github.com/jh3779/agent-handoff-bridge/releases/latest/download/latest.json`
+resolving to the new manifest with a `200` is a reasonable no-app-needed
+substitute if an older installed build isn't on hand.
+
+## Signing Key (DEC-28, one-time setup — already done)
+
+Tauri's updater requires every release's update artifacts be
+cryptographically signed; this cannot be disabled. The keypair was
+generated once (2026-08-19) via a real `tauri signer generate --ci` run —
+this repo's own dev machines don't all have a Rust/Cargo toolchain, so it
+ran inside a throwaway, one-off GitHub Actions workflow rather than
+locally (see PR #22's description for the exact procedure: encrypt the
+private key with a random one-time passphrase before it ever leaves the
+CI job, decrypt locally, store as a repo secret, then delete every trace
+of the transport passphrase and the throwaway workflow itself).
+
+- **Public key**: embedded directly in `src-tauri/tauri.conf.json`'s
+  `plugins.updater.pubkey` — safe to be public, committed in plain text.
+- **Private key**: stored only as the `TAURI_SIGNING_PRIVATE_KEY` GitHub
+  Actions repo secret, read by `installer-build`'s `cargo tauri build`
+  step (see `.github/workflows/ci.yml`). Generated with **no password**
+  (`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` is unset/empty) — this project's
+  existing "no new external dependency/infrastructure" posture (the same
+  reasoning behind DEC-19's `gh`-CLI reuse) extends to not standing up a
+  second secret just to protect a secret whose only real protection is
+  GitHub's own secret-at-rest encryption either way.
+- **If the key is ever lost or compromised**: every app built against the
+  old `pubkey` in `tauri.conf.json` **permanently loses the ability to
+  receive further automatic updates** signed with a new key — there is no
+  in-place rotation the updater itself supports. Recovery means
+  generating a fresh keypair the same way, updating `tauri.conf.json`'s
+  `pubkey`, and accepting that users on old, orphaned builds must
+  manually download the next release at least once (after which they're
+  back on the new key going forward). Treat a suspected compromise as
+  serious as it sounds — rotate immediately, don't wait for the next
+  scheduled release.
 
 ## Notes
 
