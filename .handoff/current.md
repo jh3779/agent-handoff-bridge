@@ -2271,3 +2271,26 @@ risk" (not a session retrospective, not an architecture explainer).
   this up next (human or another CLI) to merge both (#23 before #24 is
   not required -- they touch disjoint files -- but #23 first matches
   the order they were opened in).
+
+**2026-08-19, follow-up -- both PRs merged, signing pipeline verified live
+first**: user asked this session to check the open PRs. Before merging
+#24, ran the real `installer-build` job (`workflow_dispatch`, free since
+this repo is public) directly against the PR branch rather than trusting
+the compile-only checks above -- this was the one genuinely unverified
+path (the PR's own test plan left it unchecked): does `cargo tauri build`
+with `TAURI_SIGNING_PRIVATE_KEY` actually produce valid `.sig` files on
+all three OSes. First attempt: macOS and Windows legs both succeeded
+(their own "Verify expected installer artifacts were produced" step
+explicitly greps for the `.sig` files and fails loudly if absent) --
+Linux hit the 30-minute job timeout mid-`apt-get` (still fetching package
+187 of ~200 when killed, a slow mirror that run, not a code/logic issue --
+no needrestart-style interactive-prompt hang like the earlier `rust-build`
+incident). Re-ran just the failed job (`gh run rerun --failed`); it
+completed clean on the retry. All three legs green -- real signed
+artifacts confirmed produced by the actual CI signing pipeline, not just
+inferred from a successful compile. Merged **PR #23** then **PR #24**
+(squash, branches deleted). `main` is now at the DEC-28 self-update
+feature. Still open, unchanged from the entry above: no real release has
+been cut yet, so the live end-to-end update flow (an old installed build
+detecting and installing a new one) remains unexercised until the next
+actual release.
