@@ -180,6 +180,52 @@ section covers only what's new because a native shell now exists.
   gets a chance to flush/clean up rather than always being hard-killed
   mid-write. Windows' `taskkill /T` handles the whole tree in one call
   (graceful attempt first, then `/F` force for survivors).
+- **Real self-update (DEC-28)**: `tauri-plugin-updater` checks
+  `.../releases/latest/download/latest.json` once per app launch and, on
+  a confirmed Yes from the user, downloads and installs a new build,
+  then restarts the app. This is a genuinely new capability -- the
+  Tauri shell can now write and execute a new binary on its own -- so
+  what it does and doesn't verify matters more here than for the
+  read-only checks elsewhere in this document:
+  - **What's verified**: every downloaded update artifact must carry a
+    valid signature from this project's own Ed25519 keypair
+    (`src-tauri/tauri.conf.json`'s `plugins.updater.pubkey`, checked
+    against `latest.json`'s per-platform `signature` field) before
+    `download_and_install()` will touch disk at all -- this is not
+    optional or best-effort, Tauri's updater has no "skip verification"
+    mode. The private half of that keypair exists only as the
+    `TAURI_SIGNING_PRIVATE_KEY` GitHub Actions secret
+    (`docs/release-process.md`'s "Signing Key" section has the full
+    generation/rotation record) -- never on disk in this repo, never in
+    a commit.
+  - **What's explicitly not changed**: this is unrelated to, and does
+    not upgrade, the "distributed installers ship unsigned" decision
+    directly below (DEC-24) -- the OS itself (Gatekeeper/SmartScreen)
+    still has no opinion about this app's publisher identity, signed or
+    not. Tauri's own signature only proves "this update came from
+    whoever holds the private key," not "the OS trusts this binary." A
+    compromised `TAURI_SIGNING_PRIVATE_KEY` secret would let an attacker
+    push a signed, auto-installed update to every existing user -- a
+    meaningfully higher-stakes secret than anything else this project
+    currently stores in CI, which is why `docs/release-process.md`
+    documents treating a suspected leak as urgent, not routine key
+    rotation.
+  - **Confirmation, not silence**: matches DEC-02's existing "don't act
+    without confirmation" posture applied to a new kind of action -- a
+    native Yes/No dialog names the version and states the app will
+    restart, before anything downloads. A failed *check* (no network,
+    `latest.json` temporarily missing) fails silently, same posture as
+    `check_for_update()`'s own existing DEC-19 behavior; a failed
+    *install* (after the user already said yes) shows an error dialog
+    instead, since the user is at that point actively expecting
+    something to happen.
+  - **Supersedes part of DEC-22**: DEC-22 (Phase 7 kickoff) explicitly
+    chose *not* to adopt Tauri's own updater, specifically because "no
+    documented private-repo support path exists." That premise no
+    longer holds -- this repo has been public since v0.2.0, which is
+    Tauri's actual blessed use case for a GitHub-Releases-hosted
+    manifest. See DEC-28
+    (`docs/design-system/flutter-mapping.html#s1c`) for the full record.
 - **Distributed installers (`.dmg`/`.app`, `.msi`/nsis `.exe`,
   `.deb`/`.AppImage`/`.rpm`, built by CI's `installer-build` job) ship
   unsigned, by deliberate, final decision (DEC-24), not a "not done yet."**
