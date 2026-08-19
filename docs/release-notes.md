@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.0 — 2026-08-19
+
 - API-key mode: **custom providers** (DEC-26) — register any number of
   arbitrary OpenAI-compatible (Chat Completions -- OpenRouter, Groq,
   Together, a local Ollama/LM Studio server, etc.) or Anthropic-compatible
