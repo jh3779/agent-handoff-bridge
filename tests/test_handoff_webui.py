@@ -94,6 +94,41 @@ class MainRefusesNonLoopbackHostTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
 
 
+class MainNoWorkspaceStartupBannerTests(unittest.TestCase):
+    """Regression coverage for a structure audit finding (2026-08-20):
+    main()'s no-workspace startup banner printed AUTO_WORKSPACE_BASE_DIR
+    via a stale `from webui_common import AUTO_WORKSPACE_BASE_DIR` binding
+    instead of the module-qualified `webui_common.AUTO_WORKSPACE_BASE_DIR`
+    every other consumer uses -- immune to mock.patch("webui_common.
+    AUTO_WORKSPACE_BASE_DIR", ...), so it would have silently kept
+    printing the real ~/Documents/Agent Handoff Bridge path under test.
+    Never actually binds a socket or blocks on a real server thread
+    (ThreadingHTTPServer and the background update-check call are both
+    mocked) -- same "must return fast" constraint as
+    MainRefusesNonLoopbackHostTests above."""
+
+    def test_prints_the_patched_auto_workspace_base_dir_not_the_real_one(self):
+        orig_cwd = os.getcwd()
+        tmp = tempfile.TemporaryDirectory()
+        fake_base_dir = Path(tmp.name) / "fake-auto-workspace-base"
+        try:
+            os.chdir(tmp.name)  # no .handoff marker here -> "no workspace yet"
+            with mock.patch.object(webui_common, "AUTO_WORKSPACE_BASE_DIR", fake_base_dir), mock.patch.object(
+                webui, "_bridge_check_for_update", return_value={"status": "unavailable"}
+            ), mock.patch.object(webui, "ThreadingHTTPServer", return_value=mock.Mock()), mock.patch(
+                "builtins.print"
+            ) as print_spy:
+                exit_code = webui.main(["--no-browser"])
+        finally:
+            os.chdir(orig_cwd)
+            tmp.cleanup()
+
+        self.assertEqual(exit_code, 0)
+        printed = "\n".join(str(call.args[0]) if call.args else "" for call in print_spy.call_args_list)
+        self.assertIn(str(fake_base_dir), printed)
+        self.assertNotIn(str(webui_common.AUTO_WORKSPACE_BASE_DIR), printed)
+
+
 class BridgeCommandPrefixTests(unittest.TestCase):
     """Phase 7a (DEC-22): when this module runs frozen (PyInstaller, as
     the Tauri sidecar), sys.executable is the frozen server binary
