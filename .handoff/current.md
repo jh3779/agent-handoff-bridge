@@ -2452,3 +2452,31 @@ tag" rule by construction rather than by discipline.
   against yet. First real chance to verify it end-to-end is whenever v0.5
   ships and an existing v0.4.0 install can be pointed at it.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-20 (post-publish verification of v0.4.0, this environment)
+
+- **Task**: this Windows session had been out of sync (working from a
+  stale local `main`) while the v0.4.0 publish and the structure-audit
+  follow-up above happened elsewhere. User asked to sync to latest and
+  run tests ("최신화해서 테스트 진행해줘"), then asked for the results
+  delivered as a PR ("테스트 결과 pr로 생성해서 전달해줘"). No code
+  changes were made or needed -- this is a documentation-only record of
+  an independent verification pass against the already-published
+  release, per this project's handoff-packet convention.
+- **Verified**: `git fetch`/`git pull --ff-only` brought local `main`
+  from `0ffcf47` to `b38b1a6` (5 commits: the two entries directly
+  above, plus the structure-audit refactor and its regression test).
+  `python handoff_bridge.py check` -> 524/524 tests, PASS.
+  `python scripts/scan_secrets.py` -> PASS, no secrets found. Confirmed
+  `gh release view v0.4.0`'s 6 assets (both source zips, `.dmg`, nsis
+  `.exe`, `.AppImage`, `latest.json`) are all attached with plausible
+  sizes (no 0-byte/truncated assets). Confirmed the real updater
+  endpoint DEC-28's `spawn_update_check()` polls --
+  `https://github.com/jh3779/agent-handoff-bridge/releases/latest/
+  download/latest.json` -- resolves with a live `200`, independently
+  re-confirming the same check from the v0.4.0-publish entry above still
+  holds now that more commits have landed on `main` since.
+- **Remaining**: same as noted in the entry above -- the live in-app
+  update dialog (an old installed build detecting and installing a new
+  one) is still unverified end-to-end; first real chance is v0.5.
+- **Blocked**: none.
