@@ -2294,3 +2294,87 @@ feature. Still open, unchanged from the entry above: no real release has
 been cut yet, so the live end-to-end update flow (an old installed build
 detecting and installing a new one) remains unexercised until the next
 actual release.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-20 (structure audit)
+
+- **Task**: user asked for a structure audit ("구조 감사해줘"). Ran 4
+  parallel read-only agents, each covering a distinct area: (1) file
+  manifest consistency (`handoff_bridge.py` `INSTALL_FILES`,
+  `scripts/validate_handoff.py` `REQUIRED_FILES`/`PYTHON_FILES`,
+  `scripts/package_platforms.py` `COMMON_FILES`), (2) Python module/
+  import structure (the `webui_*.py` split's own documented
+  module-qualified-import convention, duplicated logic), (3) docs-vs-code
+  consistency (Decision Log claims, `architecture.md`'s file list,
+  `ci.yml` job names/gating, `release-notes.md` staleness,
+  `security-model.md`'s credential list), (4) CI/Tauri/sidecar structure
+  (capability grants, `Cargo.toml` deps, sidecar/updater-manifest/CI
+  three-way agreement). All 4 findings were independently spot-checked
+  with real `grep`/`ls` before acting on them (one, described below, was
+  actually wrong).
+- **Findings, all fixed**:
+  - 5 test files added 2026-08-10 (`test_handoff_control.py`,
+    `test_handoff_desktop.py`, `test_handoff_hook.py`,
+    `test_remote_handoff_server.py`, `test_remote_handoff_submit.py`)
+    were in zero of the three manifest lists -- added to all three.
+  - `scripts/validate_handoff.py`'s `REQUIRED_FILES` was separately
+    missing 6 entries the other lists already had (itself,
+    `scripts/install_git_hooks.sh`, `.githooks/pre-commit`/`pre-push`,
+    `.gitignore`, `.handoff/.gitignore`) -- added.
+  - `handoff_webui.py` imported `AUTO_WORKSPACE_BASE_DIR` via `from
+    webui_common import ...` and used the bare name at its one call site
+    -- the exact stale-binding pattern this project's own convention
+    (documented inline in 3 other `webui_*.py` modules) exists to
+    prevent. Switched to `webui_common.AUTO_WORKSPACE_BASE_DIR`.
+    Currently latent (no test covers that exact line).
+  - `src-tauri/capabilities/default.json` granted `updater:default`,
+    added alongside DEC-28. `spawn_update_check()` calls
+    `app_handle.updater()` directly from Rust, not through IPC -- the
+    same situation already resolved once for `shell:allow-execute`
+    (security-model.md's Tauri Shell Boundaries section). Confirmed
+    against Tauri's own updater-permission docs via WebFetch ("this
+    permission set configures which kind of updater functions are
+    exposed to the frontend") before removing, not just by analogy;
+    `webui/app.js` never calls the JS updater API either. Removed;
+    documented in security-model.md next to DEC-28.
+  - Triplicated "read JSON, default on missing/corrupt/unreadable" logic
+    across `webui_credentials.py`/`webui_chat_storage.py`/
+    `webui_bridge_run.py`, with `read_state_dict()`'s exception set
+    actually narrower than its two siblings (a real, if narrow,
+    inconsistency). Extracted `webui_common.read_json_or_default()`,
+    pointed all three at it.
+- **One audit finding was wrong, caught by actually compiling, not just
+  reading**: the CI/Tauri agent flagged `serde`/`serde_json` in
+  `src-tauri/Cargo.toml` as fully unused (zero grep matches in `src/`).
+  Rust toolchain turned out to be available this session (earlier
+  sessions' "no local Rust toolchain" notes no longer apply here) --
+  `cargo check` after removing both immediately failed:
+  `tauri::generate_context!()` expands to code referencing `serde_json`
+  by crate name even though no source file calls it directly. Kept
+  `serde_json` (with a comment explaining why), removed only `serde`
+  (genuinely unused, confirmed by the same successful `cargo check`).
+- **Bonus finding, not from any audit agent -- found by the `cargo
+  check` diff itself**: `src-tauri/Cargo.lock` had never been
+  regenerated since PR #24 added `tauri-plugin-updater` to `Cargo.toml`
+  -- still pinned to Phase 7a's dependency set, missing the updater
+  plugin's whole tree (rustls, zip, minisign-verify, tar, jni, etc.).
+  `ci.yml`'s `cargo build`/`cargo tauri build` steps don't pass
+  `--locked`, so this was silently papered over on every CI run (Cargo
+  re-resolves fresh each time, never committed back) instead of ever
+  actually failing anywhere. Regenerated for real, reproducible builds.
+- **Verified**: `cargo check` and `cargo build --manifest-path
+  src-tauri/Cargo.toml` (placeholder sidecar binaries, matching CI's
+  `rust-build` job exactly) both clean after every Rust-side change,
+  including the capability removal and the regenerated lockfile.
+  `python3 -m unittest discover -s tests` -> 523/523, OK (both before
+  and after the JSON-helper refactor). `python3 handoff_bridge.py check`
+  -> PASS throughout (the manifest cross-check itself passing confirms
+  the manifest fixes are internally consistent).
+  `python3 scripts/scan_secrets.py` -> clean.
+- **Remaining**: none from this audit -- every finding across all 4
+  areas was either fixed or confirmed clean. Unrelated to this session's
+  own work: while pushing, found `main` had moved out from under it --
+  v0.4.0 was tagged and released concurrently (`0ffcf47`, "Release
+  v0.4.0", bumping `BRIDGE_VERSION`/`tauri.conf.json`/`release-notes.md`)
+  by another session. Rebased cleanly (no file overlap beyond
+  `handoff_bridge.py`, different lines) and pushed on top.
+- **Blocked**: none.
