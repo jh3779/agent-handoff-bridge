@@ -2378,3 +2378,34 @@ actual release.
   by another session. Rebased cleanly (no file overlap beyond
   `handoff_bridge.py`, different lines) and pushed on top.
 - **Blocked**: none.
+
+**2026-08-20, follow-up -- regression test for the latent import fix**:
+user asked to do the follow-up work from the audit ("이에 따른
+보완작업들 진행해줘"). Offered two candidates via `AskUserQuestion`
+(finish publishing v0.4.0 as a real GitHub Release -- the tag/version
+bump above exists but `gh release view v0.4.0` returns "release not
+found", and a `workflow_dispatch` installer-build already ran
+successfully against the `v0.4.0` tag with unexpired artifacts sitting
+ready; vs. closing the test-coverage gap the audit itself flagged as
+latent). User chose the test only, explicitly not the release. Added
+`MainNoWorkspaceStartupBannerTests` (tests/test_handoff_webui.py) --
+verified it actually catches the regression by temporarily reverting the
+fix locally and watching it fail with the real `~/Documents/...` path in
+the assertion diff, then restored and re-ran green. 524/524 tests,
+`handoff_bridge.py check` PASS, `scan_secrets.py` clean. Committed
+(`e29d14b`) and pushed directly, no new upstream commits to rebase onto
+this time.
+- **Remaining, explicitly not done this round (deferred, not
+  forgotten)**: v0.4.0 has a tag and a version-bump commit
+  (`0ffcf47`) but no published GitHub Release -- `gh release list`
+  still shows v0.3.0 as latest. A `workflow_dispatch` `installer-build`
+  run already succeeded against the `v0.4.0` tag (run 32218342043,
+  2026-08-19, all 3 OS legs green, artifacts not yet expired as of this
+  writing) -- docs/release-process.md's remaining steps (source zip via
+  `scripts/package_platforms.py`, download those installer artifacts,
+  build the DEC-28 updater manifest via
+  `scripts/build_updater_manifest.py`, `gh release create` attaching
+  everything including `latest.json`) were never run. Until that
+  happens, v0.4.0 formally doesn't exist as a release, and no installed
+  app can receive it as an update.
+- **Blocked**: none.
