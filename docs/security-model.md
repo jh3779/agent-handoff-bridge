@@ -226,6 +226,21 @@ section covers only what's new because a native shell now exists.
     Tauri's actual blessed use case for a GitHub-Releases-hosted
     manifest. See DEC-28
     (`docs/design-system/flutter-mapping.html#s1c`) for the full record.
+  - **No `updater:default` capability grant** — `spawn_update_check()`
+    calls `app_handle.updater()`/`download_and_install()` directly from
+    Rust, the same way `sidecar()` is called directly rather than through
+    IPC. This is the identical situation the "Tauri Shell Boundaries"
+    section below already resolved for `shell:allow-execute`: capability
+    grants gate `invoke(...)` calls a *webview's own JS* makes, not calls
+    the trusted Rust backend makes on itself — confirmed against
+    [Tauri's own updater-permissions docs](https://v2.tauri.app/plugin/updater/)
+    ("This permission set configures which kind of updater functions are
+    exposed to the frontend"), and `webui/app.js` never calls Tauri's JS
+    updater API at all. A structure audit (2026-08-20) found
+    `updater:default` had been added to
+    `src-tauri/capabilities/default.json` anyway when DEC-28 landed,
+    without revisiting the reasoning that removed the equivalent shell
+    grant — removed for the same reason, not restored.
 - **Distributed installers (`.dmg`/`.app`, `.msi`/nsis `.exe`,
   `.deb`/`.AppImage`/`.rpm`, built by CI's `installer-build` job) ship
   unsigned, by deliberate, final decision (DEC-24), not a "not done yet."**

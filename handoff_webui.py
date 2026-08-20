@@ -55,8 +55,8 @@ from webui_chat_storage import (
     read_month_messages,
     touch_registry,
 )
+import webui_common
 from webui_common import (
-    AUTO_WORKSPACE_BASE_DIR,
     WorkspaceError,
     _bridge_check_for_update,
     month_key,
@@ -713,7 +713,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Agent Handoff Bridge web UI (MVP) serving {workspace}")
     else:
         print("Agent Handoff Bridge web UI (MVP) -- no workspace yet")
-        print(f"  Send a message or use Open Folder; a folder is auto-created under {AUTO_WORKSPACE_BASE_DIR} otherwise.")
+        print(f"  Send a message or use Open Folder; a folder is auto-created under {webui_common.AUTO_WORKSPACE_BASE_DIR} otherwise.")
     print(f"  {url}")
     print("  File browsing + local chat, and POST /api/run actually calls Codex/Claude.")
     print(f"  Chat history: <workspace>/{CHAT_DIR_RELATIVE.as_posix()}/ (monthly, compressed after month-end)")
