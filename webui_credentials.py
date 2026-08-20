@@ -100,14 +100,7 @@ def _read_all_credentials_data() -> dict:
     read_custom_providers() slice their own view out of this. Never
     raises -- a missing, corrupt, or unreadable (permissions) file just
     means nothing is configured yet, same posture as read_registry()."""
-    path = credentials_path()
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return webui_common.read_json_or_default(credentials_path(), {})
 
 
 def _write_all_credentials_data(data: dict) -> None:

@@ -118,6 +118,28 @@ def read_shared_context(workspace: Path) -> str:
         return ""
 
 
+def read_json_or_default(path: Path, default):
+    """Read and parse a JSON file, falling back to `default` on any of
+    missing / unreadable (permissions) / corrupt / wrong-top-level-type --
+    the posture read_registry() (webui_chat_storage.py),
+    _read_all_credentials_data() (webui_credentials.py), and
+    read_state_dict() (webui_bridge_run.py) all want for their own
+    "nothing configured yet" case. A structure audit (2026-08-20) found
+    this implemented three times with three different exception sets
+    (read_state_dict() didn't catch OSError/UnicodeDecodeError at all,
+    unlike its two siblings) -- one shared implementation instead.
+    `default`'s own type (dict or list) is also the expected top-level
+    JSON type; a file that parses but doesn't match falls back too, same
+    as read_registry()'s pre-existing `isinstance(data, list)` guard."""
+    if not path.exists():
+        return default
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return default
+    return data if isinstance(data, type(default)) else default
+
+
 def write_shared_context(workspace: Path, text: str) -> None:
     path = workspace / SHARED_CONTEXT_FILE
     path.parent.mkdir(parents=True, exist_ok=True)

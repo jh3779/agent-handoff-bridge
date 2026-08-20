@@ -199,15 +199,7 @@ def read_registry() -> list[dict]:
     missing, corrupt, or unreadable (permissions) registry file just
     means an empty "recently opened" list, same posture as
     read_state_history()."""
-    path = registry_path()
-    if not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return []
-    if not isinstance(data, list):
-        return []
+    data = webui_common.read_json_or_default(registry_path(), [])
     return [e for e in data if isinstance(e, dict) and isinstance(e.get("path"), str)]
 
 

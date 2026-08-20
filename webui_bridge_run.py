@@ -9,7 +9,6 @@ CLI isn't installed and a key is saved for it.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import tempfile
@@ -18,6 +17,7 @@ from pathlib import Path
 
 from handoff_bridge import PROVIDERS
 
+import webui_common
 from webui_api_key_mode import _api_key_mode_error_record, run_provider_via_api_key
 from webui_common import bridge_command_prefix, _bridge_next_provider, _bridge_resolve_auto_provider
 from webui_credentials import cli_available, custom_provider_name, is_custom_provider, read_credentials, read_custom_providers
@@ -78,12 +78,7 @@ def classify_run_status(handoff_needed: bool, reason: str) -> str:
 
 def read_state_dict(workspace: Path) -> dict:
     state_path = workspace / ".handoff" / "state.json"
-    if not state_path.exists():
-        return {}
-    try:
-        return json.loads(state_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
+    return webui_common.read_json_or_default(state_path, {})
 
 
 def read_state_history(workspace: Path) -> list[dict]:
