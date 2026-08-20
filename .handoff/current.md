@@ -2409,3 +2409,46 @@ this time.
   happens, v0.4.0 formally doesn't exist as a release, and no installed
   app can receive it as an update.
 - **Blocked**: none.
+
+**2026-08-20, follow-up -- v0.4.0 actually published**: user asked to
+also publish it ("게시도 해줘"), closing the item left deferred above.
+Followed `docs/release-process.md` steps 3-8 exactly. Important detail:
+the `v0.4.0` tag (`0ffcf47`) is 4 commits behind `main` HEAD by this
+point (the structure-audit fixes above all landed after the tag) --
+building the source zip from current `main` would have shipped different
+code than what `installer-build` already built against the tag, so used
+a `git worktree` checked out at the `v0.4.0` tag specifically for steps
+3-4, matching the runbook's "never rebuild/re-upload under an existing
+tag" rule by construction rather than by discipline.
+- Step 3 (`handoff_bridge.py check`) at the tagged commit: 523/523, PASS.
+- Step 4: `scripts/package_platforms.py` built both zips; extracted the
+  macOS one standalone (no git, no repo) and confirmed `--version` (0.4.0)
+  and `check` (486 tests -- fewer than 523, expected: some live-server
+  tests need a real git repo and skip without one) both pass clean.
+- Step 6: installer-build had already run successfully against the
+  `v0.4.0` tag the day before (run 32218342043) -- downloaded its
+  artifacts rather than re-triggering (re-running would risk a second,
+  possibly-different build under the same tag, exactly what the runbook
+  warns against). All 4 `.sig` files present (msi/nsis/macos/appimage).
+- Step 6b: `scripts/build_updater_manifest.py` produced `dist/latest.json`
+  with all 3 platform keys, non-empty signatures, URLs pointing at the
+  `v0.4.0` tag -- sanity-checked by reading it before uploading, per the
+  runbook.
+- Step 7: `gh release create v0.4.0` with both zips, the 3 representative
+  installers (`.dmg`/nsis `.exe`/`.AppImage`), and `latest.json`, notes
+  extracted from `docs/release-notes.md`'s `## v0.4.0` section.
+- Step 8: `gh release view v0.4.0` confirmed all 6 assets attached and the
+  notes rendered correctly; `curl -sL .../releases/latest/download/
+  latest.json` resolved `200` -- the updater endpoint DEC-28's
+  `spawn_update_check()` actually polls is live. No older installed build
+  was on hand to test the live in-app update dialog itself (the "no-app-
+  needed substitute" the runbook offers for exactly this situation was
+  used instead).
+- Cleaned up: removed the release worktree and the ~480MB of downloaded
+  installer artifacts from scratch/`/tmp` afterward.
+- **Remaining**: the live in-app update flow (an actually-installed older
+  build detecting and installing v0.4.0 through the real dialog) is still
+  unverified -- no older installed build exists anywhere to test it
+  against yet. First real chance to verify it end-to-end is whenever v0.5
+  ships and an existing v0.4.0 install can be pointed at it.
+- **Blocked**: none.
