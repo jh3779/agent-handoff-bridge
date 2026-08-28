@@ -4,6 +4,27 @@
 
 ## Unreleased
 
+## v0.4.1 — 2026-08-28
+
+- **Fix: macOS installer reported as "damaged" and refused to open.** The
+  `.app` bundle shipped in v0.4.0's `.dmg` had an inconsistent code
+  signature — the main executable carried the ad-hoc signature the Rust
+  linker adds automatically, but the bundle itself was never re-signed
+  as a whole, so it had no `_CodeSignature/CodeResources` seal covering
+  `Info.plist`/`Resources`/the bundled sidecar binaries. Gatekeeper
+  treats that mismatch as a tampered/invalid bundle and shows "\<app\> is
+  damaged and can't be opened" — a stronger, non-bypassable error,
+  distinct from (and not fixed by) the documented "unidentified
+  developer" control+click workaround. Fixed by setting
+  `bundle.macOS.signingIdentity: "-"` in `src-tauri/tauri.conf.json` so
+  `cargo tauri build` ad-hoc-signs the whole assembled `.app` (not just
+  the executable) before packaging it into the `.dmg`. Windows/Linux
+  installers were unaffected (this is Apple's code-signing model only).
+  Still unsigned at the OS level per DEC-24 — the "unidentified
+  developer" Gatekeeper warning (with the control+click workaround) is
+  still expected and normal; this fix only removes the false "damaged"
+  error.
+
 ## v0.4.0 — 2026-08-19
 
 - API-key mode: **custom providers** (DEC-26) — register any number of
