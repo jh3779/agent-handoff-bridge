@@ -262,10 +262,18 @@ section covers only what's new because a native shell now exists.
   DEC-029): ship both platforms unsigned, invest in clear bypass
   instructions instead of a signing budget. This project follows the
   same pattern:
-  - **macOS**: the first launch, Gatekeeper blocks the app as being from
-    an "unidentified developer" -- this is not a malware warning. In
-    Finder, **control+click the app → "Open"** once; this bypasses the
-    warning for good after that first confirmation.
+  - **macOS**: the first launch, Gatekeeper blocks the app for not being
+    notarized. The exact wording depends on the macOS version -- older
+    versions say "unidentified developer"; current versions (Ventura/
+    Sonoma/Sequoia) say "Apple could not verify that '\<app\>' is free of
+    malware that may damage your Mac or compromise your privacy." Despite
+    the newer wording, this is still just the standard not-notarized
+    block, not an actual malware detection. In Finder, **control+click
+    the app → "Open"** once; this bypasses the block for good after that
+    first confirmation. If no "Open" option appears in that menu, go to
+    **System Settings → Privacy & Security**, scroll to the Security
+    section (it only shows an entry for this app after a first blocked
+    launch attempt), and click **"Open Anyway"**.
   - **Windows**: SmartScreen shows a **blocking** red "Windows protected
     your PC" screen (not a dismissible warning) -- this is the normal,
     expected result of not having a paid code-signing certificate, not a
