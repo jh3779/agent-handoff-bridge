@@ -25,9 +25,9 @@ v0.3.0부터 Gemini도 지원)은
 
 | 플랫폼 | 다운로드 |
 |---|---|
-| 🪟 **Windows** | **[v0.3.0 인스톨러 (.exe)](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge_0.3.0_x64-setup.exe)** · [.msi](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge_0.3.0_x64_en-US.msi) |
-| 🍎 **macOS** (Apple Silicon 전용) | **[v0.3.0 dmg](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge_0.3.0_aarch64.dmg)** — Intel Mac은 아직 미지원 |
-| 🐧 **Linux** | **[.AppImage](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge_0.3.0_amd64.AppImage)** · [.deb](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge_0.3.0_amd64.deb) · [.rpm](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.3.0/agent-handoff-bridge-0.3.0-1.x86_64.rpm) |
+| 🪟 **Windows** | **[v0.4.0 인스톨러 (.exe)](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.4.0/agent-handoff-bridge_0.4.0_x64-setup.exe)** |
+| 🍎 **macOS** (Apple Silicon 전용) | **[v0.4.0 dmg](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.4.0/agent-handoff-bridge_0.4.0_aarch64.dmg)** — Intel Mac은 아직 미지원 |
+| 🐧 **Linux** | **[.AppImage](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.4.0/agent-handoff-bridge_0.4.0_amd64.AppImage)** |
 
 > ⚠️ **설치 파일은 미서명입니다** (DEC-24 — 이 프로젝트 규모에서 코드
 > 서명 비용은 정당화되지 않는다고 판단, 재논의 시한 없음). Windows/macOS
