@@ -48,8 +48,8 @@ body {
 
 .app {
   width: 100%;
-  max-width: 1100px;
-  height: min(760px, 92vh);
+  max-width: min(1600px, 96vw);
+  height: min(1000px, 94vh);
   background: var(--bg);
   border: 1px solid var(--outline);
   border-radius: 12px;
