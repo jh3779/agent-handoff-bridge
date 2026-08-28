@@ -2480,3 +2480,78 @@ tag" rule by construction rather than by discipline.
   update dialog (an old installed build detecting and installing a new
   one) is still unverified end-to-end; first real chance is v0.5.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-08-28 (fullscreen scaling fix, v0.4.1 macOS "damaged" signing fix)
+
+- **Task 1**: user asked for a fullscreen-related bug ("전체화면 전환시에
+  화면 자동 인식 넣어줘 지금은 화면 크기가 고정임"). Root cause:
+  `webui/app.css`'s `.app` container was capped with hardcoded pixel
+  `max-width: 1100px` / `height: min(760px, 92vh)`, so the UI never grew
+  past that regardless of window/screen size. Changed to
+  `max-width: min(1600px, 96vw)` / `height: min(1000px, 94vh)` -- pure
+  CSS, viewport-unit-based, no JS/Tauri event listener needed since
+  vw/vh already recompute on any resize/fullscreen transition. Not
+  verified visually in a real browser/Tauri window this session (no
+  browser-automation tool available) -- user should confirm.
+- **Task 2**: user reported the macOS download "파일이 깨져서 실행을 할
+  수 없음" (file is corrupted, won't run). Investigated by downloading
+  the real v0.4.0 `.dmg` from the GitHub Release and checking it
+  directly rather than assuming a transfer/download problem:
+  `hdiutil verify` -> dmg itself is a valid, uncorrupted disk image
+  (not a download/CDN issue). Mounted it and ran
+  `codesign --verify --deep --strict` on the `.app` inside -> real bug
+  found: `code has no resources but signature indicates they must be
+  present`. Root cause: the Rust linker's automatic ad-hoc signature on
+  the main executable claims sealed resources, but the assembled `.app`
+  bundle was never itself re-signed as a whole, so
+  `Contents/_CodeSignature/CodeResources` never existed. This is the
+  known trigger for macOS's **"<app> is damaged and can't be opened"**
+  dialog -- a stronger, non-bypassable error distinct from the
+  documented (DEC-24) "unidentified developer" Gatekeeper warning that
+  the README's control+click workaround assumes. Confirmed with the
+  user via `AskUserQuestion` to fix and re-release immediately (not
+  defer). Fix: added `bundle.macOS.signingIdentity: "-"` to
+  `src-tauri/tauri.conf.json` so `cargo tauri build` ad-hoc-signs the
+  whole assembled bundle, not just the linker-signed executable.
+  Followed `docs/release-process.md` exactly for a fresh patch version
+  (v0.4.1) -- **did not** rebuild/re-upload under the existing v0.4.0
+  tag, per that doc's explicit rule. `BRIDGE_VERSION` and
+  `tauri.conf.json` version bumped to 0.4.1, `docs/release-notes.md`
+  got a new `## v0.4.1` section, committed as `63352b2` ("Release
+  v0.4.1"), tagged `v0.4.1`, pushed both. Triggered
+  `installer-build` via `gh workflow run ci.yml --ref v0.4.1` (run
+  33131764398) -- all 3 OS legs green. Downloaded the real artifacts
+  and re-verified the macOS fix on the actual CI-built `.app`, not just
+  locally: `codesign --verify --deep --strict` now reports **"valid on
+  disk" / "satisfies its Designated Requirement"**, and
+  `Contents/_CodeSignature/CodeResources` now exists (previously
+  absent). `spctl` still rejects the app, but that's now the expected,
+  benign "unidentified developer" rejection (no real Team ID, ad-hoc
+  only) rather than the structural-signature failure from before.
+  Built source zips (`scripts/package_platforms.py`), sanity-checked
+  the macOS zip standalone (`--version`/`check`, 524/524 tests pass, no
+  git repo present), built the updater manifest
+  (`scripts/build_updater_manifest.py`) and confirmed all 3 platform
+  signatures/URLs point at the `v0.4.1` tag, then `gh release create
+  v0.4.1` with both zips, the 3 representative installers (dmg/nsis
+  exe/AppImage), and `latest.json`. `gh release view v0.4.1` confirms
+  all 6 assets attached; `.../releases/latest/download/latest.json`
+  resolves `200`. README.md/README.ko.md's desktop installer links
+  updated from v0.4.0 to v0.4.1 and re-verified live (`curl` 200 on all
+  3), committed/pushed as `b89f8f4`.
+- **Verified**: `python3 handoff_bridge.py check` -> 524/524, PASS
+  (before tagging). `python3 scripts/scan_secrets.py` -> PASS. Real
+  CI run 33131764398 all green. Real downloaded macOS `.app` re-checked
+  with `codesign`/`spctl` post-build (not just inferred from CI's own
+  asset-existence check). `latest.json` live-resolves `200`.
+- **Remaining**: same as before -- the live in-app update dialog
+  (an old installed build detecting and offering a new one through the
+  real Tauri updater UI) is still unverified end-to-end; v0.4.1 is
+  actually a good near-term opportunity for this since a v0.4.0 install
+  now exists that should be offered v0.4.1. Fullscreen CSS fix (Task 1)
+  also still needs a real visual check in an actual browser/Tauri
+  window -- no browser-automation tool was available this session.
+  `docs/release-notes.ko.md` (Korean translation) has been stale since
+  before v0.3.0 (still ends at v0.2.0) -- pre-existing gap, not touched
+  this session, out of scope for this bug fix.
+- **Blocked**: none.
