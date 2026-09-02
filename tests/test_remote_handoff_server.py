@@ -10,6 +10,7 @@ Gemini-excluding stale copy of handoff_bridge.PROVIDERS.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -219,6 +220,58 @@ class NormalizeTaskTests(unittest.TestCase):
             finally:
                 os.chdir(original_cwd)
         self.assertEqual(task["workspace"], str((Path(tmp) / "sub").resolve()))
+
+
+class TaskTimeoutDefaultTests(unittest.TestCase):
+    """Covers the audit finding that --task-timeout defaulted to 0 ("no
+    timeout"), so an unattended automation caller had no way to bound how
+    long a worker thread could be tied up."""
+
+    def test_default_is_finite(self):
+        args = rhs.build_parser().parse_args([])
+        self.assertEqual(args.task_timeout, 1800)
+        self.assertGreater(args.task_timeout, 0)
+
+    def test_zero_is_still_selectable_explicitly(self):
+        args = rhs.build_parser().parse_args(["--task-timeout", "0"])
+        self.assertEqual(args.task_timeout, 0)
+
+
+class FakeRequestHandler:
+    """Duck-types just enough of BaseHTTPRequestHandler (self.headers,
+    self.rfile) for read_json_body() to run without a real socket -- a real
+    oversized upload over a real loopback socket is its own source of
+    flakiness (the server can legitimately RST the connection while the
+    client is still mid-send of a multi-MB body that was never going to be
+    read), which is beside the point of this specific unit."""
+
+    def __init__(self, body: bytes, content_length: int | None = None):
+        self.headers = {"Content-Length": str(len(body) if content_length is None else content_length)}
+        self.rfile = io.BytesIO(body)
+
+
+class ReadJsonBodySizeLimitTests(unittest.TestCase):
+    """Covers the audit finding that read_json_body() only checked
+    `length <= 0`, unlike the Web UI's equivalent 2 MB cap
+    (handoff_webui.py's _read_json_body())."""
+
+    def test_oversized_content_length_is_rejected(self):
+        fake = FakeRequestHandler(b"{}", content_length=rhs.MAX_BODY_BYTES + 1)
+        with self.assertRaises(ValueError) as ctx:
+            rhs.Handler.read_json_body(fake)
+        self.assertIn("oversized", str(ctx.exception))
+
+    def test_content_length_at_the_cap_is_accepted(self):
+        payload = json.dumps({"task": "x" * (rhs.MAX_BODY_BYTES - 20)}).encode("utf-8")
+        self.assertLessEqual(len(payload), rhs.MAX_BODY_BYTES)
+        fake = FakeRequestHandler(payload)
+        body = rhs.Handler.read_json_body(fake)
+        self.assertIn("task", body)
+
+    def test_normal_sized_body_still_parses(self):
+        payload = json.dumps({"task": "a small task"}).encode("utf-8")
+        fake = FakeRequestHandler(payload)
+        self.assertEqual(rhs.Handler.read_json_body(fake), {"task": "a small task"})
 
 
 if __name__ == "__main__":

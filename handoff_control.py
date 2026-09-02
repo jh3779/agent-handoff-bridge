@@ -52,6 +52,19 @@ def ask_provider(default: str = "auto") -> str:
         print(f"Choose one of: {', '.join(PROVIDERS)}")
 
 
+def ask_primary_provider(default: str = "codex") -> str:
+    """Like ask_provider(), but restricted to BRIDGE_PROVIDERS -- "auto" is a
+    run-time fallback concept handoff_bridge.py's `init --primary` has never
+    accepted, so offering it here let a user pick a choice that would only
+    fail once passed through to the bridge."""
+    choices = "/".join(BRIDGE_PROVIDERS)
+    while True:
+        value = ask(f"Primary provider ({choices})", default).lower()
+        if value in BRIDGE_PROVIDERS:
+            return value
+        print(f"Choose one of: {', '.join(BRIDGE_PROVIDERS)}")
+
+
 def ask_model(default: str = "app-selected default") -> str:
     return ask("Model (exact model, app-selected default, or blank)", default)
 
@@ -84,7 +97,7 @@ def initialize_task(workspace: Path) -> int:
     if not task:
         print("Task instruction is required.")
         return 1
-    provider = ask_provider("codex")
+    provider = ask_primary_provider("codex")
     model = ask_model()
     return run_bridge(workspace, ["init", task, "--primary", provider, "--target-model", model])
 

@@ -49,6 +49,42 @@ class AskProviderTests(unittest.TestCase):
             self.assertEqual(hc.ask_provider("auto"), "codex")
 
 
+def _capture_run_bridge():
+    """Shared helper: a fake run_bridge() that records its argv instead of
+    spawning the real handoff_bridge.py subprocess."""
+    captured = {}
+
+    def fake_run_bridge(workspace, bridge_args):
+        captured["workspace"] = workspace
+        captured["args"] = bridge_args
+        return 0
+
+    return captured, fake_run_bridge
+
+
+class AskPrimaryProviderTests(unittest.TestCase):
+    """Covers the audit finding that initialize_task() used ask_provider()
+    (which accepts "auto") for a value passed straight to `init --primary`,
+    which has never accepted "auto" -- an avoidable CLI error."""
+
+    def test_rejects_auto_and_reprompts(self):
+        with mock.patch("builtins.input", side_effect=["auto", "codex"]):
+            self.assertEqual(hc.ask_primary_provider("codex"), "codex")
+
+    def test_accepts_gemini(self):
+        with mock.patch("builtins.input", return_value="gemini"):
+            self.assertEqual(hc.ask_primary_provider("codex"), "gemini")
+
+    def test_initialize_task_never_offers_auto_as_primary(self):
+        captured, fake_run_bridge = _capture_run_bridge()
+        with mock.patch.object(hc, "run_bridge", fake_run_bridge), mock.patch(
+            "builtins.input", side_effect=["do the thing", "codex", ""]
+        ):
+            hc.initialize_task(Path("/tmp/ws"))
+        args = captured["args"]
+        self.assertEqual(args[args.index("--primary") + 1], "codex")
+
+
 class RunWithPromptArgvShapeTests(unittest.TestCase):
     """Exercise the argv-building logic in isolation, without spawning the
     real handoff_bridge.py subprocess (run_bridge is monkeypatched)."""

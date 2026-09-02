@@ -1,10 +1,17 @@
 [package]
+# Stays "app" deliberately, not a leftover: this is the actual compiled
+# executable name Tauri/Rust link into the shipped bundle (see
+# Contents/MacOS/app in the .app, matched by codesign/spctl output recorded
+# in .handoff/current.md's v0.4.1 entry). Renaming it changes the real
+# executable filename on all 3 platforms and would need a full CI
+# installer-build re-verification, not just a cosmetic edit -- out of scope
+# for this metadata-hygiene pass (audit finding F8, 2026-09-02).
 name = "app"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-license = ""
-repository = ""
+version = "0.4.1"
+description = "Agent Handoff Bridge desktop shell -- Tauri wrapper around handoff_webui.py for the Codex/Claude/Gemini CLI handoff bridge"
+authors = ["jh3779"]
+license = "UNLICENSED"
+repository = "https://github.com/jh3779/agent-handoff-bridge"
 edition = "2021"
 rust-version = "1.77.2"
 

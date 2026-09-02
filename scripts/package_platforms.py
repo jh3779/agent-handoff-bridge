@@ -24,6 +24,7 @@ COMMON_FILES = [
     "AGENTS.md",
     "CLAUDE.md",
     "README.md",
+    "README.ko.md",
     "handoff_bridge.py",
     "handoff_control.py",
     "handoff_desktop.py",
@@ -59,6 +60,7 @@ COMMON_FILES = [
     "tests/test_handoff_webui.py",
     "tests/test_validate_handoff.py",
     "tests/test_build_updater_manifest.py",
+    "tests/test_package_platforms.py",
     "examples/claude-settings.handoff.json",
     "examples/codex-hooks.handoff.json",
     "launchers/macos/handoff-bridge.command",
@@ -117,6 +119,13 @@ Verify the download without spending tokens:
 def package_files() -> list[Path]:
     files = [ROOT / rel_path for rel_path in COMMON_FILES]
     files.extend(sorted((ROOT / "docs").glob("*.md")))
+    # README.md and docs/index.md both link into docs/design-system/ (e.g.
+    # design-system/README.md, design-system/roadmap.md) -- the top-level-
+    # only glob above misses that subdirectory entirely, so a source zip
+    # user following either link hits a 404-equivalent missing file. Bundle
+    # the whole directory (not just its *.md files) since design-system/
+    # README.md itself links onward to the .html/.css/.js pages beside it.
+    files.extend(sorted(p for p in (ROOT / "docs" / "design-system").rglob("*") if p.is_file()))
     return sorted(set(files))
 
 

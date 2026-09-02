@@ -85,6 +85,7 @@ REQUIRED_FILES = [
     "tests/test_handoff_webui.py",
     "tests/test_validate_handoff.py",
     "tests/test_build_updater_manifest.py",
+    "tests/test_package_platforms.py",
     ".gitignore",
     ".handoff/.gitignore",
     ".handoff/current.md",
@@ -128,6 +129,7 @@ PYTHON_FILES = [
     "tests/test_handoff_webui.py",
     "tests/test_validate_handoff.py",
     "tests/test_build_updater_manifest.py",
+    "tests/test_package_platforms.py",
 ]
 
 # Must match HANDOFF_LABELS in handoff_bridge.py and the enum documented in

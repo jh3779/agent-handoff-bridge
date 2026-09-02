@@ -13,14 +13,18 @@ symmetric rather than a single branchy function.
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from handoff_bridge import WriteLock, atomic_write_text, excerpt
 from webui_chat_storage import list_available_months, read_month_messages
 from webui_common import WorkspaceError, read_shared_context, utc_now
 from webui_credentials import is_custom_provider
@@ -445,46 +449,97 @@ def _tool_edit_file(workspace: Path, tool_input: dict) -> str:
     return f"edited {path}"
 
 
+def _kill_process_tree(process: subprocess.Popen) -> None:
+    """subprocess's own TimeoutExpired handling only kills the immediate
+    process it launched (the shell itself, for shell=True) -- a command
+    that backgrounds work or forks descendants could leave them running
+    past TOOL_EXEC_TIMEOUT_SECONDS (an audit finding, 2026-09-02; was
+    previously left as a documented, accepted gap). Requires the process to
+    have been started with start_new_session=True (POSIX) /
+    CREATE_NEW_PROCESS_GROUP (Windows) so it -- and only it, not this
+    Python process's own siblings -- owns a process group/job to kill as a
+    whole. No single-call Windows API/os function does the POSIX
+    os.killpg() equivalent; `taskkill /T` (kill the whole tree rooted at
+    this PID) is the documented way to do it from a spawned process.
+    """
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+    else:
+        try:
+            # process.pid IS the process group id here, not just something
+            # to look up: start_new_session=True calls setsid(), which sets
+            # a new session+process group with pgid == the calling
+            # process's own pid. Deriving it instead via os.getpgid(pid)
+            # looked equivalent but was verified (empirically, on macOS) to
+            # fail with ESRCH once the shell itself has already exited --
+            # e.g. a command that backgrounds work and returns immediately
+            # (`(cmd &) ; exit 0`) -- even though the backgrounded
+            # descendant sharing that same pgid is still very much alive
+            # and killable by it.
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # already exited between the timeout firing and this call
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+
+
 def _tool_run_shell(workspace: Path, tool_input: dict) -> str:
     command = tool_input.get("command")
     if not isinstance(command, str) or not command:
         return "error: 'command' is required"
-    # A review round noted this timeout only guarantees killing the
-    # immediate subprocess (Python's own TimeoutExpired handling), not a
-    # whole process tree -- a command that backgrounds work or forks
-    # descendants could leave some of them running past
-    # TOOL_EXEC_TIMEOUT_SECONDS. Cross-platform process-group cleanup
-    # (os.killpg on POSIX, a job object on Windows) is a real, larger
-    # change than this fix round's scope; documented here as a known,
-    # accepted gap rather than silently left unstated -- same posture
-    # DEC-21 already takes toward run_shell having no command allowlist.
+    popen_kwargs: dict = dict(
+        shell=True,
+        cwd=workspace,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        # Without an explicit encoding, subprocess falls back to
+        # locale.getpreferredencoding() to decode stdout/stderr -- not
+        # UTF-8 on a non-UTF-8-locale Windows machine -- and a model's
+        # shell command (or the workspace files it reads) can easily
+        # produce non-ASCII output. See run_provider()'s matching fix
+        # in handoff_bridge.py for the confirmed crash this class of
+        # bug produces elsewhere in this project.
+        encoding="utf-8",
+        errors="replace",
+    )
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=workspace,
-            capture_output=True,
-            text=True,
-            # Without an explicit encoding, subprocess falls back to
-            # locale.getpreferredencoding() to decode stdout/stderr -- not
-            # UTF-8 on a non-UTF-8-locale Windows machine -- and a model's
-            # shell command (or the workspace files it reads) can easily
-            # produce non-ASCII output. See run_provider()'s matching fix
-            # in handoff_bridge.py for the confirmed crash this class of
-            # bug produces elsewhere in this project.
-            encoding="utf-8",
-            errors="replace",
-            timeout=TOOL_EXEC_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        return f"error: command timed out after {TOOL_EXEC_TIMEOUT_SECONDS}s"
+        process = subprocess.Popen(command, **popen_kwargs)
     except OSError as exc:
         return f"error: failed to run command: {exc}"
-    output = (result.stdout or "") + (result.stderr or "")
+    try:
+        stdout, stderr = process.communicate(timeout=TOOL_EXEC_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        try:
+            # Reap now-killed descendants so this call doesn't hang
+            # forever -- but a detached/backgrounded grandchild can still
+            # hold the stdout/stderr pipe open even after killpg, so this
+            # itself needs a bounded wait rather than an unbounded one.
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            # A detached descendant holding the pipe open past the reap
+            # wait above would otherwise leak this end of the pipe (an
+            # open file descriptor) for the life of the server process --
+            # found via a real ResourceWarning while testing this fix.
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+        return f"error: command timed out after {TOOL_EXEC_TIMEOUT_SECONDS}s"
+    output = (stdout or "") + (stderr or "")
     truncated = len(output) > TOOL_OUTPUT_MAX_CHARS
     if truncated:
         output = output[:TOOL_OUTPUT_MAX_CHARS] + "\n(output truncated)"
-    return f"exit code: {result.returncode}\n{output}"
+    return f"exit code: {process.returncode}\n{output}"
 
 
 _TOOL_EXECUTORS = {
@@ -1053,15 +1108,21 @@ def run_provider_via_api_key(
     are always None: there is no provider-managed session and no local run
     directory in this mode.
 
-    Deliberately does not touch .handoff/state.json/current.md -- those are
-    the CLI-handoff-specific durable state files (docs/architecture.md's
-    "State Boundaries"), and API-key mode has no CLI session or auto-
-    fallback-to-the-other-provider concept for them to record. What
-    started as chat-only (DEC-13) now also runs the tool-use turn loop
-    (CFL-17/DEC-21, inside call_anthropic_messages_api()/
-    call_openai_responses_api() themselves) -- this function's own
-    contract doesn't change either way, since a plain chat turn is just
-    the loop's zero-tool-calls case.
+    Still does not touch .handoff/state.json -- that file's actual content
+    (last_provider/auto-fallback bookkeeping) is CLI-handoff-specific
+    (docs/architecture.md's "State Boundaries"), and API-key mode has no
+    session or auto-fallback-to-the-other-provider concept for it to
+    record. It DOES append a record to .handoff/current.md, via
+    _append_api_key_mode_record() below (audit finding F2, 2026-09-02):
+    that file is this project's actual cross-provider continuity
+    document, and CLI mode already appends to it after every run --
+    API-key mode not doing the same left the next provider seeing files
+    an API-key-mode turn had changed (CFL-17/DEC-21's tool loop can write/
+    edit files and run shell commands) with no durable record of what
+    happened or why. What started as chat-only (DEC-13) now also runs the
+    tool-use turn loop -- this function's own contract doesn't change
+    either way, since a plain chat turn is just the loop's zero-tool-calls
+    case.
 
     `model_override` mirrors CLI mode's per-call --model: takes priority
     over the model saved alongside the credential when the caller supplies
@@ -1122,20 +1183,23 @@ def run_provider_via_api_key(
         }
         result = callers[provider](credential["key"], model, messages, workspace, system=system)
     if not result["ok"]:
-        return [_api_key_mode_error_record(provider, model, instruction_type, result["message"])]
-    return [
-        {
-            "provider": provider,
-            "model": model,
-            "instruction_type": instruction_type,
-            "exit_code": 0,
-            "session_id": None,
-            "final_text": result["text"] or "(empty response)",
-            "handoff_needed": False,
-            "reason": "none",
-            "run_dir": None,
-        }
-    ]
+        record = _api_key_mode_error_record(provider, model, instruction_type, result["message"])
+        _append_api_key_mode_record(workspace, record)
+        return [record]
+    record = {
+        "provider": provider,
+        "model": model,
+        "instruction_type": instruction_type,
+        "exit_code": 0,
+        "session_id": None,
+        "final_text": result["text"] or "(empty response)",
+        "handoff_needed": False,
+        "reason": "none",
+        "run_dir": None,
+        "started_at": utc_now(),
+    }
+    _append_api_key_mode_record(workspace, record)
+    return [record]
 
 
 def _api_key_mode_error_record(provider: str, model: str | None, instruction_type: str, message: str) -> dict:
@@ -1149,5 +1213,56 @@ def _api_key_mode_error_record(provider: str, model: str | None, instruction_typ
         "handoff_needed": True,
         "reason": f"tool_failure: api_key_mode: {message}",
         "run_dir": None,
+        "started_at": utc_now(),
     }
+
+
+def _append_api_key_mode_record(workspace: Path, record: dict) -> None:
+    """API-key mode's equivalent of handoff_bridge.append_current() --
+    workspace-parameterized rather than relying on handoff_bridge's own
+    cwd-relative HANDOFF_DIR/CURRENT_FILE globals, since this runs
+    in-process inside the threaded Web UI server. CLI mode avoids that
+    exact cwd race by always shelling out to a handoff_bridge.py
+    subprocess (see webui_bridge_run.py) instead of calling
+    append_current() in-process; API-key mode has no such subprocess, so
+    this builds the same append_current()-shaped block by hand.
+
+    Uses the same lock *filename* handoff_bridge.append_current() and
+    scripts/handoff_hook.py's append_current() both already contend for
+    (".write.lock" under .handoff/), scoped to this workspace, so a
+    concurrent CLI-mode run against the same workspace still correctly
+    serializes with this append instead of racing it -- see
+    scripts/handoff_hook.py's own append_current() for the identical
+    pattern (it has the same in-process-alongside-a-CLI-subprocess
+    problem, one process running this bridge's hook script while another
+    process runs `handoff_bridge.py run`).
+
+    Audit finding (F2, 2026-09-02): this used to not exist at all --
+    run_provider_via_api_key() never touched .handoff/current.md, so a
+    later CLI/mobile handoff would see whatever files an API-key-mode
+    turn's tool loop (CFL-17/DEC-21) had changed, with no durable record
+    of what happened or why in this project's actual continuity document.
+    """
+    handoff_dir = workspace / ".handoff"
+    current = handoff_dir / "current.md"
+    block = [
+        "",
+        f"## API-Key-Mode Turn {record['started_at']}",
+        "",
+        f"- Provider: {record['provider']}",
+        f"- Model: {record.get('model') or 'app-selected default'}",
+        f"- Instruction type: {record.get('instruction_type') or 'continue'}",
+        "- Session ID: (none -- API-key mode has no provider-managed session)",
+        f"- Exit code: {record['exit_code']}",
+        f"- Handoff needed: {record['handoff_needed']}",
+        f"- Reason: {record['reason']}",
+    ]
+    final_text = record.get("final_text")
+    if final_text:
+        block.extend(["", "### Final Output Excerpt", "", excerpt(final_text)])
+    addition = "\n".join(block) + "\n"
+    with WriteLock(handoff_dir / ".write.lock"):
+        handoff_dir.mkdir(parents=True, exist_ok=True)
+        existing = current.read_text(encoding="utf-8") if current.exists() else ""
+        atomic_write_text(current, existing + addition)
 

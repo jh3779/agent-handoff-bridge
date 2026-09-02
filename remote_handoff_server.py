@@ -25,6 +25,11 @@ from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS, WriteLock, atomic_writ
 
 BRIDGE_ROOT = Path(__file__).resolve().parent
 BRIDGE_SCRIPT = BRIDGE_ROOT / "handoff_bridge.py"
+# Mirrors handoff_webui.py's own _read_json_body() cap (same constant value)
+# -- an audit found this server's read_json_body() only rejected length <= 0,
+# with no upper bound, unlike the Web UI's request handler.
+MAX_BODY_BYTES = 2_000_000
+
 REMOTE_DIR = Path(".handoff/remote")
 TASKS_DIR = REMOTE_DIR / "tasks"
 TOKEN_FILE = REMOTE_DIR / "token"
@@ -161,8 +166,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def read_json_body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0:
-            raise ValueError("missing JSON body")
+        if length <= 0 or length > MAX_BODY_BYTES:
+            raise ValueError("missing or oversized JSON body")
         raw = self.rfile.read(length)
         try:
             payload = json.loads(raw.decode("utf-8"))
@@ -322,7 +327,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-auth", action="store_true", help="Disable token auth. Use only on trusted local networks.")
     parser.add_argument("--token", help="Bearer token. Defaults to HANDOFF_REMOTE_TOKEN or token file.")
     parser.add_argument("--token-file", type=Path, default=TOKEN_FILE, help="Token file path.")
-    parser.add_argument("--task-timeout", type=int, default=0, help="Per bridge command timeout. 0 means no timeout.")
+    parser.add_argument(
+        "--task-timeout",
+        type=int,
+        default=1800,
+        help="Per bridge command timeout in seconds (default 1800 -- an unattended "
+        "automation caller could otherwise tie up a worker thread indefinitely). "
+        "0 means no timeout, for an operator who explicitly wants that.",
+    )
     parser.add_argument("--quiet", action="store_true", help="Suppress HTTP access logs.")
     return parser
 

@@ -100,7 +100,7 @@ Current packet:
 
 {current_text}
 """
-    (handoff_dir / "next-prompt.md").write_text(prompt, encoding="utf-8")
+    atomic_write_text(handoff_dir / "next-prompt.md", prompt)
 
 
 def main() -> int:

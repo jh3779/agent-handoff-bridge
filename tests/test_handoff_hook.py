@@ -137,5 +137,34 @@ class AppendCurrentInteropTests(unittest.TestCase):
             self.assertIn("## Run 2026-01-01T00:01:00", content)
 
 
+class WriteNextPromptAtomicWriteTests(unittest.TestCase):
+    """Covers the audit finding (also previously noted in
+    docs/codebase-review.md) that write_next_prompt() used a plain
+    write_text() instead of the same WriteLock/atomic_write_text() pattern
+    append_current() uses -- a crash mid-write could leave next-prompt.md
+    partially written."""
+
+    def test_delegates_to_atomic_write_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".handoff").mkdir()
+            with mock.patch.object(hh, "atomic_write_text", wraps=hh.atomic_write_text) as spy:
+                hh.write_next_prompt(root, {"hook_event_name": "StopFailure", "error": "quota"})
+            spy.assert_called_once()
+            written_path, written_content = spy.call_args.args
+            self.assertEqual(written_path, root / ".handoff" / "next-prompt.md")
+            self.assertIn("Reason: quota", written_content)
+
+    def test_writes_the_real_file_with_no_leftover_tmp_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".handoff").mkdir()
+            hh.write_next_prompt(root, {"hook_event_name": "StopFailure"})
+            handoff_dir = root / ".handoff"
+            self.assertTrue((handoff_dir / "next-prompt.md").exists())
+            leftover_tmp_files = [p for p in handoff_dir.iterdir() if p.name != "next-prompt.md"]
+            self.assertEqual(leftover_tmp_files, [])
+
+
 if __name__ == "__main__":
     unittest.main()

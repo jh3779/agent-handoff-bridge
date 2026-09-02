@@ -147,6 +147,7 @@ INSTALL_FILES = [
     ("tests/test_handoff_webui.py", "tests/test_handoff_webui.py"),
     ("tests/test_validate_handoff.py", "tests/test_validate_handoff.py"),
     ("tests/test_build_updater_manifest.py", "tests/test_build_updater_manifest.py"),
+    ("tests/test_package_platforms.py", "tests/test_package_platforms.py"),
     (".githooks/pre-commit", ".githooks/pre-commit"),
     (".githooks/pre-push", ".githooks/pre-push"),
     ("examples/claude-settings.handoff.json", "examples/claude-settings.handoff.json"),

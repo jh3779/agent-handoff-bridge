@@ -15,10 +15,12 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -29,6 +31,7 @@ from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import handoff_bridge as hb  # noqa: E402
 import handoff_webui as webui  # noqa: E402
 import webui_api_key_mode  # noqa: E402
 import webui_bridge_run  # noqa: E402
@@ -2858,19 +2861,72 @@ class ToolExecutorTests(unittest.TestCase):
         self.assertIn("exit code: 3", result)
 
     def test_run_shell_timeout_is_reported_as_an_error_string(self):
-        with mock.patch(
-            "webui_api_key_mode.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="sleep 999", timeout=webui_api_key_mode.TOOL_EXEC_TIMEOUT_SECONDS),
-        ):
+        mock_process = mock.MagicMock()
+        mock_process.pid = 999999999  # not a real PID -- _kill_process_tree's os.getpgid() must no-op cleanly on it
+        mock_process.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="sleep 999", timeout=webui_api_key_mode.TOOL_EXEC_TIMEOUT_SECONDS),
+            ("", ""),  # the reap call after _kill_process_tree()
+        ]
+        with mock.patch("webui_api_key_mode.subprocess.Popen", return_value=mock_process):
             result = webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "sleep 999"})
         self.assertTrue(result.startswith("error:"))
         self.assertIn("timed out", result)
 
+    @unittest.skipIf(sys.platform == "win32", "asserts os.killpg was called; on Windows _kill_process_tree takes the taskkill branch instead")
+    def test_run_shell_timeout_kills_the_whole_process_group_not_just_the_shell(self):
+        mock_process = mock.MagicMock()
+        mock_process.pid = 999999999
+        mock_process.communicate.side_effect = subprocess.TimeoutExpired(cmd="sleep 999", timeout=1)
+        with mock.patch("webui_api_key_mode.subprocess.Popen", return_value=mock_process), mock.patch(
+            "webui_api_key_mode.os.killpg"
+        ) as killpg_spy:
+            webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "sleep 999"})
+        # The audit finding this covers: the old implementation only ever
+        # called process.kill() on the immediate shell -- os.killpg() (the
+        # whole process group a backgrounded/forked descendant also
+        # belongs to, since the process was started with
+        # start_new_session=True) must actually be reached. Uses
+        # process.pid directly as the pgid (not a separate os.getpgid()
+        # lookup -- verified flaky once the shell itself has already
+        # exited, see _kill_process_tree's own comment).
+        killpg_spy.assert_called_once_with(999999999, signal.SIGKILL)
+        mock_process.kill.assert_called_once()
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "process-group kill via os.killpg is POSIX-specific; the Windows taskkill branch is covered separately (mocked), not live here",
+    )
+    def test_run_shell_timeout_actually_stops_a_backgrounded_descendant(self):
+        # A real, unmocked integration test: the outer `sh -c` returns
+        # almost immediately (it backgrounds a loop and exits), but that
+        # backgrounded loop -- which inherits the same stdout/stderr pipe
+        # this tool reads from -- would otherwise keep running and writing
+        # to `marker` for ~5s regardless of the tool's own timeout, unless
+        # the whole process group is actually killed, not just the shell.
+        marker = self.workspace / "still-alive.txt"
+        command = f"(for i in $(seq 1 50); do echo alive >> {marker}; sleep 0.1; done &) ; exit 0"
+        with mock.patch.object(webui_api_key_mode, "TOOL_EXEC_TIMEOUT_SECONDS", 0.3):
+            result = webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": command})
+        self.assertIn("timed out", result)
+        count_at_timeout = len(marker.read_text(encoding="utf-8").splitlines()) if marker.exists() else 0
+        time.sleep(1.0)  # the unfixed bug would accumulate many more lines here
+        count_after_wait = len(marker.read_text(encoding="utf-8").splitlines()) if marker.exists() else 0
+        self.assertEqual(count_after_wait, count_at_timeout)
+
+    def test_kill_process_tree_uses_taskkill_on_windows(self):
+        mock_process = mock.MagicMock()
+        mock_process.pid = 4242
+        with mock.patch.object(webui_api_key_mode.sys, "platform", "win32"), mock.patch(
+            "webui_api_key_mode.subprocess.run"
+        ) as run_spy:
+            webui_api_key_mode._kill_process_tree(mock_process)
+        run_spy.assert_called_once_with(["taskkill", "/F", "/T", "/PID", "4242"], capture_output=True)
+
     def test_run_shell_output_over_the_cap_is_truncated_not_silently_cut(self):
-        with mock.patch(
-            "webui_api_key_mode.subprocess.run",
-            return_value=subprocess.CompletedProcess(args="x", returncode=0, stdout="a" * (webui_api_key_mode.TOOL_OUTPUT_MAX_CHARS + 500), stderr=""),
-        ):
+        mock_process = mock.MagicMock()
+        mock_process.communicate.return_value = ("a" * (webui_api_key_mode.TOOL_OUTPUT_MAX_CHARS + 500), "")
+        mock_process.returncode = 0
+        with mock.patch("webui_api_key_mode.subprocess.Popen", return_value=mock_process):
             result = webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "x"})
         self.assertIn("(output truncated)", result)
         self.assertLessEqual(len(result), webui_api_key_mode.TOOL_OUTPUT_MAX_CHARS + 200)
@@ -2878,18 +2934,18 @@ class ToolExecutorTests(unittest.TestCase):
     def test_run_shell_pins_utf8_encoding(self):
         # Regression coverage for a real crash class (2026-08-14, see
         # handoff_bridge.py's run_provider() fix): without an explicit
-        # encoding, subprocess.run() falls back to
+        # encoding, subprocess falls back to
         # locale.getpreferredencoding() -- not UTF-8 on a non-UTF-8-locale
         # Windows machine -- to decode this command's stdout/stderr, and a
         # model-issued shell command (or the files it reads) can easily
         # produce non-ASCII output.
-        with mock.patch(
-            "webui_api_key_mode.subprocess.run",
-            return_value=subprocess.CompletedProcess(args="x", returncode=0, stdout="ok", stderr=""),
-        ) as run_spy:
+        mock_process = mock.MagicMock()
+        mock_process.communicate.return_value = ("ok", "")
+        mock_process.returncode = 0
+        with mock.patch("webui_api_key_mode.subprocess.Popen", return_value=mock_process) as popen_spy:
             webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "echo ok"})
-        self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
-        self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
+        self.assertEqual(popen_spy.call_args.kwargs["encoding"], "utf-8")
+        self.assertEqual(popen_spy.call_args.kwargs["errors"], "replace")
 
     def test_unknown_tool_name_is_an_error_not_a_crash(self):
         result = webui_api_key_mode.execute_tool_call(self.workspace, "delete_everything", {})
@@ -3527,6 +3583,100 @@ class RunProviderViaApiKeyTests(unittest.TestCase):
         openai_spy.assert_not_called()
         anthropic_spy.assert_not_called()
         self.assertTrue(records[0]["reason"].startswith("tool_failure"))
+
+
+class ApiKeyModeCurrentMdContinuityTests(unittest.TestCase):
+    """Covers the audit finding (F2, 2026-09-02) that run_provider_via_api_key()
+    never touched .handoff/current.md -- this project's actual cross-provider
+    continuity document -- even though CLI mode appends to it after every
+    run. A later CLI/mobile handoff used to see whatever files an
+    API-key-mode turn's tool loop (CFL-17/DEC-21) had changed, with no
+    durable record of what happened or why.
+    """
+
+    def _current_md_text(self, root: Path) -> str:
+        path = root / ".handoff" / "current.md"
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def test_successful_turn_appends_a_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "did the thing"}):
+                webui_api_key_mode.run_provider_via_api_key(root, "claude", "hello", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue")
+            text = self._current_md_text(root)
+        self.assertIn("## API-Key-Mode Turn", text)
+        self.assertIn("- Provider: claude", text)
+        self.assertIn("- Model: claude-sonnet-5", text)
+        self.assertIn("- Exit code: 0", text)
+        self.assertIn("- Handoff needed: False", text)
+        self.assertIn("did the thing", text)
+
+    def test_failed_turn_also_appends_a_record(self):
+        # A mid-turn API failure can still follow tool calls that already
+        # had real side effects (_error_with_transcript()'s own docstring)
+        # -- the record of that must reach current.md too, not just
+        # successful turns.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch(
+                "webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": False, "message": "401 authentication_error"}
+            ):
+                webui_api_key_mode.run_provider_via_api_key(root, "claude", "hello", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue")
+            text = self._current_md_text(root)
+        self.assertIn("## API-Key-Mode Turn", text)
+        self.assertIn("- Handoff needed: True", text)
+        self.assertIn("authentication_error", text)
+
+    def test_no_model_configured_preflight_error_does_not_touch_current_md(self):
+        # No real attempt against the provider ever happened here -- unlike
+        # the two cases above, there is nothing to durably record.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api") as spy:
+                webui_api_key_mode.run_provider_via_api_key(root, "claude", "hello", {"key": "sk-x", "model": None}, "continue")
+            spy.assert_not_called()
+            self.assertFalse((root / ".handoff" / "current.md").exists())
+
+    def test_two_turns_append_two_separate_sections_not_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "first"}):
+                webui_api_key_mode.run_provider_via_api_key(root, "claude", "hello", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue")
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "second"}):
+                webui_api_key_mode.run_provider_via_api_key(root, "claude", "hi again", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue")
+            text = self._current_md_text(root)
+        self.assertEqual(text.count("## API-Key-Mode Turn"), 2)
+        self.assertIn("first", text)
+        self.assertIn("second", text)
+
+    def test_a_concurrent_cli_mode_append_current_call_is_preserved_not_clobbered(self):
+        # Both this function and handoff_bridge.append_current() must
+        # contend for the *same* lock (handoff_dir / ".write.lock") --
+        # otherwise one could read-then-clobber the other's write in the
+        # classic lost-update pattern this project's WriteLock exists to
+        # prevent (see scripts/handoff_hook.py's own docstring for the
+        # identical concern between the hook and a bridge subprocess).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch("webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "api-key-mode turn"}):
+                webui_api_key_mode.run_provider_via_api_key(root, "claude", "hello", {"key": "sk-x", "model": "claude-sonnet-5"}, "continue")
+            original_cwd = Path.cwd()
+            os.chdir(root)
+            try:
+                hb.append_current(
+                    {
+                        "started_at": "2026-01-01T00:00:00",
+                        "provider": "codex",
+                        "exit_code": 0,
+                        "handoff_needed": False,
+                        "reason": "none",
+                    }
+                )
+            finally:
+                os.chdir(original_cwd)
+            text = self._current_md_text(root)
+        self.assertIn("## API-Key-Mode Turn", text)
+        self.assertIn("## Run 2026-01-01T00:00:00", text)
 
 
 class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):

@@ -119,6 +119,26 @@ against the same workspace concurrently. See
 [Quality Gates](quality-gates.md#rule-shared-state-files-are-written-atomically-and-under-lock)
 for what this does and does not guarantee.
 
+API-key mode (`webui_api_key_mode.py`'s `run_provider_via_api_key()`)
+appends a record to `.handoff/current.md` after every turn too
+(`_append_api_key_mode_record()`) — added 2026-09-02 to close a real
+continuity gap a production audit found: that mode's tool loop
+(CFL-17/DEC-21) can write/edit files and run shell commands, and before
+this fix nothing recorded that a next CLI/mobile handoff could read. It
+does not touch `.handoff/state.json` — that file's actual content
+(`last_provider`/auto-fallback bookkeeping) has no API-key-mode
+equivalent to record, since this mode has no provider-managed session or
+auto-fallback-to-the-other-provider concept. Because this runs in-process
+inside the Web UI's threaded HTTP server (unlike CLI mode, which always
+shells out to a `handoff_bridge.py` subprocess specifically to avoid a
+shared-`cwd` race across concurrent requests — see
+[Quality Gates](quality-gates.md#rule-shared-state-files-are-written-atomically-and-under-lock)),
+it builds its own workspace-parameterized version of the same
+`append_current()`-shaped block by hand rather than calling
+`handoff_bridge.append_current()` directly, but contends for the exact
+same `.handoff/.write.lock` file so a concurrent CLI-mode run against the
+same workspace still serializes correctly with it instead of racing.
+
 The same `WriteLock` (imported directly from `handoff_bridge`, not
 reimplemented) guards the Web UI MVP's local chat log at
 `.handoff/webui/chat/` (`webui_chat_storage.py`'s `append_chat_message()` and

@@ -42,5 +42,24 @@ class ProvidersDerivedFromBridgeTests(unittest.TestCase):
         self.assertEqual(args.primary, "gemini")
 
 
+class AutoFallbackFlagTests(unittest.TestCase):
+    """Covers the audit finding that --auto-fallback was store_true/default=True
+    with no way to turn it off -- a remote caller could never actually request
+    single-provider-only execution even though the server payload/handler
+    already supports auto_fallback=False."""
+
+    def test_default_is_true(self):
+        args = rhs.build_parser().parse_args(["do the task"])
+        self.assertTrue(args.auto_fallback)
+
+    def test_no_auto_fallback_disables_it(self):
+        args = rhs.build_parser().parse_args(["do the task", "--no-auto-fallback"])
+        self.assertFalse(args.auto_fallback)
+
+    def test_explicit_auto_fallback_still_true(self):
+        args = rhs.build_parser().parse_args(["do the task", "--auto-fallback"])
+        self.assertTrue(args.auto_fallback)
+
+
 if __name__ == "__main__":
     unittest.main()

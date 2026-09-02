@@ -4,6 +4,43 @@
 
 ## Unreleased
 
+- **Follow-up from the 2026-09-02 production audit** (see
+  `docs/production-audit-2026-09-02.md`), all 6 audit-numbered findings
+  addressed:
+  - **F2 (continuity gap)**: API-key mode now appends a record to
+    `.handoff/current.md` after every turn, success or failure --
+    previously it never touched this project's actual cross-provider
+    continuity document at all, even though its tool loop (CFL-17/DEC-21)
+    can write/edit files and run shell commands. See
+    [Architecture § State Boundaries](architecture.md#state-boundaries).
+  - **F1 (partial)**: `run_shell`'s timeout now kills the whole process
+    group a command spawned, not just the immediate shell -- a
+    backgrounded/forked descendant no longer keeps running past
+    `TOOL_EXEC_TIMEOUT_SECONDS`. The per-tool-confirmation/mode-boundary
+    UX half of this finding is a deliberate product decision (DEC-21
+    already chose against it once) and was intentionally left
+    unchanged, not silently decided here.
+  - **F3**: source zips (`scripts/package_platforms.py`) now include
+    `README.ko.md` and all of `docs/design-system/` -- both were linked
+    from README.md/docs/index.md but missing from the packaged zip.
+  - **F4**: `remote_handoff_submit.py` gained `--no-auto-fallback`; the
+    flag previously had no way to be turned off.
+  - **F5**: `remote_handoff_server.py`'s `--task-timeout` now defaults to
+    1800s instead of 0 (unlimited), and its request body gets the same
+    2 MB cap the Web UI's own handler already enforces.
+  - **F6**: `handoff_control.py`'s interactive task creation no longer
+    lets "auto" reach `init --primary` (which has never accepted it) --
+    a new `ask_primary_provider()` restricted to real providers replaces
+    `ask_provider()` there.
+  - **F7**: `scripts/handoff_hook.py`'s `write_next_prompt()` now uses the
+    same `atomic_write_text()` pattern `append_current()` already does,
+    instead of a plain `write_text()`.
+  - **F8**: `src-tauri/Cargo.toml`'s scaffold-default metadata
+    (description/authors/license/repository/version) filled in; the
+    crate `name` deliberately stays `"app"` (the actual shipped
+    executable filename -- see the comment in that file for why renaming
+    it is out of scope for a metadata-hygiene pass).
+
 ## v0.4.1 — 2026-08-28
 
 - **Fix: macOS installer reported as "damaged" and refused to open.** The

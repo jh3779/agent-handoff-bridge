@@ -2555,3 +2555,143 @@ tag" rule by construction rather than by discipline.
   before v0.3.0 (still ends at v0.2.0) -- pre-existing gap, not touched
   this session, out of scope for this bug fix.
 - **Blocked**: none.
+
+## Provider: codex / Model: GPT-5 app-selected default — 2026-09-02 (production audit report)
+
+- **Target**: Codex, current workspace `/Users/jihun/Documents/통합cli`,
+  instruction type review/audit. User asked for a detailed audit of the
+  current project and an audit report artifact.
+- **Changed**: Added `docs/production-audit-2026-09-02.md`. No source
+  code changed. The report scores the project 78/100, launchable with
+  caveats for the current single-operator/small-tester scope, and records
+  eight findings: API-key-mode shell/tool trust boundary, API-key-mode
+  side-effect handoff continuity gap, source-zip broken doc links,
+  remote-submit `--auto-fallback` cannot be disabled, remote-server
+  unbounded defaults/body-size gap, interactive `init` allowing `auto` as
+  primary, `write_next_prompt()` not using atomic write/lock, and stale
+  Tauri Cargo metadata.
+- **Verified**: `git status --short --branch` clean before report
+  creation (`main...origin/main`); `git diff --stat origin/main...HEAD`
+  empty; `python3 handoff_bridge.py check` first failed under sandbox
+  because loopback binds were denied, then passed outside sandbox with
+  524 tests OK; `node --check webui/app.js` passed; `python3
+  scripts/check_branch_name.py main` passed; `python3
+  scripts/scan_secrets.py --root /Users/jihun/Documents/통합cli` passed;
+  `cargo test --manifest-path src-tauri/Cargo.toml` first failed because
+  local Tauri placeholder sidecars were absent, then passed after
+  reproducing CI's ignored `src-tauri/binaries/` placeholder precondition;
+  `python3 scripts/package_platforms.py --output /private/tmp/ahb-audit-dist`
+  built source zips; extracted macOS source zip passed `python3
+  handoff_bridge.py check` outside sandbox with 524 tests OK; `git diff
+  --check` passed for the report.
+- **Remaining**: Fix the package-link finding first (`README.ko.md` and
+  `docs/design-system/**` are linked from packaged docs but absent from
+  source zips). Decide whether API-key-mode shell/tool execution remains
+  an operator-grade accepted risk or needs per-tool confirmation/process
+  isolation before broader public distribution. Live GitHub Release asset
+  verification and installed desktop updater flow were not re-run here.
+- **Blocked**: Live update/latest release verification could not be
+  completed because local `gh auth status` reports the active GitHub token
+  for `jh3779` is invalid. No blocker for the local report artifact.
+- **Next**: Patch the source zip packaging/doc-link gap, then address
+  `remote_handoff_submit.py`'s missing `--no-auto-fallback` path and the
+  remote server timeout/body-size defaults.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-02 (production audit remediation, all 8 findings)
+
+- **Task**: user asked to act on the Codex-authored production audit above
+  ("감사 보고서가 있음 이에 따른 보완작업 진행해줘"). Addressed all 8
+  findings (F1-F8); F1 split deliberately -- the technical process-group-
+  kill half fixed, the per-tool-confirmation/mode-boundary UX half left
+  alone since DEC-21 already made that exact product decision once and
+  overriding it wasn't this session's call to make unprompted.
+- **Changed**:
+  - **F3** (`scripts/package_platforms.py`): `package_files()` now also
+    bundles `README.ko.md` and all of `docs/design-system/` (previously
+    only top-level `docs/*.md`, non-recursive) -- both were linked from
+    README.md/docs/index.md but absent from the packaged source zip.
+    New `tests/test_package_platforms.py`.
+  - **F4** (`remote_handoff_submit.py`): added `--no-auto-fallback`
+    (`dest="auto_fallback", action="store_false"`) -- `--auto-fallback`
+    previously had `default=True` with no way to turn it off.
+  - **F5** (`remote_handoff_server.py`): `--task-timeout` default changed
+    from `0` (unlimited) to `1800`s; `read_json_body()` now caps at
+    `MAX_BODY_BYTES = 2_000_000` (mirrors `handoff_webui.py`'s own cap),
+    previously only checked `length <= 0`.
+  - **F6** (`handoff_control.py`): new `ask_primary_provider()`
+    (validates against `BRIDGE_PROVIDERS` only, no "auto") replaces
+    `ask_provider()` in `initialize_task()` -- the old call let a user
+    pick "auto" for a value passed straight to `init --primary`, which
+    has never accepted it.
+  - **F7** (`scripts/handoff_hook.py`): `write_next_prompt()` now calls
+    `atomic_write_text()` instead of a plain `write_text()`, matching
+    `append_current()`'s own crash-safe pattern in the same file.
+  - **F8** (`src-tauri/Cargo.toml`): filled in
+    description/authors/license/repository/version (was all
+    scaffold-default, e.g. `authors = ["you"]`). `name` deliberately
+    kept as `"app"` -- verified via `codesign -dv` in the v0.4.1 signing
+    fix above that this is the actual compiled executable filename
+    shipped in `Contents/MacOS/app`; renaming it is a real, larger
+    change (needs a full 3-OS CI rebuild to verify) than this
+    metadata-hygiene pass. `cargo check` run to confirm the version bump
+    alone doesn't break anything; `Cargo.lock`'s own `app` entry
+    auto-updated to match.
+  - **F1, technical half** (`webui_api_key_mode.py`): `_tool_run_shell()`
+    rewritten from `subprocess.run(..., timeout=...)` to `subprocess.
+    Popen(..., start_new_session=True)` + manual `communicate(timeout=...)`
+    + a new `_kill_process_tree()` helper, so a timeout now kills the
+    *whole* process group a command spawned (POSIX: `os.killpg()`,
+    Windows: `taskkill /F /T /PID`), not just the immediate shell -- the
+    previously-documented "known, accepted gap" (a backgrounded/forked
+    descendant could keep running past `TOOL_EXEC_TIMEOUT_SECONDS`).
+    Non-obvious bug found and fixed while building this:
+    `os.killpg(os.getpgid(pid), ...)` looked equivalent to
+    `os.killpg(pid, ...)` but was verified empirically (a real script,
+    not just reasoning) to fail with ESRCH once the shell itself has
+    already exited (e.g. a command that backgrounds work and returns
+    immediately, `(cmd &) ; exit 0`) -- `os.getpgid()` requires the
+    *specific PID* to still be resolvable, but `process.pid` IS already
+    the correct pgid (guaranteed by `start_new_session=True`'s
+    `setsid()`), so the fix uses it directly rather than re-deriving it.
+    Also fixed a `ResourceWarning` (unclosed stdout/stderr pipes) found
+    while testing this, by explicitly closing them in the timeout
+    handler's `finally` block.
+  - **F2** (`webui_api_key_mode.py`): new `_append_api_key_mode_record()`
+    -- `run_provider_via_api_key()` now appends a record to
+    `.handoff/current.md` after every real attempt (success or API
+    failure; the pre-flight "no model configured" case is skipped since
+    no attempt happened). Deliberately does NOT call
+    `handoff_bridge.append_current()` directly (that function's
+    `HANDOFF_DIR`/`CURRENT_FILE` are cwd-relative globals -- calling it
+    in-process inside the Web UI's threaded HTTP server would hit the
+    exact shared-cwd race Phase 1 already solved for CLI mode by always
+    shelling out to a subprocess instead). Built a workspace-parameterized
+    equivalent by hand instead, using the same `.handoff/.write.lock`
+    lock file name so a concurrent real CLI-mode `append_current()` call
+    against the same workspace still correctly serializes with it rather
+    than racing (verified with a real test that interleaves both).
+    `docs/architecture.md`'s "State Boundaries" section updated to
+    document this.
+  - `docs/webui-chat-storage.md` and `docs/release-notes.md` (new
+    `## Unreleased` section covering all 8 findings) updated.
+- **Verified**: `python3 handoff_bridge.py check` -> 550/550 tests, PASS
+  (524 baseline + 26 new). `python3 scripts/scan_secrets.py` -> PASS.
+  `cargo check --manifest-path src-tauri/Cargo.toml` -> clean. Built a
+  real source zip (`scripts/package_platforms.py`) and confirmed
+  `README.ko.md`/`docs/design-system/roadmap.md`/`wireframes.html` are
+  actually present in the built `.zip` (not just in `package_files()`'s
+  return value). The F1 process-group-kill fix has a real, unmocked
+  integration test (`test_run_shell_timeout_actually_stops_a_backgrounded_
+  descendant`) that spawns a real backgrounded shell loop and confirms it
+  actually stops writing to a marker file once the tool call times out --
+  run 3x consecutively with `-W error::ResourceWarning` to rule out both
+  flakiness and the pipe-leak regression, both clean.
+- **Remaining**: none of the 8 findings are outstanding. `docs/
+  release-notes.ko.md` (Korean translation) was already stale before this
+  session (ends at v0.2.0) and was not touched -- pre-existing gap, out of
+  scope. No new version was tagged/released for these fixes (unlike the
+  v0.4.1 signing fix above, these are source-level fixes with no desktop
+  installer rebuild required to take effect for someone running from a
+  git checkout or a fresh source zip) -- whoever cuts the next release
+  should fold `## Unreleased` into it per `docs/release-process.md`.
+- **Blocked**: none.
