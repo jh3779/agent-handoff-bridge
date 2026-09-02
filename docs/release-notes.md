@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- **Fix: custom providers (DEC-26) were completely unreachable from the
+  chat UI.** `POST /api/run` rejected any `"custom:<name>"` provider
+  value with a 400 "invalid provider" before ever reaching the
+  already-correct dispatch logic that routes it to API-key mode -- the
+  provider-select dropdown lists custom providers using exactly that
+  value, so selecting one and sending a message always failed. Found
+  while explaining how provider selection works, not from a dedicated
+  audit pass.
 - **Follow-up from the 2026-09-02 production audit** (see
   `docs/production-audit-2026-09-02.md`), all 6 audit-numbered findings
   addressed:

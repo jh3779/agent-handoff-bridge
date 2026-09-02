@@ -2695,3 +2695,51 @@ tag" rule by construction rather than by discipline.
   git checkout or a fresh source zip) -- whoever cuts the next release
   should fold `## Unreleased` into it per `docs/release-process.md`.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-02 (custom-provider /api/run bug, found while explaining provider selection)
+
+- **Task**: user asked how provider/CLI-vs-API-key selection and
+  execution-triggering works in this project. Dispatched a read-only
+  Explore agent to trace it end-to-end (dropdown -> POST /api/run ->
+  CLI-vs-API-key dispatch -> DEC-02 confirm-once gate -> plain CLI
+  --execute flag). It flagged a real, previously-undiscovered gap:
+  `handoff_webui.py`'s `/api/run` handler validated `provider` against
+  only `("auto",) + PROVIDERS` (codex/claude/gemini), with no
+  `is_custom_provider()` special-case -- but the provider-select
+  dropdown (`webui/app.js`'s `refreshProviderSelect()`) lists custom
+  providers (DEC-26) using exactly the `"custom:<name>"` value
+  `GET /api/providers`' `custom_providers[].provider` returns
+  (`custom_provider_id()`). Verified directly (read the actual code, not
+  just trusted the agent's report) before acting: confirmed
+  `handoff_webui.py:379`'s check, the dropdown's `option value =
+  info.provider` (`webui/app.js:460`/`:463`), and that
+  `webui_bridge_run.py`'s own dispatch logic already correctly handles
+  `is_custom_provider()` -- meaning this one early gate was the only
+  thing broken, and it meant **selecting any custom provider from the
+  real chat UI and sending a message always failed with 400 "invalid
+  provider," making the entire custom-provider feature (shipped in
+  v0.4.0) unreachable through the actual product**, not just an edge
+  case. No existing test exercised `POST /api/run` with a `custom:`
+  provider.
+- **Changed**: `handoff_webui.py` imports `is_custom_provider` from
+  `webui_credentials` and the `/api/run` validation is now
+  `if provider not in ("auto",) + PROVIDERS and not
+  is_custom_provider(provider):`. New test
+  `ApiRunLiveServerTests.test_run_with_a_custom_provider_actually_works_
+  not_just_400s` -- a real end-to-end HTTP request against a live server
+  (not a unit-level dispatch check), saving a real custom-provider
+  credential and confirming a `POST /api/run` with
+  `"provider": "custom:openrouter"` now returns 200 with the mocked
+  reply text, where it previously would have 400'd before this fix even
+  reached the mock.
+- **Verified**: `python3 handoff_bridge.py check` -> 551/551 tests, PASS
+  (550 baseline + 1 new). `python3 scripts/scan_secrets.py` -> PASS.
+  Confirmed the still-genuinely-invalid-provider test
+  (`test_run_with_invalid_provider_is_rejected`) still correctly 400s --
+  the fix only widens the check for the `custom:` prefix shape, not
+  generally.
+- **Remaining**: none for this specific bug. Not otherwise re-audited
+  this session for further gaps in the same area -- this was found
+  incidentally while explaining an unrelated question, not from a
+  dedicated audit pass.
+- **Blocked**: none.

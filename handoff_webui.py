@@ -69,6 +69,7 @@ from webui_credentials import (
     CUSTOM_PROVIDER_API_FORMATS,
     cli_available,
     custom_provider_id,
+    is_custom_provider,
     read_credentials,
     read_custom_providers,
     save_credential,
@@ -376,7 +377,19 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 try:
                     body = self._read_json_body()
                     provider = str(body.get("provider") or "auto")
-                    if provider not in ("auto",) + PROVIDERS:
+                    # Bug found while auditing provider selection
+                    # (2026-09-02): this check didn't special-case
+                    # is_custom_provider() ("custom:<name>", DEC-26), so a
+                    # custom provider selected from the provider-select
+                    # dropdown (webui/app.js's refreshProviderSelect()
+                    # populates it from GET /api/providers'
+                    # custom_providers, whose "provider" field is exactly
+                    # this "custom:<name>" shape) always failed here with
+                    # "invalid provider" before ever reaching
+                    # webui_bridge_run.py's already-correct
+                    # is_custom_provider() dispatch -- the whole feature
+                    # was unreachable through the actual chat UI.
+                    if provider not in ("auto",) + PROVIDERS and not is_custom_provider(provider):
                         raise WorkspaceError(f"invalid provider: {provider}")
                     text = str(body.get("text") or "").strip()
                     attachments = body.get("attachments") or []

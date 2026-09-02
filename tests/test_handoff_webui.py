@@ -1552,6 +1552,30 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("error", data)
 
+    def test_run_with_a_custom_provider_actually_works_not_just_400s(self):
+        # Regression: found while auditing provider selection (2026-09-02).
+        # The provider-select dropdown (webui/app.js's
+        # refreshProviderSelect()) lists custom providers (DEC-26) using
+        # exactly this "custom:<name>" value (GET /api/providers'
+        # custom_providers[].provider, from custom_provider_id()), but
+        # POST /api/run's own validation used to reject anything that
+        # wasn't literally "auto"/"codex"/"claude"/"gemini" with 400
+        # "invalid provider" -- before ever reaching
+        # webui_bridge_run.py's already-correct is_custom_provider()
+        # dispatch. Selecting a custom provider from the real dropdown and
+        # sending a message could never have worked.
+        webui_credentials.save_custom_provider(
+            "openrouter", "sk-or-test", "meta-llama/llama-3", "https://openrouter.ai/api/v1", "openai"
+        )
+        with mock.patch(
+            "webui_api_key_mode.call_openai_compatible_chat_api", return_value={"ok": True, "text": "custom provider reply"}
+        ) as spy:
+            status, data = self._post("/api/run", {"provider": "custom:openrouter", "text": "hi"})
+        self.assertEqual(status, 200)
+        spy.assert_called_once()
+        self.assertEqual(data["messages"][0]["text"], "custom provider reply")
+        self.assertEqual(data["messages"][0]["provider"], "custom:openrouter")
+
     def test_concurrent_run_gets_409_not_a_hang_or_duplicate_message(self):
         webui_bridge_run._RUN_LOCK.acquire()
         try:
