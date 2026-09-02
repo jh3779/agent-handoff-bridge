@@ -2812,3 +2812,99 @@ tag" rule by construction rather than by discipline.
   between several real possibilities (PyInstaller onefile bootloader
   failure, some other startup exception in `handoff_webui.py`'s `main()`,
   etc.).
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-02 (RESOLVED above -- v0.4.2, dyld "different Team IDs" sidecar crash)
+
+- **Task**: continuation of the issue logged just above. User ran the
+  exact repro command I gave (`.../Contents/MacOS/agent-handoff-bridge-
+  server --no-browser`) and pasted the real error:
+  `[PYI-55469:ERROR] Failed to load Python shared library
+  '.../_MEI.../Python': dlopen(...): ... code signature ... not valid
+  for use in process: mapping process and mapped file (non-platform)
+  have different Team IDs ...`.
+- **Root cause, verified not guessed**: `.github/workflows/ci.yml` builds
+  sidecars with `actions/setup-python@v5`'s macOS Python 3.11
+  (`ci.yml:153-157`, `:268-272`). Confirmed via python.org's own install
+  docs (WebFetch) that its macOS installer packages -- what
+  `actions/setup-python` installs on macOS -- "are signed and notarized
+  with Python Software Foundation Apple Developer credentials", i.e. a
+  real Team ID. PyInstaller's onefile bootloader extracts the embedded
+  `Python.framework` to a temp `_MEI*` dir at runtime and `dlopen()`s it
+  from the sidecar process -- which, since the v0.4.1 entry above's
+  `bundle.macOS.signingIdentity: "-"` fix, is ad-hoc (no Team ID at all).
+  macOS Library Validation refuses to load a dylib whose Team ID doesn't
+  match the loading process's real-vs-none mismatch here. **v0.4.1's own
+  fix is what exposed this**: before it, Gatekeeper's "damaged" bug
+  blocked the app before the sidecar ever ran far enough to reach this
+  dlopen call at all -- v0.4.1 traded one launch blocker for a deeper,
+  previously-invisible one.
+- **Verified the actual fix locally before shipping it, not just by
+  reasoning**:
+  1. Reproduced the identical error message locally: built the server
+     sidecar with `pyinstaller --onefile --codesign-identity -` (this
+     flag makes PyInstaller itself re-sign the collected
+     `Python.framework` at build time with a *fresh*, distinct ad-hoc
+     identity from the outer EXE's own separately-generated one) --
+     running the result gave the exact same `dlopen`/"different Team
+     IDs" error, byte-for-byte matching the user's, confirming this is
+     the same class of dyld Library Validation failure regardless of
+     whether the mismatch is real-vs-ad-hoc (CI's actual case) or
+     ad-hoc-vs-ad-hoc (this local repro).
+  2. Applied `codesign --sign - --options runtime --entitlements
+     <plist with com.apple.security.cs.disable-library-validation>
+     --force` directly to that same crashing binary -- it then ran
+     successfully, with the signature mismatch still present. Confirmed
+     `hardenedRuntime` (required for the entitlement to take effect,
+     per Apple's own TN3125/forum guidance) already defaults to `true`
+     in `bundle.macOS` and was already active in the real v0.4.1 build
+     (`flags=0x10002(adhoc,runtime)`, confirmed via `codesign -dv` in
+     that entry).
+  3. Confirmed via `tauri-bundler`'s own source
+     (`crates/tauri-bundler/src/bundle/macos/sign.rs`, fetched and read,
+     not assumed) that `sign()` applies the same
+     `bundle.macOS.entitlements` file to every discovered `SignTarget`
+     in a loop -- i.e. each `externalBin` sidecar individually, not just
+     the main app executable.
+  4. Built real sidecars locally (`scripts/build_sidecars.py
+     --target-triple aarch64-apple-darwin`, this machine has a Rust
+     toolchain, PyInstaller, and `tauri-cli` available) and ran a full
+     local `cargo tauri build --bundles app,dmg` with the entitlements
+     fix wired in. Confirmed via `codesign -d --entitlements -` that the
+     entitlement actually reaches the real bundled
+     `agent-handoff-bridge-server` binary, `codesign --verify --deep
+     --strict` on the whole bundle still passes (no v0.4.1 regression),
+     and the real bundled sidecar runs without crashing.
+  - One dead end hit and fixed along the way: the entitlements.plist's
+    first draft had a long inline XML comment explaining the fix --
+    `codesign` failed with `AMFIUnserializeXML: syntax error near line
+    20` even though `plutil -lint` said the file was valid XML/plist.
+    Removed the comment entirely (kept the explanation here and in
+    release-notes.md instead); a bare 6-line plist with no comments
+    signs cleanly.
+- **Changed**: new `src-tauri/entitlements.plist`
+  (`com.apple.security.cs.disable-library-validation: true`, no
+  comments). `src-tauri/tauri.conf.json`'s `bundle.macOS` gained
+  `"entitlements": "entitlements.plist"`. Version bumped to 0.4.2
+  (`handoff_bridge.py` `BRIDGE_VERSION`, `tauri.conf.json`,
+  `Cargo.toml` -- all three, matching the F8 convention from the audit
+  entry above). `docs/release-notes.md` folded the whole `## Unreleased`
+  section (this fix + the portable-skill feature + the custom-provider
+  fix + all 8 audit findings) into a new `## v0.4.2` heading per
+  `docs/release-process.md`.
+- **Verified**: `python3 handoff_bridge.py check` -> 560/560, PASS.
+  `python3 scripts/scan_secrets.py` -> PASS. `cargo check` clean (with
+  placeholder sidecars present, matching CI's own precondition -- fails
+  without them, which is pre-existing/expected, not a regression).
+  Committed as `79cb0d4` ("Release v0.4.2"), tagged `v0.4.2`, pushed.
+  Triggered the real `installer-build` CI (`gh workflow run ci.yml --ref
+  v0.4.2`, run 33581885461) to get a byte-for-byte CI-built artifact
+  (this session's local sidecars use Homebrew Python, which is already
+  ad-hoc and would never have reproduced the original bug -- only CI's
+  real `actions/setup-python` 3.11 build can fully close the loop).
+- **Remaining**: once that CI run and the release are done, the
+  strongest remaining verification is the user re-running the exact
+  same repro command (or just launching the app normally) against the
+  real v0.4.2 installer and confirming it actually opens now -- this
+  session's local verification is strong but is not a byte-for-byte
+  match of the CI-built artifact the user will actually download.
+- **Blocked**: none.
