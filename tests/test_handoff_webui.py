@@ -2970,7 +2970,18 @@ class ToolExecutorTests(unittest.TestCase):
             subprocess.TimeoutExpired(cmd="sleep 999", timeout=webui_api_key_mode.TOOL_EXEC_TIMEOUT_SECONDS),
             ("", ""),  # the reap call after _kill_process_tree()
         ]
-        with mock.patch("webui_api_key_mode.subprocess.Popen", return_value=mock_process):
+        # _kill_process_tree itself is mocked out here -- its own kill
+        # mechanics are covered separately (POSIX: the test below; Windows:
+        # not yet covered, a pre-existing gap). Without this, Windows's
+        # taskkill branch calls the real subprocess.run(), which internally
+        # calls Popen() too -- since mock.patch below patches the shared
+        # subprocess module's Popen attribute (not a copy scoped to this
+        # test), that inner call is silently redirected to mock_process as
+        # well, exhausting its 2-item side_effect list and corrupting the
+        # unrelated taskkill call with a stray empty-tuple unpack.
+        with mock.patch("webui_api_key_mode.subprocess.Popen", return_value=mock_process), mock.patch(
+            "webui_api_key_mode._kill_process_tree"
+        ):
             result = webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "sleep 999"})
         self.assertTrue(result.startswith("error:"))
         self.assertIn("timed out", result)
