@@ -4,6 +4,31 @@
 
 ## Unreleased
 
+## v0.4.2 — 2026-09-02
+
+- **Fix: the macOS desktop app's local server crashed on every launch**
+  (`Failed to load Python shared library ... mapping process and mapped
+  file (non-platform) have different Team IDs`, exit code 255). Root
+  cause: CI builds the sidecars with `actions/setup-python`'s macOS
+  Python 3.11, whose `Python.framework` is signed and notarized by the
+  Python Software Foundation with a real Team ID; the PyInstaller onefile
+  bootloader extracts and `dlopen()`s that framework at runtime from a
+  sidecar executable that -- since v0.4.1's ad-hoc `signingIdentity` fix
+  -- carries no Team ID at all, and macOS's Library Validation refuses to
+  load a dylib whose Team ID doesn't match the loading process's. This
+  was invisible in v0.4.1 because Gatekeeper's "damaged" bug (fixed in
+  that same release) blocked the app before the sidecar ever ran far
+  enough to hit it -- v0.4.1 traded one launch blocker for a deeper one.
+  Fixed with a new `src-tauri/entitlements.plist` granting
+  `com.apple.security.cs.disable-library-validation`, applied to every
+  sidecar individually (confirmed by reading `tauri-bundler`'s own
+  signing code, not assumed) via `bundle.macOS.entitlements`. Verified
+  locally, not just reasoned about: reproduced the exact "different Team
+  IDs" failure with a local PyInstaller build, then confirmed this
+  entitlement made the identical binary load successfully; also built a
+  full local `.app`/`.dmg` with real sidecars and confirmed the
+  entitlement reaches the actual bundled `agent-handoff-bridge-server`
+  binary and it runs without crashing.
 - **New: a portable Agent Skill, installed automatically.**
   `.agents/skills/handoff-status/SKILL.md` teaches whichever CLI is
   running (Codex, Claude Code, or Gemini CLI all discover this directory
