@@ -2965,12 +2965,30 @@ class ToolExecutorTests(unittest.TestCase):
 
     def test_run_shell_timeout_is_reported_as_an_error_string(self):
         mock_process = mock.MagicMock()
-        mock_process.pid = 999999999  # not a real PID -- _kill_process_tree's os.getpgid() must no-op cleanly on it
+        # pid value itself is unused now that _kill_process_tree is fully
+        # mocked below (it never reads .pid); left as a real-looking
+        # placeholder for consistency with the other mock_process fixtures
+        # in this class.
+        mock_process.pid = 999999999
         mock_process.communicate.side_effect = [
             subprocess.TimeoutExpired(cmd="sleep 999", timeout=webui_api_key_mode.TOOL_EXEC_TIMEOUT_SECONDS),
             ("", ""),  # the reap call after _kill_process_tree()
         ]
-        with mock.patch("webui_api_key_mode.subprocess.Popen", return_value=mock_process):
+        # _kill_process_tree itself is mocked out here -- this test only
+        # cares about the reported error string, and the function's own
+        # kill mechanics are already covered by two sibling tests in this
+        # class: test_run_shell_timeout_kills_the_whole_process_group_not_
+        # just_the_shell (POSIX) and test_kill_process_tree_uses_taskkill_
+        # on_windows (Windows). Without this, Windows's taskkill branch
+        # calls the real subprocess.run(), which internally calls Popen()
+        # too -- since mock.patch below patches the shared subprocess
+        # module's Popen attribute (not a copy scoped to this test), that
+        # inner call is silently redirected to mock_process as well,
+        # exhausting its 2-item side_effect list and corrupting the
+        # unrelated taskkill call with a stray empty-tuple unpack.
+        with mock.patch("webui_api_key_mode.subprocess.Popen", return_value=mock_process), mock.patch(
+            "webui_api_key_mode._kill_process_tree"
+        ):
             result = webui_api_key_mode.execute_tool_call(self.workspace, "run_shell", {"command": "sleep 999"})
         self.assertTrue(result.startswith("error:"))
         self.assertIn("timed out", result)
