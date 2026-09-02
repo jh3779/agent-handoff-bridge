@@ -3201,3 +3201,58 @@ tag" rule by construction rather than by discipline.
   direct `git push origin main` will now hard-fail, not just diverge
   from the documented convention.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-02 (reviewed and merged PR #28, a real incoming fix from another session)
+
+- **Task**: user asked to check open PRs and prepare fix-up work for any
+  problems found -- this repo's actual multi-agent-handoff purpose in
+  action: PR #28 ("fix: Windows-only test-mock leak in run_shell timeout
+  test") had appeared, opened by another Claude Code session that tested
+  this repo's `main` (post-v0.4.4) on a **real Windows machine** -- an
+  environment this session has never had access to.
+- **What PR #28 found and fixed (verified sound, not just trusted)**: on
+  Windows, `test_run_shell_timeout_is_reported_as_an_error_string`
+  (written earlier in this session's own F1 process-group-kill work)
+  failed because `mock.patch("webui_api_key_mode.subprocess.Popen", ...)`
+  patches the whole shared `subprocess` module, not something scoped to
+  the test -- so when Windows's `_kill_process_tree` calls the real
+  `subprocess.run(["taskkill", ...])` (which itself calls `Popen()`
+  internally), that unrelated call got redirected into the same mock,
+  exhausting its 2-item `side_effect` list and corrupting the test with
+  an unrelated `ValueError`. Confirmed this diagnosis was actually
+  right by reading the real diff, not just the PR description. Fix:
+  additionally mock `_kill_process_tree` itself in that one test, since
+  its own kill mechanics are already covered by two sibling tests this
+  session already wrote (`test_run_shell_timeout_kills_the_whole_
+  process_group_not_just_the_shell` for POSIX, `test_kill_process_tree_
+  uses_taskkill_on_windows` for Windows) -- confirmed both still exist
+  and pass before trusting that claim.
+- **Real problem found in the PR and fixed before merging**: the new
+  inline code comment claimed "Windows: not yet covered, a pre-existing
+  gap" -- directly contradicting both the actual test file (which DOES
+  cover it, see above) and the PR's own body text (which correctly
+  described the Windows test existing). Pushed a follow-up commit
+  (`b5a31fe`) onto the PR's own branch correcting that comment and a
+  second, now-stale comment about `mock_process.pid` (only meaningful
+  before `_kill_process_tree` itself got mocked out) -- left a review
+  comment on the PR explaining exactly what was wrong and what was
+  changed, for the record, before merging.
+- **Verified**: `python3 -m unittest tests.test_handoff_webui.
+  ToolExecutorTests` -> 22/22 PASS (all three related tests: the fixed
+  one, and both siblings the fix's comment now correctly cites). Full
+  `python3 handoff_bridge.py check` -> 565/565 PASS. `scan_secrets.py`
+  -> PASS. Real CI on the updated PR branch: all 6 required checks
+  green (branch-name/validate/rust-build/sidecar-build x3) --
+  re-confirmed after pushing the comment fix, not just trusted from
+  before it.
+- **Process note**: first PR merged/reviewed since main's branch
+  protection (previous entry) went live -- confirms the intended
+  workflow (branch -> PR -> CI green -> self-merge, no review required)
+  works end-to-end for a *real* incoming PR from another session, not
+  just this session's own verification branch from the entry above.
+- **Remaining**: none for PR #28 itself. General note: this project's
+  own multi-agent-handoff premise means other sessions can and do open
+  PRs independently now that main is protected -- worth periodically
+  checking `gh pr list` rather than assuming this session is the only
+  one changing this repo.
+- **Blocked**: none.
