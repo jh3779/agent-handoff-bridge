@@ -248,13 +248,20 @@ python3 -c "
 import json, urllib.request
 data = json.load(open('dist/latest.json'))
 for platform, info in data['platforms'].items():
-    req = urllib.request.Request(info['url'], method='HEAD')
+    # A User-Agent is required -- GitHub's release-asset redirect target
+    # (release-assets.githubusercontent.com) 404s urllib's default
+    # 'Python-urllib/x.y' UA on both HEAD and even a ranged GET, verified
+    # empirically while writing this check (2026-09-02) -- curl works
+    # unmodified only because it already sends its own UA by default.
+    req = urllib.request.Request(info['url'], headers={'User-Agent': 'curl/8.0'})
     status = urllib.request.urlopen(req).status
     print(platform, status, info['url'])
 "
 ```
 
-Every line must print `200`.
+Every line must print `200`. Give it a few seconds after `gh release create`/
+`gh release upload` before trusting a 404 here — asset serving can lag a few
+seconds behind the release metadata actually existing.
 
 The `--notes-file` command extracts just the new version's section out of
 `docs/release-notes.md` so the release body and the changelog never drift
