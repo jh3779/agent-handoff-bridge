@@ -4,6 +4,24 @@
 
 ## Unreleased
 
+- **New: a real native folder picker in the desktop app.** Clicking Open
+  Folder (or "폴더 직접 선택…" on the empty-workspace card) now opens the
+  OS's own folder-choose dialog on the Tauri build, instead of falling
+  through to the manual path-typing prompt (that pywebview-only
+  shortcut, `window.pywebview.api.pick_folder`, never existed inside the
+  Tauri webview, only the separate non-Tauri native-window mode). Added
+  `dialog:allow-open` (only `allow-open`, not the broader `dialog:default`)
+  plus `app.withGlobalTauri: true` so the frontend can call
+  `window.__TAURI__.dialog.open(...)` directly with no npm bundler.
+- **Fix: the empty-workspace card looked like a tiny box floating in a
+  mostly-empty window on large screens.** A side effect of the earlier
+  fullscreen-viewport-scaling fix: the outer app shell grew with the
+  window, but the empty-state card stayed a fixed 320px wide. It (and
+  the empty-chat-history state) now scale with the viewport via
+  `clamp()`, up to a readable cap.
+- Removed the "Phase 6 · 자동 업데이트 확인" titlebar badge -- a
+  development-progress label with no ongoing use to a real user.
+
 ## v0.4.2 — 2026-09-02
 
 - **Fix: the macOS desktop app's local server crashed on every launch**

@@ -176,8 +176,26 @@
   // picks a folder, same invariant AppState/Api's docstring already
   // establishes for switching one.
   async function pickFolder() {
+    if (window.__TAURI__ && window.__TAURI__.dialog) {
+      // Tauri desktop shell: real OS folder picker via tauri-plugin-dialog
+      // (window.__TAURI__ only exists because tauri.conf.json sets
+      // app.withGlobalTauri -- this project has no frontend build step/
+      // npm bundler, so the @tauri-apps/plugin-dialog JS package isn't an
+      // option; the global-Tauri + capabilities/default.json's
+      // "dialog:allow-open" grant is the no-build-tooling equivalent).
+      let chosen;
+      try {
+        chosen = await window.__TAURI__.dialog.open({ directory: true, multiple: false });
+      } catch (err) {
+        showToast(`폴더 선택 실패: ${err}`);
+        return;
+      }
+      if (chosen) await switchWorkspaceTo(chosen);
+      return;
+    }
     if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) {
-      // Native app window: real OS folder picker via the pywebview JS bridge.
+      // Native app window (non-Tauri, pywebview fallback): real OS folder
+      // picker via the pywebview JS bridge.
       let chosen;
       try {
         chosen = await window.pywebview.api.pick_folder();

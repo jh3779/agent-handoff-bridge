@@ -123,8 +123,8 @@ section covers only what's new because a native shell now exists.
 
 - **The main window always loads the sidecar's real
   `http://127.0.0.1:8787/` URL, never Tauri's own bundled/asset-protocol
-  content.** `src-tauri/capabilities/default.json` grants no permissions
-  beyond `core:default` -- an earlier draft also granted
+  content.** `src-tauri/capabilities/default.json` originally granted no
+  permissions beyond `core:default` -- an earlier draft also granted
   `shell:allow-execute` for window `"main"`, matching Tauri's own
   scaffolding convention, but a review round pointed out that leaving an
   unused grant in place invites a future contributor to misjudge what's
@@ -135,12 +135,18 @@ section covers only what's new because a native shell now exists.
   through IPC) -- so the grant was never load-bearing, and removing it
   was verified empirically (rebuilt and relaunched the actual `.app`;
   the sidecar still spawns and the window still renders correctly with
-  it gone), not just reasoned about. If a future sub-phase adds a real
-  Tauri command invokable *from* the loaded web content (e.g. wiring a
-  native folder picker to replace the manual-path fallback -- see
-  `docs/design-system/roadmap.md`'s 7a notes), whatever permission that
-  needs should be added deliberately and scoped to exactly that command,
-  not restored from here.
+  it gone), not just reasoned about. **2026-09-02: exactly the scenario
+  this section already anticipated happened** -- a real native folder
+  picker (`webui/app.js`'s `pickFolder()`) replaced the manual-path
+  fallback for the Tauri build specifically. Added `dialog:allow-open`
+  (only `allow-open`, not the broader `dialog:default`, which also grants
+  `message`/`save` this feature never needs) plus
+  `app.withGlobalTauri: true` in `tauri.conf.json` (this project has no
+  frontend build step/npm bundler to import `@tauri-apps/plugin-dialog`
+  through, so the frontend calls `window.__TAURI__.dialog.open(...)`
+  directly). Any *further* permission beyond this one should still be
+  added deliberately and scoped to exactly what it's for, not bulk-
+  granted from here.
 - **`tauri.conf.json`'s `"security": {"csp": null}` is similarly a
   no-op today**, not a deliberately widened attack surface: Tauri's CSP
   injection applies to responses served through its own asset/IPC
@@ -149,10 +155,12 @@ section covers only what's new because a native shell now exists.
   gets revisited -- both assumptions hold only as long as the window's
   content is exactly "the same local Python server this project already
   runs and has already reasoned about," and no more.
-- `tauri-plugin-dialog` is registered only for a fatal-startup-error
-  path (a blocking native dialog if the sidecar dies before the window
-  is ever created) -- it exposes no new command surface reachable from
-  the frontend.
+- `tauri-plugin-dialog` was originally registered only for a
+  fatal-startup-error path and the DEC-28 update-confirm dialog (both
+  Rust-initiated, not reachable from the frontend). As of 2026-09-02 it
+  is also reachable from the frontend, deliberately: the folder picker
+  above (`dialog:allow-open`) and nothing else -- `save`/`message` stay
+  ungranted since this feature doesn't use them.
 - **Sidecar process cleanup on app quit (Phase 7b M6).** Verified
   empirically that this was actually broken through 7a and 7b M1-M4: the
   `CommandChild` returned by spawning the sidecar was dropped immediately

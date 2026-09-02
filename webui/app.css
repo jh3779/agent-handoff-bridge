@@ -111,16 +111,6 @@ body {
   padding: 6px 14px; font-size: 12px; cursor: pointer; font-family: var(--font);
 }
 .folder-prompt button.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }
-.titlebar .badge {
-  margin-left: auto;
-  font-size: 10.5px;
-  font-weight: 700;
-  color: var(--muted);
-  background: var(--surface);
-  border: 1px solid var(--outline);
-  border-radius: 999px;
-  padding: 3px 10px;
-}
 .provider-select {
   font-family: var(--mono);
   font-size: 11px;
@@ -188,8 +178,8 @@ body {
   margin: auto;
   text-align: center;
   color: var(--muted);
-  font-size: 12.5px;
-  max-width: 320px;
+  font-size: clamp(12.5px, 1.1vw, 14.5px);
+  max-width: clamp(320px, 28vw, 480px);
 }
 
 .msg { display: flex; gap: 9px; max-width: 82%; }
@@ -248,19 +238,20 @@ body {
 .no-workspace-card {
   margin: auto;
   text-align: center;
-  max-width: 320px;
+  width: 100%;
+  max-width: clamp(320px, 32vw, 560px);
   background: var(--surface);
   border: 1px solid var(--outline);
   border-radius: 12px;
-  padding: 20px 18px;
+  padding: clamp(20px, 3vw, 36px) clamp(18px, 2.6vw, 32px);
 }
-.nw-icon { font-size: 28px; }
-.nw-title { font-weight: 700; font-size: 13px; margin-top: 8px; }
-.nw-note { margin-top: 6px; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.nw-icon { font-size: clamp(28px, 4vw, 44px); }
+.nw-title { font-weight: 700; font-size: clamp(13px, 1.4vw, 17px); margin-top: 8px; }
+.nw-note { margin-top: 6px; color: var(--muted); font-size: clamp(11.5px, 1.1vw, 13.5px); line-height: 1.5; }
 .nw-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
 .nw-actions button {
   border-radius: 8px; border: 1px solid var(--outline); background: var(--surface);
-  padding: 8px 14px; font-size: 12px; cursor: pointer; font-family: var(--font);
+  padding: clamp(8px, 1vw, 11px) 14px; font-size: clamp(12px, 1.1vw, 14px); cursor: pointer; font-family: var(--font);
 }
 .nw-actions button.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }
 .nw-path { margin-top: 10px; font-size: 10.5px; color: var(--muted); }
