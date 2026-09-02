@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+## v0.4.4 — 2026-09-02
+
+- **New: a consolidated ⚙️ Settings panel**, replacing the separate
+  Diagnose and Context titlebar buttons (same content, moved inside as
+  the "연결된 AI 모델" and "공용 Context" sections) plus two new items:
+  - **Auto-fallback toggle** -- was always on with no way to turn it off
+    from the Web UI; now controllable per-session, threaded through
+    `POST /api/run`'s `auto_fallback` field into
+    `webui_bridge_run.py`'s CLI-mode dispatch.
+  - **Theme switch** (시스템 설정/라이트/다크) -- previously only
+    followed the OS setting with no manual override; persisted in
+    `localStorage`, applied before first paint to avoid a flash of the
+    wrong theme.
+
 ## v0.4.3 — 2026-09-02
 
 - **Fix: re-opening the app while it was already running (minimized or

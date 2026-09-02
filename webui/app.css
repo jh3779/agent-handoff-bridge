@@ -19,8 +19,13 @@
   --font: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
   --mono: "Roboto Mono", ui-monospace, Menlo, monospace;
 }
+/* Settings > 테마: "자동"(기본, 아무 [data-theme]도 없음)은 OS 설정을
+   media query로만 따르고, "라이트"/"다크"는 html[data-theme=...]로 명시
+   고정한다. 다크 값 정의가 두 군데(media query + 속성)로 갈라지는 건
+   의도적 -- media query 쪽은 :not([data-theme="light"])로 막아서
+   라이트 강제 선택 시 OS가 다크여도 뚫고 들어오지 못하게 한다. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #131318; --on-bg: #E4E1E9;
     --surface: #1B1B21; --surface-low: #1F1F25; --surface-high: #29292F;
     --outline: #45464F;
@@ -32,6 +37,18 @@
     --st-handoff-bg: #663F00; --st-handoff-fg: #FFDDB0;
     --st-fail-bg: #93000A; --st-fail-fg: #FFDAD6;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #131318; --on-bg: #E4E1E9;
+  --surface: #1B1B21; --surface-low: #1F1F25; --surface-high: #29292F;
+  --outline: #45464F;
+  --primary: #B4C5FF; --on-primary: #062E7B; --primary-container: #1D4491; --on-primary-container: #DAE2FF;
+  --secondary-container: #424659; --on-secondary-container: #DFE1F9;
+  --error: #FFB4AB; --on-error-container: #FFDAD6; --error-container: #93000A;
+  --muted: #C6C5D0;
+  --st-success-bg: #1F4B2C; --st-success-fg: #C4EED0;
+  --st-handoff-bg: #663F00; --st-handoff-fg: #FFDDB0;
+  --st-fail-bg: #93000A; --st-fail-fg: #FFDAD6;
 }
 
 * { box-sizing: border-box; }
@@ -409,3 +426,44 @@ body {
 .pp-key-row.wrap input, .pp-key-row.wrap select { flex: 1 1 100px; }
 .pp-divider { height: 1px; background: var(--outline); margin: 12px 0; }
 .pp-key-row button.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }
+
+/* 설정 패널 -- 예전엔 Diagnose(연결된 AI 모델)/Context가 titlebar에
+   각자 버튼으로 떠 있었는데, 한 곳으로 모아서 titlebar를 정리한다. 세
+   섹션(일반/연결된 AI 모델/공용 Context)을 한 모달에 넣으므로 내용이
+   길어질 수 있어 -- .folder-prompt 기본값과 달리 -- 세로 스크롤을
+   허용한다. */
+.settings-panel { max-height: 82vh; overflow-y: auto; }
+.settings-section-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted); margin: 0 0 8px;
+}
+.settings-section + .settings-section { margin-top: 18px; }
+.settings-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 0;
+}
+.settings-row .label { font-size: 12.5px; font-weight: 600; }
+.settings-row .note { margin-top: 2px; font-size: 10.5px; color: var(--muted); line-height: 1.4; }
+.settings-row select {
+  box-sizing: border-box; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid var(--outline); background: var(--bg); color: var(--on-bg);
+  font-family: var(--font); font-size: 11.5px;
+}
+
+/* 토글 스위치 (auto-fallback 등 즉시 적용되는 on/off 설정용) -- 네이티브
+   checkbox를 숨기고 라벨을 스위치 모양으로 그린다, 별도 JS 상태 관리 불필요
+   (checkbox의 checked가 곧 상태). */
+.toggle { position: relative; display: inline-block; width: 36px; height: 20px; flex: none; }
+.toggle input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.toggle .track {
+  position: absolute; inset: 0; background: var(--outline); border-radius: 999px;
+  transition: background-color .15s ease;
+}
+.toggle .thumb {
+  position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--surface); transition: transform .15s ease;
+  box-shadow: 0 1px 2px rgba(0,0,0,.3);
+}
+.toggle input:checked + .track { background: var(--primary); }
+.toggle input:checked ~ .thumb { transform: translateX(16px); }
+.toggle input:focus-visible + .track { outline: 2px solid var(--primary); outline-offset: 2px; }

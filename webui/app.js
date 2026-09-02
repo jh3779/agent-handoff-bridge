@@ -31,17 +31,16 @@
   const historyScrim = document.getElementById("history-scrim");
   const historyCloseBtn = document.getElementById("history-close-btn");
   const historyList = document.getElementById("history-list");
-  const diagnoseBtn = document.getElementById("diagnose-btn");
-  const providerPanelOverlay = document.getElementById("provider-panel-overlay");
+  const settingsBtn = document.getElementById("settings-btn");
+  const settingsPanelOverlay = document.getElementById("settings-panel-overlay");
+  const settingsPanelClose = document.getElementById("settings-panel-close");
   const providerPanelList = document.getElementById("provider-panel-list");
-  const providerPanelClose = document.getElementById("provider-panel-close");
   const customProviderPanelList = document.getElementById("custom-provider-panel-list");
   const customProviderAddForm = document.getElementById("custom-provider-add-form");
-  const contextBtn = document.getElementById("context-btn");
-  const contextPanelOverlay = document.getElementById("context-panel-overlay");
   const contextTextarea = document.getElementById("context-textarea");
-  const contextPanelClose = document.getElementById("context-panel-close");
   const contextPanelSave = document.getElementById("context-panel-save");
+  const autoFallbackToggle = document.getElementById("auto-fallback-toggle");
+  const themeSelect = document.getElementById("theme-select");
   const updateBtn = document.getElementById("update-btn");
   const updateDot = document.getElementById("update-dot");
   const updatePopover = document.getElementById("update-popover");
@@ -519,21 +518,6 @@
     refreshProviderSelect(data);
   }
 
-  function openProviderPanel() {
-    providerPanelOverlay.classList.add("show");
-    refreshProviderPanel();
-  }
-
-  function closeProviderPanel() {
-    providerPanelOverlay.classList.remove("show");
-  }
-
-  diagnoseBtn.addEventListener("click", openProviderPanel);
-  providerPanelClose.addEventListener("click", closeProviderPanel);
-  providerPanelOverlay.addEventListener("click", (event) => {
-    if (event.target === providerPanelOverlay) closeProviderPanel();
-  });
-
   // ---------- shared context (DEC-27) ----------
   // .handoff/shared-context.md -- free-form, per-workspace text folded
   // into every provider call regardless of mode (CLI via
@@ -543,8 +527,7 @@
   // requires a workspace (same "no workspace selected" 400 every other
   // workspace-scoped POST already returns).
 
-  async function openContextPanel() {
-    contextPanelOverlay.classList.add("show");
+  async function loadSharedContext() {
     contextTextarea.value = "불러오는 중…";
     contextTextarea.disabled = true;
     try {
@@ -558,24 +541,113 @@
     }
   }
 
-  function closeContextPanel() {
-    contextPanelOverlay.classList.remove("show");
+  // ---------- settings panel ----------
+  // Single entry point (titlebar "설정" button) for everything that used to
+  // be two separate buttons (Diagnose/Context) plus two new items
+  // (auto-fallback toggle, theme) -- consolidated so the titlebar itself
+  // stays short.
+  function openSettingsPanel() {
+    settingsPanelOverlay.classList.add("show");
+    refreshProviderPanel();
+    loadSharedContext();
   }
 
-  contextBtn.addEventListener("click", openContextPanel);
-  contextPanelClose.addEventListener("click", closeContextPanel);
-  contextPanelOverlay.addEventListener("click", (event) => {
-    if (event.target === contextPanelOverlay) closeContextPanel();
+  function closeSettingsPanel() {
+    settingsPanelOverlay.classList.remove("show");
+  }
+
+  settingsBtn.addEventListener("click", openSettingsPanel);
+  settingsPanelClose.addEventListener("click", closeSettingsPanel);
+  settingsPanelOverlay.addEventListener("click", (event) => {
+    if (event.target === settingsPanelOverlay) closeSettingsPanel();
   });
   contextPanelSave.addEventListener("click", async () => {
     try {
       await postJSON("/api/shared-context", { text: contextTextarea.value });
       showToast("공용 context가 저장되었습니다.");
-      closeContextPanel();
     } catch (err) {
       showToast(`저장 실패: ${err.message}`);
     }
   });
+
+  // ---------- auto-fallback toggle ----------
+  // Frontend-only preference (localStorage), threaded into POST /api/run's
+  // body as `auto_fallback` -- webui_bridge_run.py only appends CLI mode's
+  // `--auto-fallback` flag when it's true (default), so turning this off
+  // makes a run try only the selected provider, matching what
+  // remote_handoff_submit.py's own --no-auto-fallback already allows on
+  // the CLI side.
+  const AUTO_FALLBACK_KEY = "ahb-auto-fallback";
+
+  function loadAutoFallbackPreference() {
+    let saved;
+    try {
+      saved = localStorage.getItem(AUTO_FALLBACK_KEY);
+    } catch (err) {
+      saved = null;
+    }
+    autoFallbackToggle.checked = saved !== "off"; // default: on
+  }
+
+  function isAutoFallbackEnabled() {
+    return autoFallbackToggle.checked;
+  }
+
+  autoFallbackToggle.addEventListener("change", () => {
+    try {
+      localStorage.setItem(AUTO_FALLBACK_KEY, autoFallbackToggle.checked ? "on" : "off");
+    } catch (err) {
+      // localStorage unavailable -- the toggle still works for this page
+      // load, it just won't be remembered next launch.
+    }
+  });
+
+  loadAutoFallbackPreference();
+
+  // ---------- theme ----------
+  // "system" (default) clears the override and lets app.css's
+  // @media (prefers-color-scheme) block decide, matching the inline
+  // pre-paint script in index.html's <head> (kept in sync deliberately:
+  // that script only *applies* a saved choice, this is the only place
+  // that *writes* one).
+  const THEME_KEY = "ahb-theme";
+
+  function applyTheme(theme) {
+    if (theme === "light" || theme === "dark") {
+      document.documentElement.setAttribute("data-theme", theme);
+    } else {
+      document.documentElement.removeAttribute("data-theme");
+    }
+  }
+
+  function loadThemePreference() {
+    let saved;
+    try {
+      saved = localStorage.getItem(THEME_KEY);
+    } catch (err) {
+      saved = null;
+    }
+    const theme = saved === "light" || saved === "dark" ? saved : "system";
+    themeSelect.value = theme;
+    applyTheme(theme); // index.html's inline script already did this before first paint; re-applying here is a cheap no-op, not a fix for anything
+  }
+
+  themeSelect.addEventListener("change", () => {
+    const theme = themeSelect.value;
+    applyTheme(theme);
+    try {
+      if (theme === "system") {
+        localStorage.removeItem(THEME_KEY);
+      } else {
+        localStorage.setItem(THEME_KEY, theme);
+      }
+    } catch (err) {
+      // localStorage unavailable -- the choice still applies for this page
+      // load, it just won't be remembered next launch.
+    }
+  });
+
+  loadThemePreference();
 
   // ---------- file tree ----------
 
@@ -946,7 +1018,12 @@
     composerInput.disabled = true;
     updateSendState();
     try {
-      const result = await postJSON("/api/run", { provider, text, attachments: userMessage.attachments });
+      const result = await postJSON("/api/run", {
+        provider,
+        text,
+        attachments: userMessage.attachments,
+        auto_fallback: isAutoFallbackEnabled(),
+      });
       busyMsg.remove();
       for (const agentMessage of result.messages) renderMessage(agentMessage);
     } catch (err) {

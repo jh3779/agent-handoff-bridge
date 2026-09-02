@@ -110,7 +110,7 @@ def build_run_prompt(text: str, attachments: list[dict]) -> str:
 
 
 def run_provider_via_bridge(
-    workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str
+    workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str, auto_fallback: bool = True
 ) -> list[dict]:
     """Thin locking wrapper around `_run_provider_via_bridge_locked()`.
 
@@ -122,18 +122,26 @@ def run_provider_via_bridge(
     if not _RUN_LOCK.acquire(blocking=False):
         raise RunAlreadyInProgressError("a provider run is already in progress; wait for it to finish")
     try:
-        return _run_provider_via_bridge_locked(workspace, provider, prompt, model, instruction_type)
+        return _run_provider_via_bridge_locked(workspace, provider, prompt, model, instruction_type, auto_fallback)
     finally:
         _RUN_LOCK.release()
 
 
 def _run_provider_via_bridge_locked(
-    workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str
+    workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str, auto_fallback: bool = True
 ) -> list[dict]:
-    """Invoke `handoff_bridge.py run <provider> --execute --auto-fallback`
+    """Invoke `handoff_bridge.py run <provider> --execute [--auto-fallback]`
     against `workspace` and return the new handoff_bridge.py history
     record(s) it appended to .handoff/state.json -- more than one if
     auto-fallback chained into a second provider.
+
+    `auto_fallback` (Settings panel toggle, webui/app.js) only affects the
+    CLI-mode subprocess path below -- `--auto-fallback` is appended to its
+    argv only when true (`handoff_bridge.py run`'s own flag already
+    defaults to off, so omitting it is enough; no `--no-auto-fallback`
+    counterpart needed there). It has no meaning for the `provider ==
+    "auto"`/API-key-mode branches right below, which pick a single
+    provider up front and never chain to a second one.
 
     If the subprocess itself fails before handoff_bridge.py ever gets to
     classify_handoff()/save_state() (e.g. the interpreter can't even start),
@@ -228,7 +236,7 @@ def _run_provider_via_bridge_locked(
             "run",
             provider,
             "--execute",
-            "--auto-fallback",
+            *(["--auto-fallback"] if auto_fallback else []),
             "--instruction-type",
             instruction_type,
             "--prompt-file",

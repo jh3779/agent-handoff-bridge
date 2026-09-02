@@ -146,7 +146,9 @@ extended to full agentic parity by the CFL-17 follow-up
   badge) designed in
   [docs/design-system/components.html §14](design-system/components.html#s14)
   and [wireframes.html §S8](design-system/wireframes.html#s8) is now real —
-  `webui/index.html`'s Diagnose button opens it, backed by
+  `webui/index.html`'s ⚙️ Settings panel opens it (the "연결된 AI 모델"
+  section -- Diagnose was its own titlebar button until the 2026-09-02
+  Settings-panel consolidation), backed by
   `GET /api/providers`/`POST /api/provider-key`.
 - **Full agentic parity, added by the CFL-17 follow-up**
   ([DEC-21](design-system/flutter-mapping.html#s1c)): this API-key path

@@ -302,8 +302,11 @@ HTTP server. What it does:
   startup it's attached to (best-effort, logged not raised). Full schema,
   locking, and failure-isolation details:
   [Web UI Chat Storage § Recently-Opened Registry](webui-chat-storage.md#recently-opened-registry-phase-3).
-- **Diagnose** (titlebar button) opens a connection panel listing each
-  provider's CLI-detection status. A provider with **no local CLI detected**
+- **Diagnose** (the "연결된 AI 모델" section inside the titlebar's ⚙️
+  Settings panel, as of 2026-09-02 -- previously its own standalone
+  titlebar button before the Settings panel consolidated it alongside
+  Context, an auto-fallback toggle, and a theme switch) opens a connection
+  panel listing each provider's CLI-detection status. A provider with **no local CLI detected**
   can be connected instead by pasting an API key (and optionally a model) —
   this calls the provider's HTTP API directly instead of a local subprocess.
   Full agentic parity with CLI mode

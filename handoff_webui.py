@@ -404,9 +404,14 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         # that skips it.
                         raise WorkspaceError("no workspace selected")
                     model = body.get("model") or None
+                    # Settings panel toggle (webui/app.js) -- defaults to
+                    # True so any caller that omits the field (an older
+                    # cached frontend, a direct API call) keeps the
+                    # previously-unconditional --auto-fallback behavior.
+                    auto_fallback = bool(body.get("auto_fallback", True))
                     workspace = state.workspace
                     prompt = build_run_prompt(text, attachments)
-                    records = run_provider_via_bridge(workspace, provider, prompt, model, "continue")
+                    records = run_provider_via_bridge(workspace, provider, prompt, model, "continue", auto_fallback)
                     messages = []
                     for record in records:
                         status = classify_run_status(record["handoff_needed"], record["reason"])

@@ -5,6 +5,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent Handoff Bridge — Web UI (MVP)</title>
 <link rel="stylesheet" href="/app.css">
+<script>
+  // Applies a saved manual theme choice before first paint (a flash of the
+  // wrong theme, however brief, would otherwise be visible every launch) --
+  // must run synchronously here, not from app.js, which only loads/executes
+  // after the page has already rendered once. "system" (default) leaves no
+  // attribute, so app.css's @media (prefers-color-scheme) block alone
+  // decides -- matches this having no saved preference yet.
+  (function () {
+    try {
+      var saved = localStorage.getItem("ahb-theme");
+      if (saved === "light" || saved === "dark") {
+        document.documentElement.setAttribute("data-theme", saved);
+      }
+    } catch (err) {
+      // localStorage can throw (private mode, disabled storage) -- fall
+      // back to the system theme silently rather than breaking the page.
+    }
+  })();
+</script>
 </head>
 <body>
   <div class="app">
@@ -23,11 +42,8 @@
       <button class="tbtn" id="history-btn" type="button" title="다른 프로젝트의 최근 대화">
         <span>🕐</span> History
       </button>
-      <button class="tbtn" id="diagnose-btn" type="button" title="provider 연결 상태 확인 · API 키 연결 · 커스텀 provider 추가">
-        <span>🔌</span> Diagnose
-      </button>
-      <button class="tbtn" id="context-btn" type="button" title="이 프로젝트에 항상 적용될 공용 context 작성">
-        <span>📝</span> Context
+      <button class="tbtn" id="settings-btn" type="button" title="설정 · provider 연결 상태 · 공용 context">
+        <span>⚙️</span> 설정
       </button>
     </div>
     <div class="body">
@@ -67,32 +83,62 @@
   </div>
   <div class="toast" id="toast"></div>
 
-  <div class="folder-prompt-overlay" id="provider-panel-overlay">
-    <div class="folder-prompt" id="provider-panel" style="width:460px">
-      <h3>연결된 AI 모델</h3>
-      <p>CLI가 없는 provider는 API 키로 직접 연결할 수 있습니다. 파일 읽기/쓰기/수정, 명령 실행 등
-         CLI 모드와 동일한 도구 사용을 지원합니다.</p>
-      <div id="provider-panel-list"></div>
-      <div class="pp-divider"></div>
-      <p><b>커스텀 provider</b> — CLI 없이 토큰을 직접 구매해 쓰는 OpenAI/Anthropic 호환 endpoint
-         (OpenRouter, Groq, 로컬 Ollama/LM Studio 등)를 원하는 이름으로 여러 개 등록할 수 있습니다.</p>
-      <div id="custom-provider-panel-list"></div>
-      <div id="custom-provider-add-form"></div>
-      <div class="row" style="justify-content:flex-end;margin-top:10px">
-        <button type="button" id="provider-panel-close">닫기</button>
-      </div>
-    </div>
-  </div>
+  <div class="folder-prompt-overlay" id="settings-panel-overlay">
+    <div class="folder-prompt settings-panel" id="settings-panel" style="width:520px">
+      <h3>설정</h3>
 
-  <div class="folder-prompt-overlay" id="context-panel-overlay">
-    <div class="folder-prompt" id="context-panel" style="width:520px">
-      <h3>공용 Context</h3>
-      <p>이 프로젝트에서 어떤 provider를 쓰든(CLI든 커스텀 API 키든) 항상 함께 전달되는 내용입니다.
-         프로젝트별로 저장되며, <code>.handoff/shared-context.md</code>로 워크스페이스에 남습니다.</p>
-      <textarea id="context-textarea" rows="10" placeholder="예: legacy/ 폴더는 절대 수정하지 마세요. 이 프로젝트는 4-space indent를 씁니다…" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
-      <div class="row" style="justify-content:flex-end;margin-top:10px;gap:8px">
-        <button type="button" id="context-panel-close">닫기</button>
-        <button type="button" id="context-panel-save" class="primary">저장</button>
+      <div class="settings-section">
+        <div class="settings-section-title">일반</div>
+        <div class="settings-row">
+          <div>
+            <div class="label">Auto-fallback</div>
+            <div class="note">선택한 provider가 quota/rate/컨텍스트 한도로 실패하면 다른 provider로 자동 전환</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="auto-fallback-toggle" checked>
+            <span class="track"></span>
+            <span class="thumb"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="label">테마</div>
+            <div class="note">기본값은 시스템 설정을 따라갑니다</div>
+          </div>
+          <select id="theme-select">
+            <option value="system">시스템 설정</option>
+            <option value="light">라이트</option>
+            <option value="dark">다크</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="pp-divider"></div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">연결된 AI 모델</div>
+        <p>CLI가 없는 provider는 API 키로 직접 연결할 수 있습니다. 파일 읽기/쓰기/수정, 명령 실행 등
+           CLI 모드와 동일한 도구 사용을 지원합니다.</p>
+        <div id="provider-panel-list"></div>
+        <div class="pp-divider"></div>
+        <p><b>커스텀 provider</b> — CLI 없이 토큰을 직접 구매해 쓰는 OpenAI/Anthropic 호환 endpoint
+           (OpenRouter, Groq, 로컬 Ollama/LM Studio 등)를 원하는 이름으로 여러 개 등록할 수 있습니다.</p>
+        <div id="custom-provider-panel-list"></div>
+        <div id="custom-provider-add-form"></div>
+      </div>
+
+      <div class="pp-divider"></div>
+
+      <div class="settings-section">
+        <div class="settings-section-title">공용 Context</div>
+        <p>이 프로젝트에서 어떤 provider를 쓰든(CLI든 커스텀 API 키든) 항상 함께 전달되는 내용입니다.
+           프로젝트별로 저장되며, <code>.handoff/shared-context.md</code>로 워크스페이스에 남습니다.</p>
+        <textarea id="context-textarea" rows="8" placeholder="예: legacy/ 폴더는 절대 수정하지 마세요. 이 프로젝트는 4-space indent를 씁니다…" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
+      </div>
+
+      <div class="row" style="justify-content:flex-end;margin-top:14px;gap:8px">
+        <button type="button" id="settings-panel-close">닫기</button>
+        <button type="button" id="context-panel-save" class="primary">Context 저장</button>
       </div>
     </div>
   </div>

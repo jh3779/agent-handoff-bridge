@@ -1466,6 +1466,44 @@ class RunProviderViaBridgeSubprocessEncodingTests(unittest.TestCase):
         self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
 
 
+class RunProviderViaBridgeAutoFallbackFlagTests(unittest.TestCase):
+    """Covers the Settings panel's auto-fallback toggle (webui/app.js):
+    run_provider_via_bridge()'s new `auto_fallback` parameter must control
+    whether the CLI-mode subprocess argv includes --auto-fallback at all --
+    handoff_bridge.py run's own flag defaults to off, so omitting it (not
+    a --no-auto-fallback counterpart) is the correct way to disable it."""
+
+    def _run(self, auto_fallback):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            with mock.patch("webui_bridge_run.cli_available", return_value=True), mock.patch(
+                "webui_bridge_run.subprocess.run",
+                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+            ) as run_spy:
+                webui_bridge_run.run_provider_via_bridge(workspace, "codex", "hello", None, "continue", auto_fallback)
+        return run_spy.call_args.args[0]
+
+    def test_default_includes_auto_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            with mock.patch("webui_bridge_run.cli_available", return_value=True), mock.patch(
+                "webui_bridge_run.subprocess.run",
+                return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
+            ) as run_spy:
+                webui_bridge_run.run_provider_via_bridge(workspace, "codex", "hello", None, "continue")
+        self.assertIn("--auto-fallback", run_spy.call_args.args[0])
+
+    def test_explicit_true_includes_the_flag(self):
+        self.assertIn("--auto-fallback", self._run(True))
+
+    def test_false_omits_the_flag_entirely(self):
+        command = self._run(False)
+        self.assertNotIn("--auto-fallback", command)
+        # And nothing invalid like a "--no-auto-fallback" was substituted --
+        # handoff_bridge.py run has no such flag to begin with.
+        self.assertNotIn("--no-auto-fallback", command)
+
+
 class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
     def setUp(self):
         self.setUpFakeProviders()
@@ -1525,6 +1563,47 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
             chat = json.loads(resp.read().decode("utf-8"))
         self.assertEqual(len(chat["messages"]), 1)
         self.assertEqual(chat["messages"][0]["role"], "agent")
+
+    def test_run_threads_auto_fallback_from_the_request_body(self):
+        # webui/app.js's Settings-panel toggle sends this field; confirms
+        # it actually reaches run_provider_via_bridge() rather than being
+        # silently dropped somewhere in the /api/run handler.
+        with mock.patch(
+            "handoff_webui.run_provider_via_bridge",
+            return_value=[
+                {
+                    "provider": "codex",
+                    "model": None,
+                    "exit_code": 0,
+                    "session_id": None,
+                    "final_text": "ok",
+                    "handoff_needed": False,
+                    "reason": "none",
+                }
+            ],
+        ) as run_spy:
+            status, _data = self._post("/api/run", {"provider": "codex", "text": "hi", "auto_fallback": False})
+        self.assertEqual(status, 200)
+        self.assertEqual(run_spy.call_args.args[-1], False)
+
+    def test_run_defaults_auto_fallback_to_true_when_omitted(self):
+        with mock.patch(
+            "handoff_webui.run_provider_via_bridge",
+            return_value=[
+                {
+                    "provider": "codex",
+                    "model": None,
+                    "exit_code": 0,
+                    "session_id": None,
+                    "final_text": "ok",
+                    "handoff_needed": False,
+                    "reason": "none",
+                }
+            ],
+        ) as run_spy:
+            status, _data = self._post("/api/run", {"provider": "codex", "text": "hi"})
+        self.assertEqual(status, 200)
+        self.assertEqual(run_spy.call_args.args[-1], True)
 
     def test_run_with_empty_text_is_rejected(self):
         status, data = self._post("/api/run", {"provider": "codex", "text": "   "})
