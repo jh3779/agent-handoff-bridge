@@ -3060,3 +3060,97 @@ tag" rule by construction rather than by discipline.
   so this is a reasoning-based, not empirical, confidence level for
   those two platforms.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-02 (v0.4.4: consolidated Settings panel, auto-fallback toggle, theme switch, released)
+
+- **Task**: user asked for the previously-separate Diagnose/Context
+  titlebar buttons to be merged into one Settings panel, plus an
+  auto-fallback toggle and a theme switch, explicitly for a cleaner UI
+  ("UI 좀 더 깔끔하게").
+- **Changed**:
+  - `webui/index.html`: `diagnose-btn`/`context-btn` titlebar buttons
+    replaced with one `settings-btn` (⚙️ 설정). The two old overlays
+    (`provider-panel-overlay`/`context-panel-overlay`) merged into one
+    `settings-panel-overlay` > `.settings-panel` with 4 sections in
+    order: 일반 (new auto-fallback toggle + theme select), 연결된 AI
+    모델 (old Diagnose content, unchanged), 공용 Context (old Context
+    content, unchanged). Added a pre-paint inline `<script>` in `<head>`
+    that applies a saved `localStorage` theme choice before first paint
+    (avoids a flash of the wrong theme).
+  - `webui/app.css`: theme variables restructured to support a manual
+    override alongside the existing `prefers-color-scheme` media query --
+    `:root[data-theme="dark"]` (explicit) plus
+    `:root:not([data-theme="light"])` inside the media query (so an
+    explicit light choice can't be overridden back to dark by the OS
+    setting). New `.settings-panel` (scrollable, `max-height:82vh` --
+    three sections in one modal can overflow a short window),
+    `.settings-section-title`/`.settings-row`, and a `.toggle` switch
+    component (checkbox-driven, no JS state needed beyond `checked`).
+  - `webui/app.js`: merged `openProviderPanel()`/`openContextPanel()`
+    into one `openSettingsPanel()` (refreshes both provider list and
+    shared-context textarea on open). New theme
+    apply/persist/load functions (`applyTheme()`, `THEME_KEY` in
+    localStorage) and auto-fallback toggle load/persist
+    (`AUTO_FALLBACK_KEY`) -- `sendMessage()`'s `POST /api/run` body now
+    includes `auto_fallback: isAutoFallbackEnabled()`.
+  - `webui_bridge_run.py`: `run_provider_via_bridge()`/
+    `_run_provider_via_bridge_locked()` gained `auto_fallback: bool =
+    True`; the CLI-mode subprocess command only appends
+    `"--auto-fallback"` when true (`handoff_bridge.py run`'s own flag
+    already defaults to off, so omitting it -- not a
+    `--no-auto-fallback` counterpart -- is sufficient, confirmed by
+    reading its argparse definition first rather than assuming).
+  - `handoff_webui.py`'s `/api/run` handler reads `body.get(
+    "auto_fallback", True)` (default true so an older cached
+    frontend/direct API caller keeps the previous unconditional
+    behavior) and passes it through.
+  - `docs/cli-reference.md`/`docs/provider-extensibility.md` updated
+    (both referenced "Diagnose button" as its own titlebar entry --
+    corrected to describe it as a Settings-panel section).
+    `docs/release-notes.md` new `## v0.4.4` section. Version bumped to
+    0.4.4 across `handoff_bridge.py`/`tauri.conf.json`/`Cargo.toml`.
+  - New tests: `RunProviderViaBridgeAutoFallbackFlagTests` (unit-level,
+    mocks `subprocess.run`, confirms `--auto-fallback` is included when
+    true/default and *entirely absent* -- not replaced with some
+    `--no-auto-fallback` that doesn't exist -- when false) and two
+    `ApiRunLiveServerTests` additions (real HTTP request through
+    `/api/run`, confirms the `auto_fallback` body field actually reaches
+    `run_provider_via_bridge()`, both the explicit-false and
+    omitted-defaults-true cases).
+- **Verified**:
+  - `python3 handoff_bridge.py check` -> 565/565 PASS (560 baseline + 5
+    new). `scan_secrets.py` -> PASS.
+  - Real local `cargo tauri build` before release; `node --check` on
+    both the local and CI-served `app.js`; confirmed via a real running
+    standalone sidecar (`curl` against `/` and `/app.css`) that the new
+    settings-btn/settings-panel/auto-fallback-toggle/theme-select
+    markup and CSS rules are actually present in what gets served, not
+    just in the source tree.
+  - One real false alarm caught and resolved during this verification,
+    not shipped as a false "bug": a fresh, never-run-before copy of the
+    CI-built sidecar (extracted to a new `/private/tmp` path) took ~5s
+    to bind its port on first cold start (PyInstaller onefile
+    self-extraction) -- checking at the same ~2-3s mark this session
+    used successfully for v0.4.2/v0.4.3 (whose sidecars, in hindsight,
+    were likely benefiting from an already-warm `_MEI*` extraction from
+    earlier in the same session) made it look dead. Confirmed real by
+    polling up to 12s and getting a clean bind + correct startup banner
+    once actually warmed up -- not a v0.4.4 regression.
+  - Live CI artifact (run 33589748548): `codesign --verify --deep
+    --strict` clean, `disable-library-validation` entitlement still
+    present, single-instance re-verified (launched the real `.app`
+    twice, exactly one `Contents/MacOS/app` process both times) -- this
+    time actually run (the user's own v0.4.3 instance had exited by
+    this point, unlike the v0.4.4 build-and-test earlier in this same
+    session, which deliberately skipped a GUI launch test to avoid
+    stealing focus from their then-still-running v0.4.3 window).
+- **Published**: `v0.4.4` tagged/pushed, CI run 33589748548 all green,
+  release created with all 8 assets from the start (including
+  `.app.tar.gz`/`.sig`), `latest.json` verified live (all 3 platforms
+  200 via the fixed User-Agent'd check), README/README.ko updated and
+  link-checked.
+- **Remaining**: same open item as the v0.4.3 entry above -- no
+  interactive click-through of the settings panel/toggle/theme-select
+  itself from a real user's hands yet (no GUI automation available in
+  this environment); everything short of an actual click is verified.
+- **Blocked**: none.
