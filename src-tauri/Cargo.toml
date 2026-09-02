@@ -7,7 +7,7 @@
 # installer-build re-verification, not just a cosmetic edit -- out of scope
 # for this metadata-hygiene pass (audit finding F8, 2026-09-02).
 name = "app"
-version = "0.4.2"
+version = "0.4.3"
 description = "Agent Handoff Bridge desktop shell -- Tauri wrapper around handoff_webui.py for the Codex/Claude/Gemini CLI handoff bridge"
 authors = ["jh3779"]
 license = "UNLICENSED"
@@ -44,3 +44,12 @@ tauri-plugin-dialog = "2.7.2"
 # v0.2.0; the premise DEC-22 rested on no longer holds. See
 # docs/design-system/flutter-mapping.html's DEC-28 for the full record.
 tauri-plugin-updater = "2"
+# Without this, a second launch attempt (double-clicking the Dock/Finder
+# icon while the app is already running -- closing its window on macOS
+# doesn't quit the process, standard convention this app follows too)
+# spawns a second sidecar that loses the port 8787 bind race against the
+# first, surfacing as a real, confusing "port already in use, quit and
+# try again" dialog to a user who has no idea an instance is already
+# running (2026-09-02, hit in practice). This plugin instead redirects a
+# second launch to focus the existing window.
+tauri-plugin-single-instance = "2"

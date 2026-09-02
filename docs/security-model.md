@@ -188,6 +188,21 @@ section covers only what's new because a native shell now exists.
   gets a chance to flush/clean up rather than always being hard-killed
   mid-write. Windows' `taskkill /T` handles the whole tree in one call
   (graceful attempt first, then `/F` force for survivors).
+- **Single-instance enforcement (2026-09-02).** Closing the window on
+  macOS doesn't quit the app (standard convention this app already
+  follows, same as the sidecar-cleanup bullet above implies) -- a user
+  who then re-opens it from the Dock/Finder, not realizing it's already
+  running in the background, used to spawn a *second* sidecar that lost
+  the port 8787 bind race against the first, surfacing as a confusing
+  "port already in use, quit and try again" dialog (hit in practice).
+  `tauri-plugin-single-instance` is now registered first in the plugin
+  chain (required for it to intercept before anything else runs); a
+  second launch attempt's whole process exits inside that plugin's
+  callback -- it never reaches the sidecar-spawn code at all -- after
+  focusing the existing window. Verified empirically, not just by
+  reading the plugin's docs: launched the real built `.app` twice in a
+  row and confirmed exactly one `Contents/MacOS/app` process existed
+  both before and after the second launch attempt.
 - **Real self-update (DEC-28)**: `tauri-plugin-updater` checks
   `.../releases/latest/download/latest.json` once per app launch and, on
   a confirmed Yes from the user, downloads and installs a new build,

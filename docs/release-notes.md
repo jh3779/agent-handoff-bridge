@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+## v0.4.3 — 2026-09-02
+
+- **Fix: re-opening the app while it was already running (minimized or
+  just closed, not quit) showed a confusing "port already in use, quit
+  and try again" error.** Closing the window doesn't quit the app on
+  macOS (standard convention) -- a second launch attempt now focuses the
+  already-running window instead of trying to spawn a competing sidecar.
 - **New: a real native folder picker in the desktop app.** Clicking Open
   Folder (or "폴더 직접 선택…" on the empty-workspace card) now opens the
   OS's own folder-choose dialog on the Tauri build, instead of falling

@@ -49,6 +49,21 @@ type SidecarChildState = Arc<Mutex<Option<CommandChild>>>;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let app = tauri::Builder::default()
+    // Must be the first plugin registered (Tauri's own docs) so it can
+    // intercept a second launch before anything else in this chain runs.
+    // A second instance's whole process exits right after this callback
+    // fires -- it never reaches the sidecar-spawn code below, so there is
+    // no second agent-handoff-bridge-server fighting the first one for
+    // port 8787.
+    .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+      if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+      }
+      // If "main" doesn't exist yet, the first instance's sidecar hasn't
+      // signalled ready -- it'll appear on its own shortly; nothing to
+      // focus yet.
+    }))
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
