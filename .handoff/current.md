@@ -2957,3 +2957,106 @@ tag" rule by construction rather than by discipline.
   yet at "a real running app clicked through the full download +
   install + restart flow and ended up on v0.4.2" level.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-02 (v0.4.3: single-instance, native folder picker, responsive empty-state, released)
+
+- **Task**: continuation of live UI feedback from the user actually
+  running v0.4.2. In order: (1) screenshot showing the empty-workspace
+  card as a tiny fixed-width box in a huge window on a large display,
+  (2) request for a real native folder picker instead of the manual
+  path-typing fallback, referencing a sibling project (`file-converter`,
+  `~/Developer/file-converter`) as precedent, (3) mid-turn note to drop
+  the titlebar's dev-progress "Phase 6" badge, (4) a live "port already
+  in use" error when trying to reopen the app while it was already
+  running in the background. User then asked to bundle all of it into
+  one release.
+- **Changed**:
+  - **Empty-state responsiveness** (`webui/app.css`): `.no-workspace-card`
+    and `.chat-empty` now use `clamp()` for width/padding/font-size
+    instead of a fixed 320px, so they scale with the viewport (capped)
+    instead of looking abandoned in a large window -- the same
+    fullscreen-scaling fix from earlier in this file's history made this
+    worse by growing the outer shell without growing the empty-state
+    content to match.
+  - **Titlebar badge removed** (`webui/index.html`, `webui/app.css`): the
+    `.titlebar .badge` "Phase 6 · 자동 업데이트 확인" element and its
+    now-dead CSS rule.
+  - **Native folder picker, Tauri build only** (`webui/app.js`,
+    `tauri.conf.json`, `capabilities/default.json`): the existing
+    `pickFolder()` only ever checked `window.pywebview.api.pick_folder`
+    (the separate non-Tauri native-window mode) -- inside the actual
+    Tauri webview that's always undefined, so it silently fell through
+    to the manual-path-typing prompt every time. Checked
+    `~/Developer/file-converter` per the user's request first: it's a
+    PyQt app (`QFileDialog`), not Tauri, so no code was portable, but it
+    confirmed the actual goal (a real OS picker, not a text box). Added
+    a `window.__TAURI__.dialog` branch checked first, using
+    `app.withGlobalTauri: true` (no frontend build step/npm bundler in
+    this project to import `@tauri-apps/plugin-dialog` through) and a
+    new, deliberately minimal `dialog:allow-open` capability grant (not
+    the broader `dialog:default`, which also grants `message`/`save`
+    this feature doesn't use).
+  - **Single-instance enforcement** (`src-tauri/Cargo.toml`,
+    `src-tauri/src/lib.rs`): added `tauri-plugin-single-instance`,
+    registered first in the plugin chain (required position per its own
+    docs). A second launch attempt's process now exits inside that
+    plugin's callback -- which focuses/unminimizes the existing "main"
+    window if it already exists, no-ops if the first instance's sidecar
+    hasn't signalled ready yet -- instead of ever reaching the
+    sidecar-spawn code and losing the port 8787 bind race, which is
+    exactly what produced the "port already in use, quit and try again"
+    dialog the user hit live.
+  - `docs/security-model.md`/`docs/release-notes.md` updated for both
+    the dialog capability and single-instance additions.
+  - Version bumped to 0.4.3 across `handoff_bridge.py`/`tauri.conf.json`/
+    `Cargo.toml`.
+- **Verified, all locally with real builds before shipping, not just
+  reasoned about**:
+  - Built real sidecars + a real local `cargo tauri build` twice this
+    session (once before single-instance, once after) using this
+    machine's own Rust/PyInstaller/tauri-cli toolchain.
+  - **Single-instance**: launched the real local `.app` via `open` twice
+    in a row -- confirmed exactly one `Contents/MacOS/app` process
+    existed both times (no second sidecar, no port conflict) -- then
+    repeated the identical test against the actual CI-built artifact
+    (run 33586196929) before publishing, not just the local build.
+  - **Signing/entitlements regression check**: `codesign --verify --deep
+    --strict` still clean on the CI-built `.app`, and
+    `com.apple.security.cs.disable-library-validation` (the v0.4.2 fix)
+    still present on the server sidecar -- confirming the new plugin
+    didn't disturb the earlier signing fix.
+  - **CSS/JS load**: launched the local build, confirmed via
+    `~/Library/Logs/com.jh3779.agenthandoffbridge/agent-handoff-bridge.log`
+    that the webview actually requested and got 200s for the updated
+    `app.css`/`app.js`, and `node --check webui/app.js` passed.
+  - Could not interactively click through the native folder-picker
+    dialog itself from this environment (no GUI automation available) --
+    verified everything up to "the JS call is wired, capability-granted,
+    and doesn't crash the page," not "a real click opened the real macOS
+    panel." Worth a quick manual click-test.
+  - **Release-process snippet bug found and fixed while actually using
+    it**: the `docs/release-process.md` URL-sanity-check script
+    (added during the v0.4.2 fix above) 404'd on every real v0.4.3 URL
+    despite `gh release view` showing the assets present -- root cause:
+    `urllib`'s default User-Agent gets 404'd by GitHub's release-asset
+    redirect target (`release-assets.githubusercontent.com`), on both
+    `HEAD` and a ranged `GET`; `curl` never hit this because it sends
+    its own default UA. Fixed by adding an explicit `User-Agent` header
+    to the doc's own snippet, re-verified clean against the real
+    v0.4.3 release afterward (all 3 platforms 200).
+  - `python3 handoff_bridge.py check` -> 560/560 PASS at each step.
+    `scan_secrets.py` -> PASS throughout.
+- **Published**: `v0.4.3` tagged/pushed, CI run 33586196929 all green,
+  GitHub Release created with all 8 assets (including
+  `.app.tar.gz`/`.sig` from the start this time, learned from the
+  v0.4.2 omission), `latest.json` verified live, README/README.ko
+  updated to v0.4.3 and link-checked.
+- **Remaining**: the native folder-picker dialog itself needs one real
+  manual click-through by the user (or a future session with GUI
+  automation) to fully close the loop -- everything short of that step
+  is verified. Windows/Linux single-instance behavior is unverified
+  live (this machine can only run/test the macOS build) -- the plugin
+  is cross-platform and the Rust code has no macOS-specific branching,
+  so this is a reasoning-based, not empirical, confidence level for
+  those two platforms.
+- **Blocked**: none.
