@@ -23,9 +23,9 @@ whichever fits:
 
 | Platform | Download |
 |---|---|
-| 🪟 **Windows** | **[v0.4.1 인스톨러 (.exe)](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.4.1/agent-handoff-bridge_0.4.1_x64-setup.exe)** |
-| 🍎 **macOS** (Apple Silicon only) | **[v0.4.1 dmg](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.4.1/agent-handoff-bridge_0.4.1_aarch64.dmg)** — Intel Mac은 아직 미지원 |
-| 🐧 **Linux** | **[.AppImage](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.4.1/agent-handoff-bridge_0.4.1_amd64.AppImage)** |
+| 🪟 **Windows** | **[v0.4.2 인스톨러 (.exe)](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.4.2/agent-handoff-bridge_0.4.2_x64-setup.exe)** |
+| 🍎 **macOS** (Apple Silicon only) | **[v0.4.2 dmg](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.4.2/agent-handoff-bridge_0.4.2_aarch64.dmg)** — Intel Mac은 아직 미지원 |
+| 🐧 **Linux** | **[.AppImage](https://github.com/jh3779/agent-handoff-bridge/releases/download/v0.4.2/agent-handoff-bridge_0.4.2_amd64.AppImage)** |
 
 > ⚠️ **설치 파일은 미서명입니다** (DEC-24 — 이 프로젝트 규모에서 코드 서명
 > 비용은 정당화되지 않는다고 판단, 재논의 시한 없음). Windows/macOS 모두
