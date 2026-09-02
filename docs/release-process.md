@@ -201,23 +201,60 @@ gh release create vX.Y.Z \
   dist/agent-handoff-bridge-windows.zip \
   dist/latest.json \
   /tmp/agent-handoff-bridge-installers/installers-aarch64-apple-darwin/dmg/*.dmg \
+  /tmp/agent-handoff-bridge-installers/installers-aarch64-apple-darwin/macos/agent-handoff-bridge.app.tar.gz \
+  /tmp/agent-handoff-bridge-installers/installers-aarch64-apple-darwin/macos/agent-handoff-bridge.app.tar.gz.sig \
   /tmp/agent-handoff-bridge-installers/installers-x86_64-pc-windows-msvc/nsis/*.exe \
   /tmp/agent-handoff-bridge-installers/installers-x86_64-unknown-linux-gnu/appimage/*.AppImage \
   --title "vX.Y.Z" \
   --notes-file <(sed -n "/## vX.Y.Z/,/## /p" docs/release-notes.md | sed '$d')
 ```
 
-Attaching one installer per OS (`.dmg`, nsis `.exe`, `.AppImage`) keeps the
-release page from being cluttered with near-duplicate formats — `.msi`,
-`.app`, `.app.tar.gz`, `.deb`, `.rpm` are also produced (and, apart from
-`.deb`, signed) and can be attached too (`gh release upload vX.Y.Z <file>`)
-if a user specifically asks for one of those formats. `dist/latest.json`
-**must** be attached under exactly that filename — the updater plugin's
-configured endpoint
+**`agent-handoff-bridge.app.tar.gz` + its `.sig` are NOT optional**, unlike
+the other near-duplicate formats below — this was gotten wrong once for
+real (v0.4.2's initial publish omitted them, and the in-app updater's
+"Download and install it now?" confirmation on macOS failed with a live
+`404 Not Found` as a result, github.com/jh3779/agent-handoff-bridge
+release v0.4.2). The reason: `scripts/build_updater_manifest.py`'s
+`darwin-aarch64` entry in `latest.json` always points at exactly
+`.../releases/download/vX.Y.Z/agent-handoff-bridge.app.tar.gz` — Tauri's
+macOS updater installs by extracting and swapping in this tarball of the
+`.app` bundle, not the `.dmg` (dmg installation is a manual drag-and-drop
+flow, not what the updater automates). Windows/Linux don't have this
+extra-file trap: `latest.json`'s `windows-x86_64`/`linux-x86_64` entries
+happen to point at the exact same nsis `.exe`/`.AppImage` files the
+"one installer per OS" step already attaches, so there is no separate
+file to remember there — macOS is the one platform where the
+updater-required artifact and the human-facing installer are genuinely
+different files.
+
+Attaching one installer per OS (`.dmg`, nsis `.exe`, `.AppImage`) — plus
+the two macOS updater files above — keeps the release page from being
+cluttered with near-duplicate formats otherwise: `.msi`, `.app`, `.deb`,
+`.rpm` are also produced (and, apart from `.deb`, signed) and can be
+attached too (`gh release upload vX.Y.Z <file>`) if a user specifically
+asks for one of those formats. `dist/latest.json` **must** be attached
+under exactly that filename — the updater plugin's configured endpoint
 (`.../releases/latest/download/latest.json`) resolves it by name, not by
 asset order. Note in the release notes that installers are unsigned at
 the OS level and what warning each OS shows (see step 6's intro above) —
 that is unrelated to `latest.json` itself being signed.
+
+Sanity-check this specifically before moving on — `gh release view
+vX.Y.Z` alone won't catch a wrong/missing updater artifact, since the
+release can look complete while `latest.json`'s own URLs 404:
+
+```bash
+python3 -c "
+import json, urllib.request
+data = json.load(open('dist/latest.json'))
+for platform, info in data['platforms'].items():
+    req = urllib.request.Request(info['url'], method='HEAD')
+    status = urllib.request.urlopen(req).status
+    print(platform, status, info['url'])
+"
+```
+
+Every line must print `200`.
 
 The `--notes-file` command extracts just the new version's section out of
 `docs/release-notes.md` so the release body and the changelog never drift

@@ -2908,3 +2908,52 @@ tag" rule by construction rather than by discipline.
   session's local verification is strong but is not a byte-for-byte
   match of the CI-built artifact the user will actually download.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-02 (v0.4.2 in-app auto-update 404, release-process gap)
+
+- **Task**: user reported trying the in-app auto-update and getting "The
+  update could not be installed: `Download request failed with status:
+  404 Not Found`". Diagnosed directly rather than guessing: printed
+  `dist/latest.json`'s per-platform URLs right after building the
+  manifest for v0.4.2 earlier this session (still in scrollback) --
+  `darwin-aarch64` pointed at
+  `.../releases/download/v0.4.2/agent-handoff-bridge.app.tar.gz`, and
+  `gh release view v0.4.2`'s asset list (also already in scrollback from
+  publishing it) never included that filename -- only the `.dmg` was
+  uploaded, following `docs/release-process.md`'s own step 7, which
+  explicitly listed `.app.tar.gz` among the "optional, attach only if a
+  user asks for it" formats. That guidance is wrong: Tauri's macOS
+  updater always installs via `.app.tar.gz` (extracts and swaps the
+  `.app` bundle in place), never the `.dmg` -- it is not a cosmetic
+  near-duplicate the way `.msi`/`.deb`/`.rpm` genuinely are next to their
+  own platform's already-attached installer. Windows/Linux don't have
+  this trap: `latest.json`'s entries for those platforms happen to point
+  at the exact same nsis `.exe`/`.AppImage` files release-process.md
+  already mandates attaching.
+- **Fixed immediately, not just diagnosed**: re-downloaded the
+  `installers-aarch64-apple-darwin` artifact from the already-green CI
+  run (33581885461) used to publish v0.4.2 -- it already contained
+  `agent-handoff-bridge.app.tar.gz`/`.sig` from that same build, no
+  rebuild needed. `gh release upload v0.4.2` added both to the existing
+  release. Verified with a real HTTP request (not just "upload
+  succeeded"): `.../releases/download/v0.4.2/agent-handoff-bridge.app.tar.gz`
+  and its `.sig` both now resolve `200` where they previously 404'd.
+  `docs/release-process.md` step 7 corrected: `.app.tar.gz`+`.sig` moved
+  out of the "optional, attach if asked" list into the mandatory `gh
+  release create` command, with the exact root-cause explanation kept
+  inline so this doesn't quietly regress again next release, plus a new
+  sanity-check snippet (HEAD-requests every URL in `dist/latest.json`,
+  must all be `200`) added right after step 7's publish command.
+- **Verified**: real `HEAD` request via `urllib` (the same snippet now in
+  the doc) against both newly-uploaded asset URLs -> `200`. `python3
+  scripts/scan_secrets.py` -> PASS (docs-only change, no code touched).
+- **Remaining**: v0.4.0/v0.4.1's own releases likely have the identical
+  gap (never checked/fixed -- not worth backfilling since
+  `releases/latest/download/latest.json` always resolves to whatever
+  the current newest tag is, v0.4.2 now, so nothing points at those
+  older releases' manifests anymore for update purposes). The user has
+  not yet confirmed the in-app update actually completes successfully
+  now -- this fix is verified at the "the URL 404 is gone" level, not
+  yet at "a real running app clicked through the full download +
+  install + restart flow and ended up on v0.4.2" level.
+- **Blocked**: none.
