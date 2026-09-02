@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- **New: a portable Agent Skill, installed automatically.**
+  `.agents/skills/handoff-status/SKILL.md` teaches whichever CLI is
+  running (Codex, Claude Code, or Gemini CLI all discover this directory
+  natively via the open `agentskills.io` `SKILL.md` standard) to check
+  `.handoff/current.md` and run the free `status`/`diagnose` commands
+  before starting or continuing work. Installed by `handoff_bridge.py
+  install` like every other shared file. See
+  [Architecture § Portable Agent Skill](architecture.md#portable-agent-skill-agentsskills).
 - **Fix: custom providers (DEC-26) were completely unreachable from the
   chat UI.** `POST /api/run` rejected any `"custom:<name>"` provider
   value with a 400 "invalid provider" before ever reaching the

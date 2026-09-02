@@ -18,6 +18,7 @@ REQUIRED_FILES = [
     "AGENTS.md",
     "CLAUDE.md",
     "README.md",
+    ".agents/skills/handoff-status/SKILL.md",
     "handoff_bridge.py",
     "handoff_control.py",
     "handoff_desktop.py",
@@ -86,6 +87,7 @@ REQUIRED_FILES = [
     "tests/test_validate_handoff.py",
     "tests/test_build_updater_manifest.py",
     "tests/test_package_platforms.py",
+    "tests/test_agent_skills.py",
     ".gitignore",
     ".handoff/.gitignore",
     ".handoff/current.md",
@@ -130,6 +132,7 @@ PYTHON_FILES = [
     "tests/test_validate_handoff.py",
     "tests/test_build_updater_manifest.py",
     "tests/test_package_platforms.py",
+    "tests/test_agent_skills.py",
 ]
 
 # Must match HANDOFF_LABELS in handoff_bridge.py and the enum documented in

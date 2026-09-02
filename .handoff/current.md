@@ -2743,3 +2743,72 @@ tag" rule by construction rather than by discipline.
   incidentally while explaining an unrelated question, not from a
   dedicated audit pass.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-02 (portable Agent Skill added, .agents/skills/handoff-status)
+
+- **Task**: user asked (after a discussion of "unified skill registration
+  across agents") for a demo of a portable skill this bridge ships to all
+  three providers from one file. Researched first (WebSearch/WebFetch,
+  not assumed) rather than guessing: confirmed `SKILL.md` -- originally
+  Claude Code's own format -- is now the open standard at agentskills.io,
+  adopted by Codex CLI and Gemini CLI too, and that all three already
+  converge on discovering a shared `.agents/skills/` directory (Codex
+  reads it as primary; Claude Code and Gemini CLI discover it alongside
+  their own `.claude/skills/`/`.gemini/skills/`). This meant no bridge-
+  side format translation was needed at all -- just placing one file in
+  the right spot, unlike MCP servers (still genuinely per-CLI config
+  today).
+- **Changed**: new `.agents/skills/handoff-status/SKILL.md` -- teaches
+  whichever CLI is running to read `.handoff/current.md`, run
+  `handoff_bridge.py status`/`diagnose` (free, no tokens) before
+  starting/continuing work, and append a summary before stopping;
+  points at `docs/shared-agent-contract.md` for the exact expected
+  shape. Registered in all three file manifests
+  (`handoff_bridge.py`'s `INSTALL_FILES`, `scripts/validate_handoff.py`'s
+  `REQUIRED_FILES`, `scripts/package_platforms.py`'s `COMMON_FILES`) --
+  matching this project's own established convention (a real, if minor,
+  gap the 2026-08-20 structure audit found and fixed for 5 other files
+  at the time). New `tests/test_agent_skills.py`: verifies the actual
+  SKILL.md frontmatter contract (required `name`/`description`, `name`'s
+  naming rules -- lowercase/digits/hyphens only, <=64 chars, no
+  "anthropic"/"claude" reserved words -- confirmed against
+  platform.claude.com's own spec page, not assumed) and the three-
+  manifest registration. `docs/architecture.md` gained a new "Portable
+  Agent Skill" section explaining why `.agents/skills/` (not
+  `.claude/skills/` alone) reaches every provider; `docs/release-notes.md`
+  updated.
+- **Verified**: ran a real end-to-end `handoff_bridge.py --workspace
+  <tmp> install` against a fresh temp directory and confirmed the actual
+  copied file is byte-identical to the source (`diff`, not just "install
+  didn't error"). `python3 handoff_bridge.py check` -> 560/560 tests,
+  PASS (551 baseline + 9 new). `python3 scripts/scan_secrets.py` -> PASS.
+- **Remaining**: this is a demonstration/starter skill, not a
+  comprehensive set -- the user may want additional bridge-specific
+  skills (e.g. one that walks through cutting a release per
+  `docs/release-process.md`) added the same way later. No new desktop
+  installer was built for this (source-level change only, like the
+  audit-remediation entry above).
+- **Blocked**: none.
+
+## Live issue reported mid-session (unresolved) -- desktop app sidecar crash on this machine
+
+- User reported, after successfully getting past the macOS Gatekeeper
+  warning on the v0.4.1 installed app, a NEW failure: "The app's local
+  server exited before it was ready (code: Some(255))." This is
+  `src-tauri/src/lib.rs`'s `CommandEvent::Terminated` generic-failure
+  message (`lib.rs:184`) -- the `agent-handoff-bridge-server` PyInstaller
+  sidecar itself exited with code 255 before ever printing
+  `SERVER_READY_MARKER`, and it did NOT hit the already-handled
+  `PORT_CONFLICT_MARKER` path (which would have shown a more specific
+  message), so the real cause is still unknown.
+- Asked the user to run the sidecar binary directly from Terminal
+  (`"/Applications/agent-handoff-bridge.app/Contents/MacOS/agent-handoff-
+  bridge-server" --no-browser`) to get the real Python/PyInstaller error
+  text, bypassing the Tauri log wrapper -- this session has no way to
+  reproduce the user's actual local environment/crash directly.
+- **Not yet diagnosed or fixed** -- waiting on that output before doing
+  anything further. Whoever picks this up next: do not guess at a fix
+  without the real error text; this exit code alone doesn't disambiguate
+  between several real possibilities (PyInstaller onefile bootloader
+  failure, some other startup exception in `handoff_webui.py`'s `main()`,
+  etc.).

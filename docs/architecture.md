@@ -156,3 +156,28 @@ store: [Web UI Chat Storage](webui-chat-storage.md).
 - Use hook examples in `examples/` after reviewing provider trust flows.
 - Use the custom HTTP remote scripts only inside a trusted network or local
   tunnel.
+- Add project-specific portable Agent Skills under `.agents/skills/<name>/
+  SKILL.md` — see [Portable Agent Skill](#portable-agent-skill-agentsskills)
+  below for why this directory (not `.claude/skills/` alone) reaches every
+  provider this bridge supports.
+
+## Portable Agent Skill (`.agents/skills/`)
+
+`agentskills.io`'s `SKILL.md` format (originally Claude Code's, now an open
+standard) is discovered natively by all three CLIs this bridge supports —
+Codex CLI reads `.agents/skills/` as its primary location, Claude Code reads
+`.claude/skills/` and also discovers `.agents/skills/`, and Gemini CLI
+discovers `.agents/skills/`/`.gemini/skills/` as workspace-level skills. This
+means a single `SKILL.md` under `.agents/skills/<name>/` reaches every
+provider without any bridge-side translation.
+
+`install_standard_files()` ships `.agents/skills/handoff-status/SKILL.md`
+(2026-09-02) — a skill that teaches whichever CLI is running to read
+`.handoff/current.md`, run `handoff_bridge.py status`/`diagnose` (both free,
+no tokens spent) before starting or continuing work, and append a summary
+before stopping. It formalizes, in a form all three CLIs discover
+automatically, the same convention `AGENTS.md`/`CLAUDE.md` already state in
+prose. `tests/test_agent_skills.py` covers the actual SKILL.md frontmatter
+contract (required `name`/`description` fields, naming/length constraints)
+and the same three-manifest consistency check (`INSTALL_FILES`/
+`REQUIRED_FILES`/`COMMON_FILES`) every other installed file gets.
