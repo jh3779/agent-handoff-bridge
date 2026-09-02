@@ -3154,3 +3154,50 @@ tag" rule by construction rather than by discipline.
   itself from a real user's hands yet (no GUI automation available in
   this environment); everything short of an actual click is verified.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-02 (GitHub branch protection enabled on main)
+
+- **Task**: user noticed this whole session committed directly to `main`
+  every time, asked whether a branch rule exists. Checked
+  `docs/quality-gates.md`: a branch-*naming* rule exists (enforced by
+  `.githooks/pre-push` and CI's `branch-name` job) but explicitly exempts
+  `main`/`master` -- so direct pushes were never a rule violation, just a
+  divergence from CLAUDE.md's "During Work" section, which describes a
+  branch-per-change workflow. Asked which protection level to actually
+  turn on (self-mergeable PR-required vs. review-required vs.
+  force-push-only) rather than guessing, since "require PR review" would
+  have made the user unable to merge their own PRs (GitHub doesn't allow
+  self-approval) on a solo-maintainer repo. User picked: block direct
+  push, PR required, but 0 required approvals (self-mergeable), CI
+  status checks required.
+- **Changed**: enabled classic GitHub branch protection on `main` via
+  `gh api PUT .../branches/main/protection`:
+  `required_status_checks` (strict, the 6 checks that actually run on
+  every push/PR -- `branch-name`, `validate`, `rust-build`, and
+  `sidecar-build`'s 3 per-OS matrix legs; deliberately excludes
+  `installer-build`, which is `workflow_dispatch`-only and would never
+  report a status on a PR, permanently blocking merges if required),
+  `required_pull_request_reviews.required_approving_review_count: 0`,
+  `allow_force_pushes: false`, `allow_deletions: false`.
+  **Real mistake made and self-caught in the same turn**: the first API
+  call left `enforce_admins: false` -- which exempts the repo *owner*
+  from all of this, meaning direct push would have still worked for
+  exactly the person the rule was meant to stop. Caught before declaring
+  done, fixed via a follow-up `POST .../protection/enforce_admins` call.
+- **Verified empirically, not just via the API response**: attempted a
+  real `git push origin main` with this exact handoff-record commit --
+  rejected (`GH006: Protected branch update failed ... Changes must be
+  made through a pull request`). Moved the same commit to a new branch
+  (`docs/branch-protection-verify`, matching `check_branch_name.py`'s
+  required `type/description` pattern), opened a real PR, watched CI run
+  and pass on it, then self-merged (no review required, confirming the 0-
+  approvals setting doesn't block the owner) -- closing the loop on all
+  three configured behaviors: direct push blocked, CI required, self-
+  merge allowed.
+- **Remaining**: `docs/quality-gates.md`/CLAUDE.md's "During Work"
+  section already described this workflow in prose; nothing there needed
+  changing, just this session's own practice needed to start actually
+  matching it. Every future change from here on needs a branch + PR --
+  direct `git push origin main` will now hard-fail, not just diverge
+  from the documented convention.
+- **Blocked**: none.
