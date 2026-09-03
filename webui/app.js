@@ -19,6 +19,7 @@
   const workspaceLabel = document.getElementById("workspace-label");
   const openFolderBtn = document.getElementById("open-folder-btn");
   const providerSelect = document.getElementById("provider-select");
+  const modelOverrideInput = document.getElementById("model-override-input");
   const chatThread = document.getElementById("chat-thread");
   const dropzone = document.getElementById("dropzone");
   const composerInput = document.getElementById("composer-input");
@@ -336,7 +337,36 @@
       ])
     );
     if (info.cli_detected) {
-      return row; // SCR-06: API 키 입력은 "CLI 없음" 상태에서만 노출
+      // SCR-06: API 키 입력은 "CLI 없음" 상태에서만 노출되지만, CLI가
+      // 감지된 provider도 기본 모델(--model 오버라이드)은 지정할 수
+      // 있다 -- 키가 필요 없으므로(CLI가 자체적으로 인증을 처리) 검증
+      // 호출 없이 바로 저장한다. 여기 저장한 값이 titlebar의
+      // model-override-input 프리필 기본값이 되고, 매 전송 시 그 입력을
+      // 비워두면 이 기본값이, 채워두면 그 값이 우선 적용된다.
+      row.appendChild(el("div", { class: "pp-note", text: t("provider.cliModelNote") }, []));
+      const cliModelInput = el("input", {
+        type: "text",
+        placeholder: t("provider.modelPlaceholder"),
+        "data-field": "model",
+        value: info.cli_model || "",
+      }, []);
+      const cliModelSaveBtn = el("button", { type: "button", class: "primary", text: t("provider.save") }, []);
+      cliModelSaveBtn.addEventListener("click", async () => {
+        const model = cliModelInput.value.trim();
+        try {
+          await postJSON("/api/cli-model", { provider: info.provider, model });
+          showToast(
+            model
+              ? t("provider.cliModelSaved", { provider: PROVIDER_LABEL[info.provider], model })
+              : t("provider.cliModelCleared", { provider: PROVIDER_LABEL[info.provider] })
+          );
+          await refreshProviderPanel();
+        } catch (err) {
+          showToast(t("provider.saveFailed", { msg: err.message }));
+        }
+      });
+      row.appendChild(el("div", { class: "pp-key-row" }, [cliModelInput, cliModelSaveBtn]));
+      return row;
     }
     if (!info.api_key_mode_supported) {
       // 현재는 codex/claude/gemini 전부 API 키 모드를 지원하므로(DEC-25)
@@ -484,12 +514,30 @@
   // (고정 3개 + auto + 커스텀 전부)으로 다시 채운다 -- index.html은
   // "auto"만 하드코딩해두고 나머지는 항상 이 함수가 채운다. 현재
   // 선택값은 목록에 남아 있는 한 유지한다.
+  //
+  // provider별 cli_detected/cli_model을 여기 보관해두고, 옆의
+  // model-override-input을 채우거나 숨기는 데 쓴다 -- "auto"나 API 키
+  // 모드/커스텀 provider는 모델 개념이 다르거나(고정 provider는
+  // /api/provider-key에 저장된 model, 커스텀은 등록 시 필수) 아예
+  // provider 하나로 확정되지 않으므로("auto") 이 입력창은 CLI로 감지된
+  // 고정 provider를 선택했을 때만 노출한다.
+  let providerCliInfoByName = {};
+
+  function updateModelOverrideVisibility() {
+    const info = providerCliInfoByName[providerSelect.value];
+    const show = Boolean(info && info.cli_detected);
+    modelOverrideInput.hidden = !show;
+    modelOverrideInput.value = show ? info.cli_model || "" : "";
+  }
+
   function refreshProviderSelect(data) {
     const previous = providerSelect.value;
     providerSelect.innerHTML = "";
     providerSelect.appendChild(el("option", { value: "auto", text: "auto" }, []));
+    providerCliInfoByName = {};
     for (const info of data.providers) {
       providerSelect.appendChild(el("option", { value: info.provider, text: info.provider }, []));
+      providerCliInfoByName[info.provider] = info;
     }
     for (const info of data.custom_providers) {
       providerSelect.appendChild(el("option", { value: info.provider, text: info.name }, []));
@@ -497,7 +545,9 @@
     if ([...providerSelect.options].some((opt) => opt.value === previous)) {
       providerSelect.value = previous;
     }
+    updateModelOverrideVisibility();
   }
+  providerSelect.addEventListener("change", updateModelOverrideVisibility);
 
   // Monotonic token so an overlapping refresh (e.g. a "저장" click's own
   // await refreshProviderPanel() racing a fresh panel reopen) can't have
@@ -1027,6 +1077,11 @@
     }
 
     const provider = providerSelect.value;
+    // Only meaningful while visible (a CLI-detected fixed provider is
+    // selected, see updateModelOverrideVisibility()) -- hidden for
+    // "auto"/API-key-mode/custom providers, so this is deliberately null
+    // in every other case rather than sending a stale leftover value.
+    const model = (!modelOverrideInput.hidden && modelOverrideInput.value.trim()) || null;
     const userMessage = { role: "user", text, attachments };
     renderMessage(userMessage);
 
@@ -1071,6 +1126,7 @@
     try {
       const result = await postJSON("/api/run", {
         provider,
+        model,
         text,
         attachments: userMessage.attachments,
         auto_fallback: isAutoFallbackEnabled(),
