@@ -4,6 +4,18 @@
 
 ## Unreleased
 
+- **New: multi-session tabs.** Open multiple chats at once via a new tab
+  bar — a fresh tab for a different workspace, or another tab pointed at
+  the *same* workspace for a second independent conversation (e.g. one
+  provider refactoring while another writes tests). Each tab keeps its
+  own workspace, chat history, and provider/model selection. A run
+  keeps going in the background while you're on a different tab (shown
+  as a busy indicator on its tab, with a badge once it finishes). Open
+  tabs are restored the next time the app starts. **Known limitation**:
+  two tabs on the *same* workspace can't run a provider call literally
+  at the same time — they safely queue instead, one finishing before
+  the next starts.
+
 ## v0.4.7 — 2026-09-03
 
 - **New: model selection for CLI-detected providers** (codex/claude/
