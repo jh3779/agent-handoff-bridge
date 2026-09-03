@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.8 — 2026-09-03
+
 - **New: multi-session tabs.** Open multiple chats at once via a new tab
   bar — a fresh tab for a different workspace, or another tab pointed at
   the *same* workspace for a second independent conversation (e.g. one
@@ -12,9 +14,11 @@
   keeps going in the background while you're on a different tab (shown
   as a busy indicator on its tab, with a badge once it finishes). Open
   tabs are restored the next time the app starts. **Known limitation**:
-  two tabs on the *same* workspace can't run a provider call literally
-  at the same time — they safely queue instead, one finishing before
-  the next starts.
+  two tabs on the *same* workspace can't run a provider call at the
+  literal same instant — whichever one arrives second is turned away
+  with an error rather than queued, so send from a busy tab's sibling
+  only after the first reply lands. Two tabs on *different* workspaces
+  have no such limit and genuinely run at the same time.
 
 ## v0.4.7 — 2026-09-03
 
