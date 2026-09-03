@@ -4,6 +4,30 @@
 
 ## Unreleased
 
+## v0.4.5 — 2026-09-03
+
+- **Fix: the native folder picker was completely broken in every release
+  since it was introduced (v0.4.3).** Clicking Open Folder (or "폴더
+  직접 선택…") always failed with `Command plugin:dialog|open not
+  allowed by ACL`. Root cause: the app's window loads
+  `http://127.0.0.1:8787/` (the Python server's content) via
+  `WebviewUrl::External`, not Tauri's bundled `app://` frontend --
+  Tauri v2 only auto-applies a capability to *local* content, so an
+  externally-loaded webview needs its origin explicitly allow-listed
+  via the capability's `remote.urls` field, or every command it
+  invokes is ACL-rejected regardless of what permissions are granted.
+  `src-tauri/capabilities/default.json` never had this field. Fixed by
+  adding `"remote": {"urls": ["http://127.0.0.1:8787/*"]}`.
+- **New: Korean/English UI language toggle.** A language selector in
+  Settings (기본값 한국어, `localStorage`-persisted) now switches every
+  static and dynamic string in the app chrome -- titlebar, sidebar,
+  composer, history drawer, Settings panel, toasts -- via a new
+  `webui/i18n.js` module. Scope is UI chrome only; chat message
+  content, provider/model/file names stay untranslated.
+- Renamed the "공용 Context" Settings section to "지침" to match how
+  it's actually used (still backed by the same
+  `.handoff/shared-context.md`, no behavior change).
+
 ## v0.4.4 — 2026-09-02
 
 - **New: a consolidated ⚙️ Settings panel**, replacing the separate
