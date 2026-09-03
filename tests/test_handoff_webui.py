@@ -1870,6 +1870,68 @@ class GetRunLockForTests(unittest.TestCase):
             lock_a.release()
 
 
+class PersistedSessionsTests(unittest.TestCase):
+    """read/write/restore_persisted_sessions() (M2): sessions.json survives
+    a restart for every session *other than* the default one, which is
+    always freshly resolved from --workspace/discovery instead, exactly as
+    before M1 existed."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+        self.workspace = (Path(self.tmp.name) / "some-project").resolve()
+        self.workspace.mkdir()
+
+    def test_missing_file_returns_empty_list(self):
+        self.assertEqual(webui.read_persisted_sessions(), [])
+
+    def test_write_then_read_round_trips(self):
+        state = webui.AppState(self.workspace)  # the default session
+        state.sessions["extra-1"] = webui.SessionState(self.workspace)
+        webui.write_persisted_sessions(state)
+        persisted = webui.read_persisted_sessions()
+        self.assertEqual(persisted, [{"session_id": "extra-1", "workspace": str(self.workspace)}])
+
+    def test_default_session_is_never_persisted(self):
+        state = webui.AppState(self.workspace)
+        webui.write_persisted_sessions(state)
+        self.assertEqual(webui.read_persisted_sessions(), [])
+
+    def test_a_session_with_no_workspace_persists_as_null(self):
+        state = webui.AppState(None)
+        state.sessions["extra-1"] = webui.SessionState(None)
+        webui.write_persisted_sessions(state)
+        self.assertEqual(webui.read_persisted_sessions(), [{"session_id": "extra-1", "workspace": None}])
+
+    def test_restore_recreates_extra_sessions_alongside_the_default_one(self):
+        writer_state = webui.AppState(self.workspace)
+        writer_state.sessions["extra-1"] = webui.SessionState(self.workspace)
+        webui.write_persisted_sessions(writer_state)
+
+        booted_state = webui.AppState(self.workspace)  # simulates a fresh main() boot
+        webui.restore_persisted_sessions(booted_state)
+        self.assertEqual(set(booted_state.sessions), {"default", "extra-1"})
+        self.assertEqual(booted_state.sessions["extra-1"].workspace, self.workspace)
+        self.assertEqual(booted_state.sessions["default"].workspace, self.workspace)
+
+    def test_restore_drops_a_session_whose_workspace_no_longer_exists(self):
+        gone = self.workspace / "deleted-later"
+        gone.mkdir()
+        writer_state = webui.AppState(None)
+        writer_state.sessions["extra-1"] = webui.SessionState(gone)
+        webui.write_persisted_sessions(writer_state)
+        shutil.rmtree(gone)
+
+        booted_state = webui.AppState(None)
+        webui.restore_persisted_sessions(booted_state)
+        self.assertIn("extra-1", booted_state.sessions)
+        self.assertIsNone(booted_state.sessions["extra-1"].workspace)
+
+
 class MultiSessionLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
     """POST/GET/DELETE /api/sessions and the X-AHB-Session header contract
     (docs/research-session-splitting.md, M1) over a real HTTP server --
@@ -2088,6 +2150,33 @@ class MultiSessionLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         finally:
             run_lock.release()
         self.assertEqual(status, 200)
+
+    def test_creating_a_session_persists_it_to_disk(self):
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        persisted = webui.read_persisted_sessions()
+        self.assertEqual(persisted, [{"session_id": session_id, "workspace": None}])
+
+    def test_closing_a_session_removes_it_from_disk(self):
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        self._delete(f"/api/sessions/{session_id}")
+        self.assertEqual(webui.read_persisted_sessions(), [])
+
+    def test_switching_a_sessions_workspace_updates_the_persisted_entry(self):
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        self._post("/api/open-folder", {"path": str(self.root_b)}, session_id=session_id)
+        persisted = webui.read_persisted_sessions()
+        self.assertEqual(persisted, [{"session_id": session_id, "workspace": str(self.root_b)}])
+
+    def test_default_session_workspace_switch_does_not_appear_on_disk(self):
+        # The default session's workspace is always freshly resolved from
+        # --workspace/discovery at boot, not from this file (see
+        # restore_persisted_sessions()'s own docstring) -- persisting it
+        # here too would be redundant, not just harmless.
+        self._post("/api/open-folder", {"path": str(self.root_b)})
+        self.assertEqual(webui.read_persisted_sessions(), [])
 
 
 class EnsureChatGitignoreTests(unittest.TestCase):

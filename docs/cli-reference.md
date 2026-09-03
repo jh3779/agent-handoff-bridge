@@ -282,20 +282,27 @@ HTTP server. What it does:
   (`.handoff/webui/.gitignore`, written proactively regardless of whether
   this workspace ever ran `install`). Full schema, atomicity, and retention
   details: [Web UI Chat Storage](webui-chat-storage.md).
-- **Multi-session support (M1, backend-only as of this writing —** see
-  [Design: Multi-Session Support](research-session-splitting.md) **)**:
-  every request may carry an `X-AHB-Session` header naming which open
-  session (tab) it means; omitting it (every client that predates this,
-  including the shipped frontend as of M1) falls back to a fixed
-  `"default"` session, so nothing that talks to this API today has to
-  change. `POST /api/sessions` (body: optional `{"workspace": ...}`,
-  currently always starts empty) creates a new session and returns its
-  `session_id`; `GET /api/sessions` lists every open session
-  (`{"sessions": [{"session_id", "workspace"}, ...]}`, in-memory only —
-  not yet persisted across a restart); `DELETE /api/sessions/<id>` closes
-  one (the `"default"` session can never be closed; closing a session
-  with a run in flight against its workspace is a `409`, same posture as
-  above). Closing a session never deletes its chat history on disk.
+- **Multi-session support (tabs)** — see
+  [Design: Multi-Session Support](research-session-splitting.md): every
+  request may carry an `X-AHB-Session` header naming which open session
+  (tab) it means; omitting it (every client that predates this) falls
+  back to a fixed `"default"` session, so nothing that talks to this API
+  ever has to change. `POST /api/sessions` (body: optional
+  `{"workspace": ...}`, currently always starts empty) creates a new
+  session and returns its `session_id`; `GET /api/sessions` lists every
+  open session (`{"sessions": [{"session_id", "workspace"}, ...]}`, restored
+  across a restart from `sessions.json` for every session other than
+  `"default"`, which is always freshly resolved from
+  `--workspace`/discovery instead); `DELETE /api/sessions/<id>` closes one
+  (the `"default"` session can never be closed; closing a session with a
+  run in flight against its workspace is a `409`, same posture as above).
+  Closing a session never deletes its chat history on disk. The shipped
+  frontend (titlebar's tab bar) uses all of this: multiple tabs, each its
+  own workspace/chat/provider selection, background runs continuing while
+  a different tab is active. **Known limitation**: two tabs pointed at the
+  *same* workspace cannot run a provider call literally concurrently —
+  see the design doc's "Concurrency" section for why and what a full fix
+  would need.
 - Agent replies render fenced ` ```code``` ` blocks as monospace blocks;
   everything else is plain text, inserted via `textContent`/
   `createTextNode` only (never `innerHTML`) since a provider's response

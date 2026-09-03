@@ -117,6 +117,13 @@ var AHB_I18N = (function () {
       "workspace.openFailed": "폴더를 열 수 없음: {msg}",
       "workspace.pickFailed": "폴더 선택 실패: {err}",
 
+      "session.new.title": "새 탭",
+      "session.close.title": "탭 닫기",
+      "session.createFailed": "새 탭을 만들지 못했습니다: {msg}",
+      "session.closeFailed": "탭을 닫지 못했습니다: {msg}",
+      "session.closeRunInFlight": "응답을 기다리는 중인 탭은 닫을 수 없습니다.",
+      "session.switchFailed": "탭 전환 실패: {msg}",
+
       "noWorkspace.title": "작업할 폴더가 아직 없습니다",
       "noWorkspace.note": "기존 폴더를 고르거나, 새 프로젝트 폴더를 자동으로 만들 수 있습니다.",
       "noWorkspace.autoCreate": "새 폴더 자동 생성",
@@ -247,6 +254,13 @@ var AHB_I18N = (function () {
       "workspace.cannotSwitchWhileRunning": "Can't switch workspace while waiting for a response.",
       "workspace.openFailed": "Couldn't open folder: {msg}",
       "workspace.pickFailed": "Folder selection failed: {err}",
+
+      "session.new.title": "New tab",
+      "session.close.title": "Close tab",
+      "session.createFailed": "Couldn't create a new tab: {msg}",
+      "session.closeFailed": "Couldn't close the tab: {msg}",
+      "session.closeRunInFlight": "Can't close a tab that's still waiting for a response.",
+      "session.switchFailed": "Couldn't switch tabs: {msg}",
 
       "noWorkspace.title": "No folder to work in yet",
       "noWorkspace.note": "Choose an existing folder, or create a new project folder automatically.",

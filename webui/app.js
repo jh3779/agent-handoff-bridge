@@ -15,6 +15,16 @@
 
   const MAX_PREVIEW_CHARS = 20000;
 
+  // M2 (multi-session, docs/research-session-splitting.md): every request
+  // names which open session (tab) it means via this header -- must match
+  // handoff_webui.SESSION_HEADER exactly. DEFAULT_SESSION_ID must match
+  // webui_chat_storage.DEFAULT_SESSION_ID -- both sides hardcode the same
+  // literal rather than one fetching it from the other over the wire for
+  // a single constant string.
+  const SESSION_HEADER = "X-AHB-Session";
+  const DEFAULT_SESSION_ID = "default";
+
+  const tabBarEl = document.getElementById("tab-bar");
   const treeEl = document.getElementById("tree");
   const workspaceLabel = document.getElementById("workspace-label");
   const openFolderBtn = document.getElementById("open-folder-btn");
@@ -57,25 +67,62 @@
   const updateLaterBtn = document.getElementById("update-later-btn");
   const updateReleaseNotesBtn = document.getElementById("update-release-notes-btn");
 
-  /** @type {{name: string, path: string|null, content: string|null, truncated: boolean}[]} */
-  let attachments = [];
   let dragDepth = 0;
-  // DEC-02: only the first send *in this browser session* confirms that
-  // tokens may be spent; every send after that in the same session runs
-  // immediately. Resets on page reload -- intentionally not persisted.
+  // DEC-02: only the first send *in this page load* confirms that tokens
+  // may be spent; every send after that runs immediately. Resets on page
+  // reload -- intentionally not persisted. Deliberately page-load-scoped,
+  // not per-tab (M2): a fresh app-level tab is not "a fresh session" in
+  // DEC-02's sense, just another view into the same running app -- asking
+  // again per tab would be a repeated nag with no real safety benefit.
   let sessionRunConfirmed = false;
-  // Guards against a second concurrent /api/run: sendBtn.disabled alone
-  // doesn't stop the Enter-key send path below, and updateSendState() (run
-  // on every keystroke) would otherwise re-enable sendBtn if the user
-  // types while a run is still in flight -- a real race that could
-  // duplicate an already-persisted agent message (server-side backstop:
-  // handoff_webui.RunAlreadyInProgressError).
-  let runInFlight = false;
-  // Phase 2 (SCR-05, DEC-04~07): AppState.workspace can be null server-side
-  // until the first message auto-creates one. Mirrors that so the UI knows
-  // whether to show the "no workspace" card and which composer placeholder
-  // to use, without re-fetching /api/info on every keystroke.
-  let hasWorkspace = true;
+
+  // ---------- multi-session (M2, docs/research-session-splitting.md) ----------
+  //
+  // One shared set of DOM elements (chat thread, tree, composer, etc.) is
+  // repainted for whichever session is "active" -- switching tabs re-fetches
+  // that session's workspace/tree/chat from the server (the same round trip
+  // "Open Folder"/a History-drawer item already pays today) rather than
+  // maintaining N independent cached DOM subtrees, which would be a much
+  // larger and riskier change for comparable user-visible benefit. What
+  // *is* kept in memory per session, cheaply, so it's never lost across a
+  // switch: attachments-in-progress, the composer draft, and the
+  // provider/model selection -- everything else (chat messages, file tree)
+  // is cheap enough to just re-fetch.
+  function freshSessionMeta() {
+    return {
+      hasWorkspace: false,
+      /** @type {{name: string, path: string|null, content: string|null, truncated: boolean}[]} */
+      attachments: [],
+      composerDraft: "",
+      provider: "auto",
+      model: "",
+      // Guards against a second concurrent /api/run for *this* session --
+      // sendBtn.disabled alone doesn't stop the Enter-key send path, and
+      // updateSendState() (run on every keystroke) would otherwise
+      // re-enable it while a run is in flight -- a real race that could
+      // duplicate an already-persisted agent message (server-side
+      // backstop: handoff_webui.RunAlreadyInProgressError).
+      runInFlight: false,
+      // Set when a send finishes while a *different* tab was active, so
+      // that tab's reply couldn't be rendered live -- cleared the next
+      // time this session becomes active (its chat history is re-fetched
+      // then anyway, which already contains the reply).
+      hasUnseenReply: false,
+      // Mirrors GET /api/info's `name`/`workspace === null` for this
+      // session -- kept even while a different tab is active so the tab
+      // bar has something to show without re-fetching for every tab on
+      // every render.
+      workspaceName: null,
+    };
+  }
+
+  let activeSessionId = DEFAULT_SESSION_ID;
+  /** @type {Map<string, ReturnType<typeof freshSessionMeta>>} */
+  const sessionMetaById = new Map([[DEFAULT_SESSION_ID, freshSessionMeta()]]);
+
+  function activeMeta() {
+    return sessionMetaById.get(activeSessionId);
+  }
 
   // Functions, not static objects: STATUS_LABEL's text must reflect
   // whichever language is active *at render time*, not whichever was
@@ -94,8 +141,14 @@
     showToast._t = window.setTimeout(() => toast.classList.remove("show"), 3200);
   }
 
-  async function fetchJSON(url) {
-    const res = await fetch(url);
+  // `sessionId`: which open tab this request is scoped to. Omit to use
+  // whichever tab is active *at call time* (fine for most call sites);
+  // pass it explicitly wherever a long-running async operation needs to
+  // keep targeting the tab it started in even if the user switches away
+  // before it resolves (sendMessage() is the one place this actually
+  // matters -- see its own comment).
+  async function fetchJSON(url, sessionId) {
+    const res = await fetch(url, { headers: { [SESSION_HEADER]: sessionId || activeSessionId } });
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || `request failed: ${res.status}`);
@@ -103,12 +156,21 @@
     return data;
   }
 
-  async function postJSON(url, payload) {
+  async function postJSON(url, payload, sessionId) {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", [SESSION_HEADER]: sessionId || activeSessionId },
       body: JSON.stringify(payload),
     });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `request failed: ${res.status}`);
+    }
+    return data;
+  }
+
+  async function deleteJSON(url, sessionId) {
+    const res = await fetch(url, { method: "DELETE", headers: { [SESSION_HEADER]: sessionId || activeSessionId } });
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || `request failed: ${res.status}`);
@@ -132,23 +194,40 @@
   // ---------- workspace label + open folder ----------
 
   function updateComposerPlaceholder() {
-    composerInput.placeholder = hasWorkspace
+    composerInput.placeholder = activeMeta().hasWorkspace
       ? t("composer.placeholder.hasWorkspace")
       : t("composer.placeholder.noWorkspace");
   }
 
-  function refreshWorkspaceLabel() {
-    return fetchJSON("/api/info").then((info) => {
-      hasWorkspace = info.workspace !== null;
-      workspaceLabel.textContent = hasWorkspace ? info.name : t("workspace.none");
-      openFolderBtn.title = hasWorkspace ? info.workspace : t("workspace.none");
-      updateComposerPlaceholder();
+  // `sessionId` defaults to whichever tab is active *right now* -- fine
+  // for every call site except boot()'s tab-restore loop, which refreshes
+  // a tab that may not be the active one yet.
+  function refreshWorkspaceLabel(sessionId) {
+    sessionId = sessionId || activeSessionId;
+    return fetchJSON("/api/info", sessionId).then((info) => {
+      const meta = sessionMetaById.get(sessionId);
+      if (!meta) return info; // the tab was closed while this request was in flight
+      meta.hasWorkspace = info.workspace !== null;
+      meta.workspaceName = meta.hasWorkspace ? info.name : null;
+      if (sessionId === activeSessionId) {
+        workspaceLabel.textContent = meta.hasWorkspace ? info.name : t("workspace.none");
+        openFolderBtn.title = meta.hasWorkspace ? info.workspace : t("workspace.none");
+        updateComposerPlaceholder();
+      }
       if (info.version) settingsVersionValue.textContent = "v" + info.version;
+      renderTabBar();
       return info;
     });
   }
 
   async function switchWorkspaceTo(rawPath) {
+    // Captured up front, same reasoning as sendMessage(): this always
+    // targets whichever tab was active when Open Folder/a History-drawer
+    // item was clicked, even in the (rare -- requires clicking a
+    // different tab in the brief window before this resolves) case where
+    // the user switches tabs before this finishes.
+    const sessionId = activeSessionId;
+    const meta = sessionMetaById.get(sessionId);
     // A provider run in flight writes into whatever workspace was active
     // when it started, and its reply/status render into chatThread
     // whenever it resolves -- switching workspaces mid-run (Open Folder,
@@ -157,23 +236,29 @@
     // ends up appended to the *new* project's thread once it finally
     // settles. sendMessage() already refuses a second concurrent /api/run
     // this way; workspace switches need the same guard.
-    if (runInFlight) {
+    if (meta.runInFlight) {
       showToast(t("workspace.cannotSwitchWhileRunning"));
       return;
     }
     try {
-      await postJSON("/api/open-folder", { path: rawPath });
+      await postJSON("/api/open-folder", { path: rawPath }, sessionId);
     } catch (err) {
-      showToast(t("workspace.openFailed", { msg: err.message }));
+      if (sessionId === activeSessionId) showToast(t("workspace.openFailed", { msg: err.message }));
       return;
     }
-    attachments = [];
-    renderAttachments();
+    meta.attachments = [];
+    if (sessionId === activeSessionId) renderAttachments();
     // Unlike boot(), nothing here depends on another's result -- none of
     // the three reads shared mutable state the others set first -- so they
     // can run concurrently instead of round-tripping to the server one at
-    // a time.
-    await Promise.all([refreshWorkspaceLabel(), renderTree(treeEl, ""), loadChatHistory()]);
+    // a time. The latter two are skipped (not just guarded after the fact)
+    // when this session is no longer active, since they'd only repaint
+    // shared DOM that now belongs to a different tab.
+    await Promise.all([
+      refreshWorkspaceLabel(sessionId),
+      sessionId === activeSessionId ? renderTree(treeEl, "") : Promise.resolve(),
+      sessionId === activeSessionId ? loadChatHistory() : Promise.resolve(),
+    ]);
   }
 
   function openFolderPrompt() {
@@ -523,15 +608,38 @@
   // 고정 provider를 선택했을 때만 노출한다.
   let providerCliInfoByName = {};
 
-  function updateModelOverrideVisibility() {
+  // Repaints providerSelect/modelOverrideInput from the *active* session's
+  // remembered choice (meta.provider/meta.model) -- called on tab switch
+  // and after refreshProviderSelect() rebuilds the option list, so a
+  // provider-list refresh (e.g. reopening Settings) never silently resets
+  // what this tab had selected.
+  function restoreProviderSelectionForActiveSession() {
+    const meta = activeMeta();
+    if ([...providerSelect.options].some((opt) => opt.value === meta.provider)) {
+      providerSelect.value = meta.provider;
+    } else {
+      // The remembered choice no longer exists (e.g. a custom provider
+      // was deleted) -- fall back to whatever the <select> defaulted to.
+      meta.provider = providerSelect.value;
+    }
     const info = providerCliInfoByName[providerSelect.value];
     const show = Boolean(info && info.cli_detected);
     modelOverrideInput.hidden = !show;
-    modelOverrideInput.value = show ? info.cli_model || "" : "";
+    modelOverrideInput.value = show ? meta.model || (info && info.cli_model) || "" : "";
+    meta.model = modelOverrideInput.value;
   }
 
+  // provider-select(작성 상자 상단)를 서버가 실제로 아는 provider 목록
+  // (고정 3개 + auto + 커스텀 전부)으로 다시 채운다 -- index.html은
+  // "auto"만 하드코딩해두고 나머지는 항상 이 함수가 채운다.
+  //
+  // provider별 cli_detected/cli_model을 여기 보관해두고, 옆의
+  // model-override-input을 채우거나 숨기는 데 쓴다 -- "auto"나 API 키
+  // 모드/커스텀 provider는 모델 개념이 다르거나(고정 provider는
+  // /api/provider-key에 저장된 model, 커스텀은 등록 시 필수) 아예
+  // provider 하나로 확정되지 않으므로("auto") 이 입력창은 CLI로 감지된
+  // 고정 provider를 선택했을 때만 노출한다.
   function refreshProviderSelect(data) {
-    const previous = providerSelect.value;
     providerSelect.innerHTML = "";
     providerSelect.appendChild(el("option", { value: "auto", text: "auto" }, []));
     providerCliInfoByName = {};
@@ -542,12 +650,22 @@
     for (const info of data.custom_providers) {
       providerSelect.appendChild(el("option", { value: info.provider, text: info.name }, []));
     }
-    if ([...providerSelect.options].some((opt) => opt.value === previous)) {
-      providerSelect.value = previous;
-    }
-    updateModelOverrideVisibility();
+    restoreProviderSelectionForActiveSession();
   }
-  providerSelect.addEventListener("change", updateModelOverrideVisibility);
+  providerSelect.addEventListener("change", () => {
+    const meta = activeMeta();
+    meta.provider = providerSelect.value;
+    const info = providerCliInfoByName[providerSelect.value];
+    const show = Boolean(info && info.cli_detected);
+    modelOverrideInput.hidden = !show;
+    // A provider *change* refills with the new provider's own saved
+    // default, unlike restoring a tab (which keeps whatever was typed).
+    modelOverrideInput.value = show ? info.cli_model || "" : "";
+    meta.model = modelOverrideInput.value;
+  });
+  modelOverrideInput.addEventListener("input", () => {
+    activeMeta().model = modelOverrideInput.value;
+  });
 
   // Monotonic token so an overlapping refresh (e.g. a "저장" click's own
   // await refreshProviderPanel() racing a fresh panel reopen) can't have
@@ -723,7 +841,8 @@
   function applyLanguageChangeToVisibleContent() {
     AHB_I18N.applyI18n();
     updateComposerPlaceholder();
-    if (!hasWorkspace) {
+    renderTabBar();
+    if (!activeMeta().hasWorkspace) {
       // The only thing chatThread can be showing while hasWorkspace is
       // false is showNoWorkspaceState()'s own card -- safe to
       // unconditionally re-render it in the new language.
@@ -826,19 +945,20 @@
   // ---------- attachments ----------
 
   function addAttachment(attachment) {
+    const attachments = activeMeta().attachments;
     if (attachments.some((a) => a.path && a.path === attachment.path)) return;
     attachments.push(attachment);
     renderAttachments();
   }
 
   function removeAttachment(index) {
-    attachments.splice(index, 1);
+    activeMeta().attachments.splice(index, 1);
     renderAttachments();
   }
 
   function renderAttachments() {
     composerAttachments.innerHTML = "";
-    attachments.forEach((a, index) => {
+    activeMeta().attachments.forEach((a, index) => {
       const chip = el("span", { class: "chip" }, [
         el("span", { text: a.path ? "📄" : "📎" }, []),
         el("span", { text: a.name }, []),
@@ -852,8 +972,8 @@
   }
 
   function updateSendState() {
-    const hasContent = composerInput.value.trim().length > 0 || attachments.length > 0;
-    sendBtn.disabled = runInFlight || !hasContent;
+    const hasContent = composerInput.value.trim().length > 0 || activeMeta().attachments.length > 0;
+    sendBtn.disabled = activeMeta().runInFlight || !hasContent;
   }
 
   // ---------- drag & drop (files dragged in from the OS) ----------
@@ -1027,18 +1147,27 @@
   }
 
   async function loadChatHistory() {
+    // Guards against a rapid tab switch landing while this fetch is still
+    // in flight -- without this, a slow response for a tab the user
+    // already switched away from could still overwrite the *new* active
+    // tab's chatThread with the wrong session's messages.
+    const sessionId = activeSessionId;
+    let data;
     try {
-      const data = await fetchJSON("/api/chat");
-      if (!data.messages || data.messages.length === 0) {
-        showChatEmptyState();
-        return;
-      }
-      chatThread.innerHTML = "";
-      for (const message of data.messages) renderMessage(message);
+      data = await fetchJSON("/api/chat", sessionId);
     } catch (err) {
+      if (sessionId !== activeSessionId) return;
       showToast(t("msg.historyLoadFailed", { msg: err.message }));
       showChatEmptyState();
+      return;
     }
+    if (sessionId !== activeSessionId) return;
+    if (!data.messages || data.messages.length === 0) {
+      showChatEmptyState();
+      return;
+    }
+    chatThread.innerHTML = "";
+    for (const message of data.messages) renderMessage(message);
   }
 
   // ---------- composer ----------
@@ -1057,19 +1186,31 @@
   sendBtn.addEventListener("click", sendMessage);
 
   async function sendMessage() {
+    // Captured once, up front: this send belongs to whichever tab is
+    // active *right now*, for its entire lifetime, even if the user
+    // switches to a different tab before it resolves (a run can take
+    // minutes). Every DOM touch below is guarded with
+    // `sessionId === activeSessionId` for exactly that reason -- without
+    // it, switching away mid-run would make this function's eventual
+    // result (or busy indicator) render into whatever tab happens to be
+    // active *later*, not the one that actually started it.
+    const sessionId = activeSessionId;
+    const meta = sessionMetaById.get(sessionId);
+
     // Re-entry guard: sendBtn.disabled alone doesn't stop the Enter-key
     // path, which never checks it. Without this, typing a follow-up and
-    // hitting Enter while the first reply is still pending (runs can take
-    // minutes) fires a second concurrent /api/run.
-    if (runInFlight) return;
+    // hitting Enter while the first reply is still pending fires a second
+    // concurrent /api/run for this session.
+    if (meta.runInFlight) return;
 
     const text = composerInput.value.trim();
-    if (!text && attachments.length === 0) return;
+    if (!text && meta.attachments.length === 0) return;
 
-    // DEC-02: confirm once per session before the first provider call,
-    // then trust the user for the rest of the session. window.confirm()
-    // is blocking/synchronous by design here -- we want the user's answer
-    // before any token-spending call goes out, not a fire-and-forget toast.
+    // DEC-02: confirm once per page load before the first provider call,
+    // then trust the user from then on -- deliberately not per-tab, see
+    // sessionRunConfirmed's own comment. window.confirm() is blocking/
+    // synchronous by design here -- we want the user's answer before any
+    // token-spending call goes out, not a fire-and-forget toast.
     if (!sessionRunConfirmed) {
       const ok = window.confirm(t("send.confirm"));
       if (!ok) return;
@@ -1078,22 +1219,24 @@
 
     const provider = providerSelect.value;
     // Only meaningful while visible (a CLI-detected fixed provider is
-    // selected, see updateModelOverrideVisibility()) -- hidden for
-    // "auto"/API-key-mode/custom providers, so this is deliberately null
-    // in every other case rather than sending a stale leftover value.
+    // selected, see restoreProviderSelectionForActiveSession()) -- hidden
+    // for "auto"/API-key-mode/custom providers, so this is deliberately
+    // null in every other case rather than sending a stale leftover value.
     const model = (!modelOverrideInput.hidden && modelOverrideInput.value.trim()) || null;
-    const userMessage = { role: "user", text, attachments };
+    const userMessage = { role: "user", text, attachments: meta.attachments };
+    // Still synchronously the active session at this point (nothing has
+    // awaited yet) -- safe to touch the DOM unconditionally here.
     renderMessage(userMessage);
 
     composerInput.value = "";
     composerInput.style.height = "auto";
-    attachments = [];
+    meta.attachments = [];
     renderAttachments();
     updateSendState();
 
-    const workspaceWasMissing = !hasWorkspace;
+    const workspaceWasMissing = !meta.hasWorkspace;
     try {
-      await postJSON("/api/chat", userMessage);
+      await postJSON("/api/chat", userMessage, sessionId);
     } catch (err) {
       // Stop here unconditionally -- not just for the auto-create case.
       // Calling /api/run right after a failed/rejected /api/chat means
@@ -1104,7 +1247,7 @@
       // worst the agent's reply renders and persists with no
       // corresponding user turn backing it, which pair_messages_into_turns()
       // (Phase 3) can't attribute to anything in the history drawer.
-      showToast(t("send.chatSaveFailed", { msg: err.message }));
+      if (sessionId === activeSessionId) showToast(t("send.chatSaveFailed", { msg: err.message }));
       return;
     }
     if (workspaceWasMissing) {
@@ -1112,35 +1255,50 @@
       // workspace /api/chat just auto-created, before the provider call
       // that's about to follow.
       try {
-        await refreshWorkspaceLabel();
-        await renderTree(treeEl, "");
+        await refreshWorkspaceLabel(sessionId);
+        if (sessionId === activeSessionId) await renderTree(treeEl, "");
       } catch (err) {
-        showToast(t("send.workspaceRefreshFailed", { msg: err.message }));
+        if (sessionId === activeSessionId) showToast(t("send.workspaceRefreshFailed", { msg: err.message }));
       }
     }
 
-    const busyMsg = renderBusyMessage(provider);
-    runInFlight = true;
-    composerInput.disabled = true;
-    updateSendState();
-    try {
-      const result = await postJSON("/api/run", {
-        provider,
-        model,
-        text,
-        attachments: userMessage.attachments,
-        auto_fallback: isAutoFallbackEnabled(),
-      });
-      busyMsg.remove();
-      for (const agentMessage of result.messages) renderMessage(agentMessage);
-    } catch (err) {
-      busyMsg.remove();
-      renderMessage({ role: "system", text: t("send.runFailedSystemMsg", { msg: err.message }), attachments: [] });
-      showToast(t("send.runFailedToast", { msg: err.message }));
-    } finally {
-      runInFlight = false;
-      composerInput.disabled = false;
+    const busyMsg = sessionId === activeSessionId ? renderBusyMessage(provider) : null;
+    meta.runInFlight = true;
+    if (sessionId === activeSessionId) {
+      composerInput.disabled = true;
       updateSendState();
+    }
+    renderTabBar();
+    try {
+      const result = await postJSON(
+        "/api/run",
+        { provider, model, text, attachments: userMessage.attachments, auto_fallback: isAutoFallbackEnabled() },
+        sessionId
+      );
+      if (sessionId === activeSessionId) {
+        if (busyMsg) busyMsg.remove();
+        for (const agentMessage of result.messages) renderMessage(agentMessage);
+      } else {
+        // The reply is already persisted server-side -- this tab's next
+        // loadChatHistory() (whenever the user switches back to it) will
+        // show it. The badge is the only thing needed here.
+        meta.hasUnseenReply = true;
+      }
+    } catch (err) {
+      if (sessionId === activeSessionId) {
+        if (busyMsg) busyMsg.remove();
+        renderMessage({ role: "system", text: t("send.runFailedSystemMsg", { msg: err.message }), attachments: [] });
+        showToast(t("send.runFailedToast", { msg: err.message }));
+      } else {
+        meta.hasUnseenReply = true;
+      }
+    } finally {
+      meta.runInFlight = false;
+      if (sessionId === activeSessionId) {
+        composerInput.disabled = false;
+        updateSendState();
+      }
+      renderTabBar();
     }
   }
 
@@ -1255,6 +1413,115 @@
     }
   });
 
+  // ---------- multi-session tab bar (M2, docs/research-session-splitting.md) ----------
+
+  function renderTabBar() {
+    tabBarEl.innerHTML = "";
+    for (const [sessionId, meta] of sessionMetaById) {
+      const nameText = meta.hasWorkspace ? meta.workspaceName : t("workspace.none");
+      const tab = el("div", { class: "tab" + (sessionId === activeSessionId ? " active" : ""), title: nameText }, [
+        el("span", { class: "tab-name", text: nameText }, []),
+      ]);
+      if (meta.runInFlight) {
+        tab.appendChild(el("span", { class: "tab-busy", text: "⏳" }, []));
+      } else if (meta.hasUnseenReply) {
+        tab.appendChild(el("span", { class: "tab-badge" }, []));
+      }
+      if (sessionId !== DEFAULT_SESSION_ID) {
+        // The default session can never be closed (server-enforced too,
+        // see handoff_webui.py's do_DELETE) -- no close button for it.
+        const closeBtn = el("button", { type: "button", class: "tab-close", text: "✕" }, []);
+        closeBtn.title = t("session.close.title");
+        closeBtn.addEventListener("click", (event) => {
+          event.stopPropagation(); // don't also trigger the tab's own click-to-switch
+          closeSession(sessionId);
+        });
+        tab.appendChild(closeBtn);
+      }
+      tab.addEventListener("click", () => switchToSession(sessionId));
+      tabBarEl.appendChild(tab);
+    }
+    const newTabBtn = el("button", { type: "button", class: "tab-new", text: "+" }, []);
+    newTabBtn.title = t("session.new.title");
+    newTabBtn.addEventListener("click", createNewSession);
+    tabBarEl.appendChild(newTabBtn);
+  }
+
+  async function switchToSession(sessionId) {
+    if (sessionId === activeSessionId) return;
+    const meta = sessionMetaById.get(sessionId);
+    if (!meta) return; // stale click on a tab that got closed in the meantime
+
+    // Save the outgoing tab's live draft state into its own meta before
+    // switching away -- nothing typed or attached there is lost.
+    activeMeta().composerDraft = composerInput.value;
+
+    activeSessionId = sessionId;
+    meta.hasUnseenReply = false;
+
+    composerInput.value = meta.composerDraft || "";
+    composerInput.style.height = "auto";
+    renderAttachments();
+    updateComposerPlaceholder();
+    updateSendState();
+    restoreProviderSelectionForActiveSession();
+    renderTabBar();
+
+    try {
+      const info = await refreshWorkspaceLabel(sessionId);
+      if (sessionId !== activeSessionId) return; // switched again before this resolved
+      if (info.workspace === null) {
+        showNoWorkspaceState();
+        return;
+      }
+      await renderTree(treeEl, "");
+      await loadChatHistory();
+    } catch (err) {
+      if (sessionId === activeSessionId) showToast(t("session.switchFailed", { msg: err.message }));
+    }
+  }
+
+  async function createNewSession() {
+    let created;
+    try {
+      created = await postJSON("/api/sessions", {});
+    } catch (err) {
+      showToast(t("session.createFailed", { msg: err.message }));
+      return;
+    }
+    sessionMetaById.set(created.session_id, freshSessionMeta());
+    renderTabBar();
+    await switchToSession(created.session_id);
+  }
+
+  async function closeSession(sessionId) {
+    if (sessionId === DEFAULT_SESSION_ID) return; // no close button renders for it; a defensive no-op anyway
+    const meta = sessionMetaById.get(sessionId);
+    if (meta && meta.runInFlight) {
+      // The server would reject this close anyway (a run in flight there
+      // is still writing into that session's workspace/chat log) -- check
+      // client-side first so closing a busy tab doesn't first navigate
+      // away from it only to then report the failure.
+      showToast(t("session.closeRunInFlight"));
+      return;
+    }
+    if (sessionId === activeSessionId) {
+      // Never leave the UI pointed at a session that's about to stop
+      // existing -- switch away first. DEFAULT_SESSION_ID is always
+      // present (never itself closeable), so this always has somewhere
+      // to go.
+      await switchToSession(DEFAULT_SESSION_ID);
+    }
+    try {
+      await deleteJSON(`/api/sessions/${sessionId}`);
+    } catch (err) {
+      showToast(t("session.closeFailed", { msg: err.message }));
+      return;
+    }
+    sessionMetaById.delete(sessionId);
+    renderTabBar();
+  }
+
   // ---------- boot ----------
 
   async function boot() {
@@ -1275,6 +1542,27 @@
     // composer's provider-select dropdown (index.html only hardcodes
     // "auto") with the real fixed + custom provider list.
     fetchJSON("/api/providers").then(refreshProviderSelect).catch(() => {});
+
+    // M2: restore any extra tabs left open across a restart -- the default
+    // session/tab already exists (sessionMetaById's own initialization),
+    // this only adds the others. Each restored tab's real name is filled
+    // in via refreshWorkspaceLabel() (matching GET /api/info's own name
+    // computation, not reimplemented client-side from the raw path) --
+    // fire-and-forget per tab so this never blocks the active tab's own
+    // boot sequence below on N extra round trips.
+    try {
+      const data = await fetchJSON("/api/sessions");
+      for (const entry of data.sessions) {
+        if (entry.session_id === DEFAULT_SESSION_ID) continue;
+        sessionMetaById.set(entry.session_id, freshSessionMeta());
+        refreshWorkspaceLabel(entry.session_id).catch(() => {});
+      }
+    } catch {
+      // Couldn't list sessions (server not ready yet, etc.) -- proceed
+      // with just the default tab, same as every version of this file
+      // before M2 existed.
+    }
+    renderTabBar();
 
     let info;
     try {

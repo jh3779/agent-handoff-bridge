@@ -20,10 +20,15 @@ the concrete mechanism, not a menu of options:
 - **Persistence**: open tabs survive an app restart (closing/reopening the
   app restores the same tab set), the same "state.json/registry.json
   survive a restart" posture this project already has everywhere else.
-- **Scope of this pass**: design only. No code yet — this doc is what gets
-  reviewed before any implementation starts, matching how Phase 7
-  (`docs/research-phase7-framework.md`) and API-key mode
-  (`docs/research-api-key-mode.md`) were both designed before being built.
+- **Scope of this pass, as originally written**: design only, no code yet
+  — matching how Phase 7 (`docs/research-phase7-framework.md`) and
+  API-key mode (`docs/research-api-key-mode.md`) were both designed
+  before being built. **Status as of 2026-09-03**: M1 (backend session
+  model) and M2 (frontend tab bar) have both since shipped — see
+  "Proposed Milestones" below for what was actually built, including one
+  correction to this doc's original concurrency design and one scope
+  reduction in the frontend, both found and resolved during
+  implementation rather than being re-designed from scratch.
 
 **Key finding that shapes everything below**: this is achievable as a
 **pure Python (`handoff_webui.py`/`webui_*.py`) + JS (`webui/app.js`)
@@ -180,9 +185,18 @@ not-yet-scoped change — see "Open Implementation Questions" below.
   indicator while a background run is in flight.
 - Today's module-level single-session variables become one state object
   per session id, with an `activeSessionId` pointer deciding what's
-  currently painted into the DOM. Switching tabs swaps which object's
-  cached state renders — no network round-trip needed if that tab already
-  loaded its data once, matching how a real browser tab or IDE pane feels.
+  currently painted into the DOM.
+- **As originally proposed here**: switching tabs would swap which
+  object's *cached* state renders — no network round-trip needed if that
+  tab already loaded its data once, matching how a real browser tab or
+  IDE pane feels. **What M2 actually shipped instead** (a deliberate,
+  reviewed scope reduction — see M2's entry in "Proposed Milestones"
+  below for why): switching tabs re-fetches that session's workspace/
+  tree/chat from the server every time, the same round trip Open Folder/
+  a History-drawer item already pays today. Only small, cheap-to-keep
+  state (attachments-in-progress, the composer draft, provider/model
+  selection) is actually cached per tab — chat messages and the file tree
+  are not.
 - A background tab's in-flight `/api/run` call is just an async function
   already (`sendMessage()`) — the only real change is that `runInFlight`
   stops being one global boolean and becomes a per-session flag, so a
@@ -213,19 +227,56 @@ giant PR:
   completely unchanged via the `"default"` fallback, confirmed by all 585
   pre-existing tests passing with zero modification to their expected
   behavior.
-- **M2 — Frontend tab bar.** Not started. Multiple tabs, per-tab state
-  object, switching/creating/closing tabs, `sessions.json` persistence and
-  restore-on-boot.
+- **M2 — Frontend tab bar. ✅ Done** (branch `feature/multi-session-m2-frontend`,
+  2026-09-03). A tab bar (titlebar-adjacent, `webui/index.html`'s
+  `#tab-bar`) backed by `sessionMetaById: Map<sessionId, meta>` in
+  `webui/app.js` — one shared set of DOM elements (chat thread, tree,
+  composer) is repainted for whichever session is active; switching tabs
+  re-fetches that session's workspace/tree/chat rather than caching N
+  independent DOM subtrees (a deliberate scope reduction from this doc's
+  original "no network round trip on switch" framing — see its own note
+  below). What *is* kept in memory per tab, cheaply: attachments-in-
+  progress, the composer draft, and the provider/model selection.
+  `sessions.json` persistence + restore-on-boot shipped as part of M1's
+  backend work already (`write_persisted_sessions()`/
+  `restore_persisted_sessions()` in `handoff_webui.py`), so M2 only had
+  to read `GET /api/sessions` at boot and render the restored tabs — no
+  separate persistence milestone was actually needed. `sendMessage()`
+  (and `switchWorkspaceTo()`) capture their owning session id up front and
+  guard every DOM mutation with `sessionId === activeSessionId`, so a
+  background run finishing while a different tab is active never paints
+  into the wrong tab's chat thread — it sets a `hasUnseenReply` flag
+  (rendered as a tab-bar badge) instead, resolved the next time that tab
+  becomes active and re-fetches its real history.
+  **Scope reduction from the original plan**: this doc's "Frontend
+  changes" section originally described switching as instant/cached,
+  "no network round trip needed if that tab already loaded its data
+  once." What shipped instead re-fetches on every switch (the same round
+  trip Open Folder/a History-drawer item already pays) -- a deliberate,
+  lower-risk simplification given this codebase has zero automated
+  frontend/interaction test coverage (all existing tests are HTTP/
+  backend-level) and no browser-automation tooling available in this
+  session's environment to verify a fully cached model. **Consequence**:
+  no interactive click-through verification (create/switch/close tabs
+  in a real browser) has been done for this milestone -- confirmed
+  correct via full manual code review, real dev-server `curl` checks of
+  every changed HTTP-facing behavior, `node --check` on both JS files,
+  and the ko/en i18n key-parity script, but the actual UI interaction
+  needs the user's own confirmation once used for real.
 - **M3 — Verified concurrent execution.** Not started. Confirm two real
   CLI subprocesses actually run side by side (not just structurally
-  permitted to) under real load; background-tab completion indicators
-  wired up. M1 already proved this at the unit/HTTP-test level
-  (`GetRunLockForTests`, `MultiSessionLiveServerTests` in
-  `tests/test_handoff_webui.py`) — M3 is about confirming it holds up
-  against real provider CLIs under real concurrent load, not re-proving
-  the locking logic itself.
+  permitted to) under real load; the tab-bar busy/badge indicators M2
+  already built are the UI half of this. M1 already proved the locking
+  logic itself at the unit/HTTP-test level (`GetRunLockForTests`,
+  `MultiSessionLiveServerTests` in `tests/test_handoff_webui.py`) — M3 is
+  about confirming it holds up against real provider CLIs under real
+  concurrent load, not re-proving that logic.
 - **M4 (separate future decision, not part of this feature at all)** —
-  split-pane layout, if/when greenlit separately.
+  split-pane layout, if/when greenlit separately. A fully-cached,
+  zero-round-trip tab switch (the capability this doc originally
+  described for M2) would also be a natural candidate for a future pass,
+  if the current re-fetch-on-switch latency ever proves to matter in
+  practice.
 
 ## Open Implementation Questions
 
@@ -233,14 +284,20 @@ giant PR:
   `secrets.token_hex(8)` (16 hex characters).
 - Whether closing the last remaining tab should auto-create a fresh empty
   one (matching today's permanent "no workspace" empty state) or allow a
-  genuinely tab-less window: still open, relevant to M2.
+  genuinely tab-less window: resolved during M2 by construction — the
+  default session can never be closed at all (server- and client-side),
+  so there is always at least one tab; this question doesn't arise.
 - Whether an unbounded number of concurrently open sessions needs a soft
   cap, given each one can have a real CLI subprocess running at once
   (resource/cost concern, not a technical blocker): still open.
-- **New, found during M1**: same-workspace sessions cannot run literally
+- **Found during M1**: same-workspace sessions cannot run literally
   concurrently (they safely serialize instead, via
   `get_run_lock_for()`'s workspace-keyed lock) — removing that would need
   `handoff_bridge.py run` to expose a stable per-invocation identifier
   instead of `webui_bridge_run.py` relying on a position-based diff of
-  `.handoff/state.json`'s history. Separate, larger, not yet scoped;
-  not blocking M2/M3.
+  `.handoff/state.json`'s history. Separate, larger, not yet scoped; not
+  blocking M2/M3.
+- **Found during M2**: switching tabs re-fetches from the server instead
+  of the fully cached model this doc originally proposed (see M2's own
+  entry above for why) — not blocking, but means tab-switch latency
+  scales with network/disk I/O rather than being instant.
