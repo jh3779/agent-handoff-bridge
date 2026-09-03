@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- **New: the Settings panel now shows the running app version** (a
+  read-only "버전" row in the "일반" section), backed by a new
+  `"version"` field on `GET /api/info`.
+
 ## v0.4.5 — 2026-09-03
 
 - **Fix: the native folder picker was completely broken in every release

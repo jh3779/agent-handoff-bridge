@@ -3404,3 +3404,28 @@ tag" rule by construction rather than by discipline.
   confirm the folder picker actually works now; then return to the
   deferred model-routing/review-pipeline design interview whenever the
   user wants to pick it back up.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (Settings version display, merged, not yet released)
+
+- **Task**: user asked to be able to confirm the running app version
+  from Settings.
+- **Changed**: `GET /api/info` now includes `"version"` (from
+  `BRIDGE_VERSION`); a read-only "버전" row added to Settings' "일반"
+  section, filled in by `refreshWorkspaceLabel()` (runs on every boot
+  and workspace switch) -- deliberately not reusing the update-check
+  flow's `current_version`, since that can stay stuck at
+  `"pending"`/`"unavailable"` and never resolve a usable version.
+  Branch `feature/settings-version-display`, PR #36, merged.
+- **Verified**: `python3 handoff_bridge.py check` -- 565/565 (two
+  existing `/api/info` tests extended with a version assertion, no new
+  test count change). `scan_secrets.py` PASS. Real dev-server check:
+  `curl /api/info` returns `"version": "0.4.5"`.
+- **Remaining**: on `main` but **not yet released** -- asked the user
+  whether to cut v0.4.6 now or batch it with future work; user chose
+  to batch. Whenever the next release happens, this needs to be in the
+  release-notes.md entry (currently `## Unreleased` is empty pending
+  that write-up).
+- **Blocked**: none. **Next**: same as the entry above (confirm v0.4.5
+  folder-picker fix works for the user; deferred model-routing design
+  interview) -- this version-display feature is done and just waiting
+  to ride along with whatever ships next.
