@@ -160,6 +160,93 @@ class ClassifyHandoffTests(unittest.TestCase):
         self.assertTrue(needed)
         self.assertTrue(reason.startswith("overloaded:"))
 
+    def test_successful_codex_run_quoting_a_trigger_word_via_tool_output_is_not_misclassified(self):
+        # Regression (real-world report, 2026-09-03): a user asked codex to
+        # read/summarize a README that happened to say "Be mindful of the
+        # rate limit and quota ... see billing docs" -- ordinary prose in
+        # the *file*, not a signal about codex's own run. Because that text
+        # arrives via a command_execution item's aggregated_output (not
+        # agent_message/final_text), the pre-fix scan still saw it in raw
+        # stdout and wrongly classified this successful run as
+        # rate_limit-needs-handoff, discarding a good answer (and, with
+        # --auto-fallback, silently re-running on a different provider).
+        raw_stdout = "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "thread.started", "thread_id": "t1"},
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "command_execution",
+                        "command": "cat README.md",
+                        "aggregated_output": (
+                            "# App\n\nBe mindful of the rate limit and quota\n"
+                            "when making requests -- see billing docs for details.\n"
+                        ),
+                        "exit_code": 0,
+                    },
+                },
+                {
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": "Summary: calls an API.\n\nDONE"},
+                },
+                {"type": "turn.completed", "usage": {}},
+            ]
+        )
+        events = hb.parse_jsonl(raw_stdout)
+        parsed = hb.summarize_codex(events)
+        needed, reason = hb.classify_handoff(0, raw_stdout, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
+    def test_successful_claude_run_quoting_a_trigger_word_via_tool_result_is_not_misclassified(self):
+        # Same regression as above, for claude's "user"-typed tool_result
+        # echo events (Read tool output).
+        raw_stdout = "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "system", "subtype": "init", "session_id": "s1"},
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "content": (
+                                    "1\t# App\n2\t\n3\tBe mindful of the rate limit and quota\n"
+                                    "4\twhen making requests -- see billing docs for details.\n"
+                                ),
+                            }
+                        ]
+                    },
+                },
+                {"type": "result", "result": "Summary: calls an API.\n\nDONE"},
+            ]
+        )
+        events = hb.parse_jsonl(raw_stdout)
+        parsed = hb.summarize_claude(events)
+        needed, reason = hb.classify_handoff(0, raw_stdout, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
+    def test_multiline_final_text_is_still_excluded_from_the_raw_json_escaped_stdout(self):
+        # Regression (found in review while fixing the above): a decoded
+        # final_text containing a real newline character doesn't literally
+        # appear in raw JSONL stdout, where json.dumps encodes it as the two
+        # characters `\` `n` instead -- a plain combined.replace(final_text,
+        # "") silently fails to strip it, so this only worked by coincidence
+        # for previously-tested single-line text.
+        events_raw = [
+            {"type": "thread.started", "thread_id": "t1"},
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "line one\nrate limit and quota\nline three"},
+            },
+        ]
+        raw_stdout = "\n".join(json.dumps(e) for e in events_raw)
+        events = hb.parse_jsonl(raw_stdout)
+        parsed = hb.summarize_codex(events)
+        needed, reason = hb.classify_handoff(0, raw_stdout, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
     def test_reason_label_always_in_handoff_labels_or_none(self):
         cases = [
             (0, "", "", {}),
@@ -1172,6 +1259,103 @@ class SummarizeGeminiTests(unittest.TestCase):
         stderr = json.dumps({"error": {"type": "Error", "message": "boom"}})
         summary = hb.summarize_gemini("null", stderr, exit_code=1)
         self.assertEqual(summary["errors"], [{"type": "Error", "message": "boom"}])
+
+
+class SummarizeCodexTests(unittest.TestCase):
+    def test_agent_message_becomes_final_text_and_is_not_in_quoted_text(self):
+        events = [
+            {"type": "thread.started", "thread_id": "t1"},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": "the answer"}},
+            {"type": "turn.completed", "usage": {"tokens": 5}},
+        ]
+        summary = hb.summarize_codex(events)
+        self.assertEqual(summary["final_text"], "the answer")
+        self.assertEqual(summary["quoted_text"], "")
+        self.assertEqual(summary["session_id"], "t1")
+
+    def test_command_execution_output_is_collected_into_quoted_text(self):
+        # Real shape (captured from a real `codex exec --json` run,
+        # 2026-09-03): a command_execution item's aggregated_output echoes
+        # whatever the command printed -- e.g. a file's contents -- which is
+        # not a signal about codex's own run.
+        events = [
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "cat README.md",
+                    "aggregated_output": "rate limit and quota, see billing docs",
+                    "exit_code": 0,
+                },
+            },
+        ]
+        summary = hb.summarize_codex(events)
+        self.assertIn("rate limit and quota", summary["quoted_text"])
+        self.assertIn("cat README.md", summary["quoted_text"])
+
+    def test_turn_failed_and_error_events_are_captured_as_errors(self):
+        events = [{"type": "turn.failed", "error": {"message": "boom"}}]
+        summary = hb.summarize_codex(events)
+        self.assertEqual(summary["errors"], events)
+
+
+class SummarizeClaudeTests(unittest.TestCase):
+    def test_result_event_becomes_final_text(self):
+        events = [
+            {"type": "system", "subtype": "init", "session_id": "s1"},
+            {"type": "result", "result": "the answer", "usage": {"tokens": 5}, "total_cost_usd": 0.01},
+        ]
+        summary = hb.summarize_claude(events)
+        self.assertEqual(summary["final_text"], "the answer")
+        self.assertEqual(summary["session_id"], "s1")
+        self.assertEqual(summary["quoted_text"], "")
+
+    def test_tool_result_content_is_collected_into_quoted_text(self):
+        # Real shape (captured from a real `claude --verbose` run,
+        # 2026-09-03): a Read tool's result echoes the file's contents back
+        # as a "user" event, both in message.content and the duplicate
+        # tool_use_result.file.content -- neither is a signal about
+        # claude's own run.
+        events = [
+            {
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "tool_use_id": "t1",
+                            "type": "tool_result",
+                            "content": "rate limit and quota, see billing docs",
+                        }
+                    ],
+                },
+                "tool_use_result": {
+                    "type": "text",
+                    "file": {"content": "rate limit and quota, see billing docs"},
+                },
+            },
+        ]
+        summary = hb.summarize_claude(events)
+        self.assertIn("rate limit and quota", summary["quoted_text"])
+
+    def test_tool_use_input_is_collected_into_quoted_text(self):
+        events = [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "name": "Write", "input": {"content": "quota exceeded example"}}
+                    ]
+                },
+            },
+        ]
+        summary = hb.summarize_claude(events)
+        self.assertIn("quota exceeded example", summary["quoted_text"])
+
+    def test_is_error_result_is_captured_as_error(self):
+        events = [{"type": "result", "is_error": True, "result": "oops"}]
+        summary = hb.summarize_claude(events)
+        self.assertEqual(len(summary["errors"]), 1)
 
 
 class GeminiIntegrationTests(unittest.TestCase):
