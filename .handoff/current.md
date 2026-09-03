@@ -3747,3 +3747,71 @@ tag" rule by construction rather than by discipline.
   wants to continue the multi-session work; otherwise this backend
   groundwork sits ready and inert (identical to before, from every
   existing client's point of view) until a frontend actually uses it.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (multi-session M2: tab bar + sessions.json persistence, merged)
+
+- **Task**: user said "계속 진행해줘" (continue) -- implemented M2 of
+  `docs/research-session-splitting.md`, the frontend tab bar on top of
+  M1's already-merged backend session model.
+- **Changed** (branch `feature/multi-session-m2-frontend`, PR #52,
+  merged): backend -- `sessions.json` persistence
+  (`write_persisted_sessions()`/`read_persisted_sessions()`/
+  `restore_persisted_sessions()` in `handoff_webui.py`), written on
+  session create/close/workspace-switch and read once at `main()`
+  startup, mirroring `registry.json`/`credentials.json`'s existing
+  pattern -- this had been deferred from M1 specifically because a
+  frontend didn't exist yet to restore tabs into. Frontend -- new
+  `#tab-bar` element; `sessionMetaById` (a `Map`) replaces the
+  single-session module-level globals (`attachments`/`runInFlight`/
+  `hasWorkspace`/provider+model selection) that `webui/app.js` used to
+  have; one shared set of DOM elements (chat thread, tree, composer)
+  repaints for whichever session is active.
+- **Design decision made during implementation, not pre-planned**: the
+  original doc described tab-switching as instant/cached ("no network
+  round trip if that tab already loaded its data once"). Implemented a
+  **re-fetch-on-switch model instead** (same round trip Open Folder
+  already pays) -- a deliberate, lower-risk simplification given this
+  codebase has zero automated frontend/interaction tests and no
+  browser-automation tooling is available in this session's environment
+  to verify a fully cached N-DOM-subtree model would actually be
+  correct. Only small, cheap state (attachments-in-progress, composer
+  draft, provider/model choice) is cached per tab; chat messages and
+  the file tree are not. Documented as a real scope reduction (not
+  hidden) in both `docs/research-session-splitting.md` and
+  `docs/cli-reference.md`, with a note that a fully cached switch is a
+  natural future follow-up if the re-fetch latency ever matters.
+- **Concurrency safety carried through carefully**: `sendMessage()`/
+  `switchWorkspaceTo()` capture their owning session id up front
+  (before any `await`) and guard every subsequent DOM mutation with
+  `sessionId === activeSessionId` -- without this, a background run
+  finishing (or a workspace-switch response landing) after the user
+  switched to a different tab would paint its result into whichever tab
+  happens to be active *later*, not the one that actually started it.
+  When not-active, a `hasUnseenReply` flag is set instead (rendered as
+  a tab-bar badge), resolved the next time that tab becomes active and
+  re-fetches its real history from disk.
+- **Verified**: `python3 handoff_bridge.py check` -- 617/617 pass,
+  unaffected (this PR only adds new code paths, doesn't change any
+  existing single-session behavior). `scan_secrets.py` PASS.
+  `node --check` both JS files. ko/en i18n key-parity script: 121/121,
+  no drift. Real dev-server `curl` checks: tab-bar CSS/i18n present in
+  served assets, full session create/list/delete lifecycle. **Real
+  restart test**: created a tab pointed at a second workspace, killed
+  the server, booted a fresh instance on a *different port* with the
+  same `HOME`, confirmed `GET /api/sessions` correctly restored both
+  tabs -- genuine end-to-end proof the persistence works, not just unit
+  tests of the read/write functions in isolation.
+- **Remaining, disclosed openly (not silently skipped)**: no
+  interactive click-through of the actual tab bar in a real browser was
+  possible in this dev environment (no browser-automation tooling
+  available, and this project's own history already documents
+  Accessibility-permission-based native-app automation being
+  unreliable here). Confirmed correct via full manual code review
+  instead -- the user should click through create/switch/close tabs for
+  real once they update, matching this session's established pattern
+  for UI changes that can't be visually verified end-to-end here. M3
+  (verified concurrent execution under real provider CLI load) is still
+  fully unstarted.
+- **Blocked**: none. **Next**: M3 whenever the user wants to continue,
+  or ship this as a release once the user has had a chance to try the
+  tab bar for real.
