@@ -3482,3 +3482,47 @@ tag" rule by construction rather than by discipline.
 - **Blocked**: none. **Next**: ask the user whether to cut a release
   (bundling this fix + the version-display feature) now, or continue
   batching.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (v0.4.6 released: macOS CLI-detection fix + version display)
+
+- **Task**: user confirmed releasing the macOS PATH/CLI-detection fix
+  immediately as v0.4.6 (bundling the already-merged version-display
+  feature too), following the full `docs/release-process.md` runbook
+  again (branch `release/v0-4-6`, since main stays protected).
+- **Changed**: version bumped 0.4.5 -> 0.4.6 in all 3 tracked spots +
+  `Cargo.lock`, `## Unreleased` moved to a dated `## v0.4.6` heading in
+  `docs/release-notes.md` (PR #40). Tagged `v0.4.6`,
+  `installer-build` triggered via `workflow_dispatch`, watched to
+  green (all 3 OSes) via a background `gh run watch` again (still
+  exceeds a single foreground command's time budget).
+  `build_updater_manifest.py` produced a freshly-signed
+  `dist/latest.json`. `gh release create v0.4.6` with all 8 assets.
+  README/README.ko updated to v0.4.6 (PR #41).
+- **Verified past the usual bar** given this fix's nature (an
+  environment-dependent bug that only reproduces under a specific
+  launch condition, not something a plain `cargo build` type-checks
+  away): downloaded the real signed `agent-handoff-bridge-server`
+  binary from this exact release's CI artifacts and ran it directly
+  with a **fully scrubbed environment** (`env -i PATH=/usr/bin:/bin:
+  /usr/sbin:/sbin HOME=... SHELL=...`, not just an overridden PATH
+  var inside the existing shell) -- `GET /api/providers` against that
+  real binary reports `cli_detected: true` for codex/claude/gemini,
+  confirming the fix is genuinely present and working in the exact
+  artifact users will download, not just in source or a `python3
+  handoff_webui.py` dev run. Noted in passing: a cold-started
+  from-artifact binary took ~10-15s before answering its first
+  request (matches this project's own previously-documented
+  PyInstaller-self-extraction false-alarm pattern from the 7b M1
+  entry above -- not a new issue, just re-confirmed it's still true).
+  Every `latest.json` URL and README link independently verified 200.
+- **Remaining**: same as the folder-picker (v0.4.5) entry above --
+  no live GUI click-through from Finder was possible in this dev
+  environment (Accessibility-permission limits), so the very last
+  mile (does a real Finder double-click launch actually show all
+  three providers as connected in the Settings panel) is still on the
+  user to confirm after updating. Everything one layer short of that
+  has now been verified directly against the real shipped binary.
+- **Blocked**: none. **Next**: once the user updates to v0.4.6,
+  confirm CLI providers show as detected; then the deferred
+  model-routing/review-pipeline design interview (still open, several
+  entries back) whenever they want to return to it.
