@@ -23,6 +23,7 @@ var AHB_I18N = (function () {
   var STRINGS = {
     ko: {
       "titlebar.openFolder.title": "다른 폴더 열기",
+      "titlebar.modelOverride.placeholder": "모델 (기본값)",
       "titlebar.update": "업데이트",
       "titlebar.update.title": "업데이트 확인",
       "titlebar.history": "History",
@@ -82,6 +83,9 @@ var AHB_I18N = (function () {
 
       "provider.cliDetected": "CLI 감지됨",
       "provider.cliNotFound": "CLI 없음",
+      "provider.cliModelNote": "기본 모델을 지정하면 매 전송마다 --model로 전달됩니다. 비워두면 CLI의 기본값을 사용합니다. Titlebar의 모델 입력창에서 메시지별로 덮어쓸 수도 있습니다.",
+      "provider.cliModelSaved": "{provider}의 기본 모델이 \"{model}\"(으)로 저장되었습니다.",
+      "provider.cliModelCleared": "{provider}의 기본 모델 설정이 삭제되었습니다.",
       "provider.noCliNoApiKeySupport": "로컬에 CLI가 설치되어 있지 않습니다. 이 provider는 아직 API 키 모드를 지원하지 않습니다.",
       "provider.connectedViaApiKey": "API 키로 연결됨 (model: {model})",
       "provider.modelRequired": "설정 필요",
@@ -150,6 +154,7 @@ var AHB_I18N = (function () {
     },
     en: {
       "titlebar.openFolder.title": "Open a different folder",
+      "titlebar.modelOverride.placeholder": "Model (default)",
       "titlebar.update": "Update",
       "titlebar.update.title": "Check for updates",
       "titlebar.history": "History",
@@ -209,6 +214,9 @@ var AHB_I18N = (function () {
 
       "provider.cliDetected": "CLI detected",
       "provider.cliNotFound": "No CLI",
+      "provider.cliModelNote": "Set a default model to have it sent as --model on every send. Leave blank to use the CLI's own default. You can also override it per message from the model field in the titlebar.",
+      "provider.cliModelSaved": "{provider}'s default model saved as \"{model}\".",
+      "provider.cliModelCleared": "{provider}'s default model was cleared.",
       "provider.noCliNoApiKeySupport": "No local CLI installed. This provider doesn't support API-key mode yet.",
       "provider.connectedViaApiKey": "Connected via API key (model: {model})",
       "provider.modelRequired": "not set",

@@ -2275,6 +2275,62 @@ class CredentialsTests(unittest.TestCase):
         self.assertEqual(creds["codex"]["key"], "sk-codex")
 
 
+class CliProviderModelTests(unittest.TestCase):
+    """read_cli_provider_models()/save_cli_provider_model(): a provider's
+    default --model override for CLI mode, distinct from the API-key-mode
+    credentials above -- no key is ever involved."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_missing_file_returns_empty_dict(self):
+        self.assertEqual(webui_credentials.read_cli_provider_models(), {})
+
+    def test_save_then_read_round_trips(self):
+        webui_credentials.save_cli_provider_model("codex", "gpt-5-codex")
+        self.assertEqual(webui_credentials.read_cli_provider_models(), {"codex": "gpt-5-codex"})
+
+    def test_empty_model_removes_the_entry(self):
+        webui_credentials.save_cli_provider_model("claude", "claude-opus")
+        webui_credentials.save_cli_provider_model("claude", "")
+        self.assertNotIn("claude", webui_credentials.read_cli_provider_models())
+
+    def test_none_model_removes_the_entry(self):
+        webui_credentials.save_cli_provider_model("claude", "claude-opus")
+        webui_credentials.save_cli_provider_model("claude", None)
+        self.assertNotIn("claude", webui_credentials.read_cli_provider_models())
+
+    def test_whitespace_only_model_is_treated_as_empty(self):
+        webui_credentials.save_cli_provider_model("gemini", "   ")
+        self.assertEqual(webui_credentials.read_cli_provider_models(), {})
+
+    def test_saving_one_provider_does_not_clobber_another(self):
+        webui_credentials.save_cli_provider_model("codex", "gpt-5-codex")
+        webui_credentials.save_cli_provider_model("claude", "claude-opus")
+        models = webui_credentials.read_cli_provider_models()
+        self.assertEqual(models["codex"], "gpt-5-codex")
+        self.assertEqual(models["claude"], "claude-opus")
+
+    def test_unknown_provider_in_the_raw_file_is_filtered_on_read(self):
+        self.base_dir.mkdir(parents=True)
+        (self.base_dir / "credentials.json").write_text(
+            json.dumps({"cli_models": {"claude": "claude-opus", "totally-unknown-provider": "x"}}),
+            encoding="utf-8",
+        )
+        self.assertEqual(list(webui_credentials.read_cli_provider_models()), ["claude"])
+
+    def test_coexists_with_api_key_credentials_in_the_same_file(self):
+        webui_credentials.save_credential("claude", "sk-ant-test", "claude-sonnet-5")
+        webui_credentials.save_cli_provider_model("codex", "gpt-5-codex")
+        self.assertEqual(webui_bridge_run.read_credentials()["claude"]["key"], "sk-ant-test")
+        self.assertEqual(webui_credentials.read_cli_provider_models()["codex"], "gpt-5-codex")
+
+
 class CustomProviderCredentialsTests(unittest.TestCase):
     """Custom providers (DEC-26): a user-named, user-supplied HTTP
     endpoint stored alongside the fixed codex/claude/gemini entries in
@@ -4181,6 +4237,95 @@ class ProviderApiLiveServerTests(unittest.TestCase):
             )
         self.assertEqual(status, 400)
         self.assertIn("error", data)
+
+
+class CliProviderModelLiveServerTests(unittest.TestCase):
+    """POST /api/cli-model and GET /api/providers' `cli_model` field over
+    a real HTTP server -- the CLI-mode sibling of ProviderApiLiveServerTests
+    (which covers API-key mode's `model` field instead). No key/validation
+    involved here at all -- the CLI itself handles auth."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+        self.state = webui.AppState(None)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.httpd.shutdown)
+        self.addCleanup(self.httpd.server_close)
+
+    def _get(self, path):
+        url = f"http://127.0.0.1:{self.port}{path}"
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+
+    def _post(self, path, payload):
+        url = f"http://127.0.0.1:{self.port}{path}"
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def test_providers_list_has_no_cli_model_by_default(self):
+        _, data = self._get("/api/providers")
+        for info in data["providers"]:
+            self.assertIsNone(info["cli_model"])
+
+    def test_saving_a_cli_model_needs_no_key_and_is_not_verified(self):
+        status, data = self._post("/api/cli-model", {"provider": "codex", "model": "gpt-5-codex"})
+        self.assertEqual(status, 200)
+        self.assertEqual(data, {"provider": "codex", "model": "gpt-5-codex"})
+
+    def test_saved_cli_model_is_reflected_in_the_providers_list(self):
+        self._post("/api/cli-model", {"provider": "claude", "model": "claude-opus"})
+        _, data = self._get("/api/providers")
+        claude = next(p for p in data["providers"] if p["provider"] == "claude")
+        self.assertEqual(claude["cli_model"], "claude-opus")
+        # Distinct from API-key mode's own `model` field -- no key was
+        # ever saved here, so that field must stay untouched.
+        self.assertIsNone(claude["model"])
+        self.assertFalse(claude["api_key_configured"])
+
+    def test_empty_model_removes_a_previously_saved_one(self):
+        self._post("/api/cli-model", {"provider": "gemini", "model": "gemini-2.5-pro"})
+        status, data = self._post("/api/cli-model", {"provider": "gemini", "model": ""})
+        self.assertEqual(status, 200)
+        self.assertIsNone(data["model"])
+        _, providers = self._get("/api/providers")
+        gemini = next(p for p in providers["providers"] if p["provider"] == "gemini")
+        self.assertIsNone(gemini["cli_model"])
+
+    def test_invalid_provider_is_rejected_with_400(self):
+        status, data = self._post("/api/cli-model", {"provider": "totally-unknown", "model": "x"})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_custom_provider_is_rejected_here_too(self):
+        # Custom providers (DEC-26) have their own model field, set via
+        # /api/custom-provider -- this endpoint is fixed-provider-only.
+        status, data = self._post("/api/cli-model", {"provider": "custom:openrouter", "model": "x"})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_saving_one_providers_model_does_not_affect_another(self):
+        self._post("/api/cli-model", {"provider": "codex", "model": "gpt-5-codex"})
+        self._post("/api/cli-model", {"provider": "claude", "model": "claude-opus"})
+        _, data = self._get("/api/providers")
+        by_name = {p["provider"]: p for p in data["providers"]}
+        self.assertEqual(by_name["codex"]["cli_model"], "gpt-5-codex")
+        self.assertEqual(by_name["claude"]["cli_model"], "claude-opus")
 
 
 class CustomProviderLiveServerTests(unittest.TestCase):

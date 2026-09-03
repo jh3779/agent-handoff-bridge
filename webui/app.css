@@ -138,6 +138,17 @@ body {
   padding: 4px 8px;
   color: var(--on-bg);
 }
+.model-override-input {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--surface);
+  border: 1px solid var(--outline);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--on-bg);
+  width: 120px;
+}
+.model-override-input::placeholder { color: var(--muted); }
 .tbtn {
   display: flex; align-items: center; gap: 4px;
   background: var(--surface); border: 1px solid var(--outline); border-radius: 999px;

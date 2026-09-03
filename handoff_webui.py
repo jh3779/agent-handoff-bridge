@@ -73,8 +73,10 @@ from webui_credentials import (
     cli_available,
     custom_provider_id,
     is_custom_provider,
+    read_cli_provider_models,
     read_credentials,
     read_custom_providers,
+    save_cli_provider_model,
     save_credential,
     save_custom_provider,
 )
@@ -213,6 +215,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 # was extended to include it, so the frontend offers a key
                 # field for it exactly like codex/claude.
                 credentials = read_credentials()
+                cli_models = read_cli_provider_models()
                 providers = []
                 for provider in PROVIDERS:
                     supports_api_key_mode = provider in API_KEY_MODE_PROVIDERS
@@ -224,6 +227,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                             "api_key_mode_supported": supports_api_key_mode,
                             "api_key_configured": entry is not None,
                             "model": (entry or {}).get("model") if entry else None,
+                            "cli_model": cli_models.get(provider),
                         }
                     )
                 # Custom providers (DEC-26) have no CLI concept at all --
@@ -499,6 +503,29 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         response["verified"] = True
                         response["confirmation"] = confirmation
                     self._send_json(200, response)
+                except WorkspaceError as exc:
+                    self._send_json(400, {"error": str(exc)})
+            elif parsed.path == "/api/cli-model":
+                # Settings panel's "기본 모델" field for a provider whose
+                # CLI is already detected -- distinct from /api/provider-key
+                # above, which is API-key mode only (requires a key, runs a
+                # real verification call). No key, no verification here:
+                # the CLI itself already handles auth, this is purely a
+                # --model override webui_bridge_run.py passes through on
+                # every /api/run call for this provider (empty model clears
+                # the saved override, same "empty removes" contract as
+                # save_credential()).
+                try:
+                    body = self._read_json_body()
+                    provider = str(body.get("provider") or "")
+                    if provider not in PROVIDERS:
+                        raise WorkspaceError(f"invalid provider: {provider}")
+                    model = str(body.get("model") or "").strip() or None
+                    try:
+                        save_cli_provider_model(provider, model)
+                    except OSError as exc:
+                        raise WorkspaceError(f"failed to save model: {exc}") from exc
+                    self._send_json(200, {"provider": provider, "model": model})
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             elif parsed.path == "/api/custom-provider":
