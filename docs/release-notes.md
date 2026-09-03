@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- **Fix: connected AI models (codex/claude/gemini) showed as not
+  detected in the macOS desktop app**, even when installed and working
+  fine from Terminal. A macOS app launched from Finder/Dock/Spotlight
+  inherits launchd's minimal PATH, not the user's shell PATH -- Homebrew/
+  nvm/etc. install locations for these CLIs live outside that. The app
+  now asks the user's login shell for its real PATH once at startup and
+  merges in whatever's missing (macOS-only, no-op everywhere else).
 - **New: the Settings panel now shows the running app version** (a
   read-only "버전" row in the "일반" section), backed by a new
   `"version"` field on `GET /api/info`.
