@@ -3335,3 +3335,72 @@ tag" rule by construction rather than by discipline.
 - **Blocked**: none. **Next**: design interview for the task-based
   auto-model-switching + cross-model review pipeline (explicitly not
   started yet, deferred by the user's own choice this round).
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (v0.4.5: real user-reported folder-picker fix, released)
+
+- **Task**: user reported (with a screenshot) that the native folder
+  picker fails on macOS with a red toast reading exactly "폴더 선택
+  실패: Command plugin:dialog|open not allowed by ACL", on the
+  already-installed v0.4.4 release app (not a fresh build from this
+  session's own uncommitted changes). Also separately noted the 📎
+  attach button's file picker works fine -- a useful clue, not itself
+  a bug (that button is a plain `<input type="file">`, which never
+  goes through Tauri's `invoke()`/ACL layer at all).
+- **Root cause found**: `src-tauri/src/lib.rs` builds the app's window
+  with `WebviewUrl::External("http://127.0.0.1:8787/")` -- it shows the
+  Python HTTP server's content, not Tauri's bundled `app://` frontend.
+  Tauri v2's capability/ACL system only auto-grants permissions to
+  webviews showing *local* (`app://`) content; an externally-loaded
+  origin needs to be explicitly allow-listed via the capability's
+  `remote.urls` field, confirmed against Tauri's own capability docs
+  (`v2.tauri.app/security/capabilities/`) via `WebFetch`, not assumed.
+  `src-tauri/capabilities/default.json` never had a `remote` block --
+  this has been broken since the folder picker's original introduction
+  in v0.4.3, not a regression from this session's other (still
+  uncommitted at the time) i18n work -- verified by diffing the
+  capabilities file across every tag since v0.4.3, unchanged until this
+  fix.
+- **Changed**: added `"remote": {"urls": ["http://127.0.0.1:8787/*"]}`
+  to `src-tauri/capabilities/default.json`, matching `lib.rs`'s
+  hardcoded `SERVER_URL`. Branch `fix/dialog-plugin-acl-remote-url`, PR
+  #32, merged after CI green.
+- **Verified**: `cargo build` clean locally (placeholder sidecars,
+  matching CI's `rust-build` convention) -- capability JSON accepted,
+  no ACL/schema errors. After the real v0.4.5 `installer-build` run
+  produced a genuine signed `.app`, additionally confirmed via `strings`
+  on the compiled `Contents/MacOS/app` binary that the literal
+  `127.0.0.1:8787/*` string is embedded directly adjacent to
+  `plugin:dialog|open` in the binary's compiled ACL table -- direct
+  evidence the fix is actually present in the shipped artifact, not
+  just in source. Did not attempt a live click-through of the real
+  `.app` (GUI automation in this dev environment has a history of
+  unreliable Accessibility-permission targeting, see the 2026-08-06
+  Phase 7a entry above) -- real end-to-end confirmation is on the user
+  once they update.
+- **Shipped as v0.4.5** (full `docs/release-process.md` runbook,
+  branch `release/v0-4-5` since main is now protected and the doc's
+  old "commit straight to main" step 5 no longer applies): version
+  bumped in all 3 tracked spots + `Cargo.lock`, `docs/release-notes.md`
+  entry covering both this fix and the already-merged-but-unreleased
+  i18n/"지침" work from the entry above (PR #33). Tagged `v0.4.5`,
+  `installer-build` triggered via `workflow_dispatch` and watched to
+  green (all 3 OSes) -- `gh run watch` needed a background run since it
+  exceeded a single 10-minute foreground command. `scripts/
+  build_updater_manifest.py` produced `dist/latest.json` with all 3
+  signed platform entries. `gh release create v0.4.5` with all 8 assets
+  (both source zips, `latest.json`, `.dmg`, `.app.tar.gz`+`.sig`,
+  Windows `.exe`, Linux `.AppImage`) -- every `latest.json` URL and
+  every README-linked URL independently verified 200 via `curl`
+  (`User-Agent: curl/8.0`, per this doc's own documented urllib/UA
+  gotcha). README/README.ko download links updated to v0.4.5 (PR #34).
+- **Remaining**: the user has not yet confirmed the fix actually works
+  on their real Mac after updating -- this is a genuine open item, not
+  just process box-ticking, since no live click-through was possible
+  from this dev environment. The deferred design interview for
+  task-based auto-model-switching + cross-model review (noted in the
+  entry above) is still fully open and unrelated to this fix.
+- **Blocked**: none. **Next**: once the user updates to v0.4.5 (in-app
+  auto-updater should offer it, or manual download from the README),
+  confirm the folder picker actually works now; then return to the
+  deferred model-routing/review-pipeline design interview whenever the
+  user wants to pick it back up.
