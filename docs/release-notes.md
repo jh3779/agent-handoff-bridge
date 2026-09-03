@@ -4,6 +4,27 @@
 
 ## Unreleased
 
+## v0.4.10 — 2026-09-03
+
+- **Fix: a successful codex/claude reply could be wrongly discarded as
+  "handoff needed"** (and, with auto-fallback on, silently re-run on a
+  different provider) whenever a tool result -- a file read, a command's
+  output -- happened to contain ordinary text matching a known error
+  signal (e.g. a README mentioning "rate limit and quota"). The
+  classifier now excludes tool-echoed content from its scan, the same way
+  it already excluded the model's own final answer text. Also fixes a
+  latent bug in that existing exclusion itself: it compared decoded text
+  against raw (JSON-escaped) stdout, which silently failed to strip any
+  multi-line text.
+- **New: pick a model from a list instead of typing one by hand.** The
+  default-model field (Settings panel) and the titlebar's per-message
+  model override now suggest real, known models for the selected
+  provider -- codex's own live model cache, claude's documented aliases
+  ("fable"/"opus"/"sonnet"), and gemini's documented model ids -- while
+  still accepting any typed value. This also prevents the class of bug
+  behind a prior report of an invalid, hand-typed claude model value
+  ("Sonnet5") silently being saved and sent on every call.
+
 ## v0.4.9 — 2026-09-03
 
 - **Fix: sending a message failed outright for both codex and claude**
