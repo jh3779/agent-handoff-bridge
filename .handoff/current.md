@@ -3587,3 +3587,62 @@ tag" rule by construction rather than by discipline.
   this feature; the deferred model-routing/review-pipeline design
   interview and the newly-deferred session-splitting idea are both
   open for whenever the user wants to pick either up.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (multi-session/tabs design doc, merged, no code yet)
+
+- **Task**: user asked to start on the "session splitting, IDE 처럼"
+  idea (raised in the prior entry, deliberately deferred out of the
+  CLI-model-selection PR) -- specifically the design first, not
+  implementation.
+- **Design interview** (`AskUserQuestion`, two rounds, 5 questions
+  total): (1) session unit -- user chose **both** same-workspace
+  multi-chat and cross-workspace tabs, not either alone; (2)
+  concurrency -- user chose **genuinely parallel** execution over
+  switchable-but-serial; (3) UI layout -- **tabs first**, split-pane
+  explicitly deferred to later; (4) restart behavior -- **tabs persist
+  across an app restart**; (5) this pass's scope -- **design doc
+  first**, matching the Phase 7/API-key-mode precedent of a research
+  doc before any implementation.
+- **Changed**: new `docs/research-session-splitting.md` -- works out
+  the concrete mechanism, not just the decision: per-request
+  `X-AHB-Session` header attached once inside `webui/app.js`'s two
+  universal `fetchJSON()`/`postJSON()` call sites (confirmed via
+  `grep` that these really are the only two places every frontend API
+  call passes through, before relying on that as the whole design's
+  linchpin); `AppState.sessions: dict[str, SessionState]` replacing
+  today's single `workspace` field; a per-session `run_lock` replacing
+  the single global `_RUN_LOCK` in `webui_bridge_run.py` (confirmed
+  *why* that lock is global today -- `pair_messages_into_turns()`'s
+  ordering-based pairing would corrupt if two sessions in the same
+  workspace wrote to the same monthly chat-log file concurrently);
+  session-scoped chat log subfolders
+  (`.handoff/webui/chat/<session_id>/YYYY-MM.jsonl`) with a `"default"`
+  sentinel session keeping today's existing unscoped path untouched, so
+  no migration script is needed for a workspace's pre-existing chat
+  history; a new `sessions.json` (same `AUTO_WORKSPACE_BASE_DIR`,
+  function-based-path pattern as `registry.json`/`credentials.json`)
+  for restart persistence. **Key finding**: none of this needs a
+  `src-tauri/` (Rust) change -- the whole feature lives inside the
+  existing single HTTP server process and single browser window.
+  Proposed milestones M1 (backend session model) -> M2 (frontend tab
+  bar) -> M3 (verified real concurrent execution); split-pane layout
+  explicitly written up as a separate, later, unstarted decision (M4).
+  Branch `docs/session-splitting-design`, PR #45, merged. Linked from
+  `docs/index.md` alongside the other research docs.
+- **Verified**: docs-only change; `python3 handoff_bridge.py check`
+  585/585 unaffected. Every architectural claim in the doc (chat-log
+  path, `_RUN_LOCK`'s exact scope, `AUTO_WORKSPACE_BASE_DIR`,
+  `fetchJSON()`/`postJSON()` being the only two call sites) was
+  confirmed by reading the actual current source before writing it
+  down, not assumed from memory of earlier phases.
+- **Remaining**: this is a design doc only -- **no implementation has
+  started**. M1 (backend session model) is the natural next step
+  whenever the user says go, and per the doc's own "Open Implementation
+  Questions" section, a few small things (exact session-id scheme,
+  last-tab-closed behavior, a possible concurrent-session soft cap)
+  are left to resolve during M1 itself rather than blocking sign-off
+  on the plan.
+- **Blocked**: none. **Next**: awaiting the user's decision on whether
+  to start M1 now, do another release first (v0.4.7, bundling the
+  already-merged-but-unreleased CLI-model-selection feature), or
+  something else entirely.
