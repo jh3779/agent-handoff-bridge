@@ -80,12 +80,10 @@ window, not multiple native OS windows.
 ### `AppState` shape
 
 - Today: one `workspace: Path | None` field.
-- Proposed: `sessions: dict[str, SessionState]`, where `SessionState`
-  holds `workspace: Path | None`, its own `run_lock: threading.Lock()`,
-  and `run_in_flight: bool` — the per-session replacements for today's
-  single global versions of each. A small separate meta-lock (held only
-  briefly) protects `sessions` itself from concurrent create/delete races;
-  it is not the same lock as any individual session's `run_lock`.
+- Built in M1: `sessions: dict[str, SessionState]`, where `SessionState`
+  holds just a `workspace: Path | None`. A small separate meta-lock (held
+  only briefly) protects `sessions` itself from concurrent create/delete
+  races.
 - Provider/model selection, composer draft text, and attachments-in-
   progress are already frontend-local, per-tab-shaped state today (the
   server is stateless per request about which provider was picked) — they
@@ -94,14 +92,44 @@ window, not multiple native OS windows.
 
 ### Concurrency
 
-Replacing the single global `_RUN_LOCK` with a per-session lock is enough
-to get genuine parallelism: `subprocess.run()` releases the GIL while
-waiting on the child process, so two threads (two concurrent HTTP
-requests, each handling a different session's `/api/run`) can already run
-two real `codex`/`claude`/`gemini` subprocesses side by side today — the
-*only* thing preventing it is the single global lock. `RunAlreadyInProgress
-Error` keeps its existing meaning, just re-scoped to "this session already
-has a run in flight," not "the whole app does."
+**Revised during M1's own implementation** — this section originally
+proposed giving each *session* its own run lock (`SessionState.run_lock`).
+That was wrong, caught before it shipped: `webui_bridge_run.py` identifies
+"the record(s) a call produced" by diffing
+`<workspace>/.handoff/state.json`'s history length before/after the
+subprocess call, with no lock of its own around that diff — a mechanism
+that is only race-free when exactly one lock guards every access to that
+one shared file. Two sessions on two *different* workspaces have
+independent `state.json` files and correctly need independent locks (a
+per-session lock gets this right); two sessions on the *same* workspace
+share one `state.json`, and per-session locks would let their before/after
+reads interleave, silently misattributing or duplicating a chat message —
+exactly the bug the pre-M1 single global lock existed to prevent, just
+reintroduced for the same-workspace multi-session case specifically.
+
+**What M1 actually built**: `AppState.get_run_lock_for(workspace)`, keyed
+by workspace path rather than session id. Any two sessions pointed at the
+same workspace resolve to the *same* lock object (their runs correctly
+serialize against each other); sessions on different workspaces resolve to
+different lock objects (their runs genuinely proceed in parallel). This
+still delivers real parallelism for the case that actually has independent
+state to race over, and stays safe (not silently wrong) for the case that
+doesn't — `subprocess.run()` releases the GIL while waiting on the child
+process, so two threads handling two different workspaces' `/api/run`
+calls already run two real `codex`/`claude`/`gemini` subprocesses side by
+side. `RunAlreadyInProgressError` keeps its existing meaning, re-scoped to
+"a run against this workspace is already in flight" rather than "the whole
+app has one in flight anywhere."
+
+A **known, accepted limitation** left open by this: two sessions on the
+same workspace cannot have literally concurrent provider runs — they
+serialize, safely, rather than running in parallel. Removing that
+constraint too would need `handoff_bridge.py`'s `run` subcommand to expose
+a stable per-invocation identifier (it already generates one internally,
+`run_id`/`run_dir` in `run_provider()`) so callers can identify their own
+record(s) without relying on a position-based diff of a file two
+concurrent writers might both be appending to. That is a separate, larger,
+not-yet-scoped change — see "Open Implementation Questions" below.
 
 ### Chat storage
 
@@ -173,34 +201,46 @@ has a run in flight," not "the whole app does."
 
 ## Proposed Milestones
 
-Not started — for review before any of this is implemented, mirroring how
-Phase 7b was broken into M1..M6 rather than shipped as one giant PR:
+Mirrors how Phase 7b was broken into M1..M6 rather than shipped as one
+giant PR:
 
-- **M1 — Backend session model.** `AppState.sessions`, per-session
-  `run_lock`, the `X-AHB-Session` header contract with `"default"`
-  fallback, `POST`/`GET`/`DELETE /api/sessions`, chat-storage path scoping.
-  No frontend change yet — the existing single-session frontend keeps
-  working completely unchanged via the `"default"` fallback the whole way
-  through this milestone.
-- **M2 — Frontend tab bar.** Multiple tabs, per-tab state object,
-  switching/creating/closing tabs, `sessions.json` persistence and
+- **M1 — Backend session model. ✅ Done** (PR #50, merged 2026-09-03).
+  `AppState.sessions`, workspace-keyed `get_run_lock_for()` (revised from
+  this doc's original per-session-lock proposal — see "Concurrency"
+  above), the `X-AHB-Session` header contract with `"default"` fallback,
+  `POST`/`GET`/`DELETE /api/sessions`, chat-storage path scoping. No
+  frontend change — the existing single-session frontend keeps working
+  completely unchanged via the `"default"` fallback, confirmed by all 585
+  pre-existing tests passing with zero modification to their expected
+  behavior.
+- **M2 — Frontend tab bar.** Not started. Multiple tabs, per-tab state
+  object, switching/creating/closing tabs, `sessions.json` persistence and
   restore-on-boot.
-- **M3 — Verified concurrent execution.** Confirm two real CLI
-  subprocesses actually run side by side (not just structurally permitted
-  to) under real load; background-tab completion indicators wired up.
+- **M3 — Verified concurrent execution.** Not started. Confirm two real
+  CLI subprocesses actually run side by side (not just structurally
+  permitted to) under real load; background-tab completion indicators
+  wired up. M1 already proved this at the unit/HTTP-test level
+  (`GetRunLockForTests`, `MultiSessionLiveServerTests` in
+  `tests/test_handoff_webui.py`) — M3 is about confirming it holds up
+  against real provider CLIs under real concurrent load, not re-proving
+  the locking logic itself.
 - **M4 (separate future decision, not part of this feature at all)** —
   split-pane layout, if/when greenlit separately.
 
 ## Open Implementation Questions
 
-Small, resolvable during M1 itself — not blocking sign-off on the plan
-above:
-
-- Exact session-id generation scheme/length (a `secrets.token_hex(8)`-style
-  opaque id is the working assumption above, not yet finalized).
+- Exact session-id generation scheme: resolved during M1 as
+  `secrets.token_hex(8)` (16 hex characters).
 - Whether closing the last remaining tab should auto-create a fresh empty
   one (matching today's permanent "no workspace" empty state) or allow a
-  genuinely tab-less window.
+  genuinely tab-less window: still open, relevant to M2.
 - Whether an unbounded number of concurrently open sessions needs a soft
   cap, given each one can have a real CLI subprocess running at once
-  (resource/cost concern, not a technical blocker).
+  (resource/cost concern, not a technical blocker): still open.
+- **New, found during M1**: same-workspace sessions cannot run literally
+  concurrently (they safely serialize instead, via
+  `get_run_lock_for()`'s workspace-keyed lock) — removing that would need
+  `handoff_bridge.py run` to expose a stable per-invocation identifier
+  instead of `webui_bridge_run.py` relying on a position-based diff of
+  `.handoff/state.json`'s history. Separate, larger, not yet scoped;
+  not blocking M2/M3.
