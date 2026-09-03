@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.6 — 2026-09-03
+
 - **Fix: connected AI models (codex/claude/gemini) showed as not
   detected in the macOS desktop app**, even when installed and working
   fine from Terminal. A macOS app launched from Finder/Dock/Spotlight
