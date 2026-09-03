@@ -3871,3 +3871,44 @@ tag" rule by construction rather than by discipline.
 - **Blocked**: none. **Next**: awaiting the user's decision on whether
   to release this now, continue with something else, or have the user
   try the tab bar for real first before deciding.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (v0.4.8 released: multi-session tabs, M1-M3)
+
+- **Task**: user chose to release the completed multi-session feature
+  (M1-M3) now, without waiting to try the tab bar first.
+- **Changed**: version bumped 0.4.7 -> 0.4.8 in all 3 tracked spots +
+  `Cargo.lock`, `## Unreleased` moved to a dated `## v0.4.8` heading
+  (PR #56) -- caught and fixed a real duplicate before committing: the
+  CLI-model-selection bullet was still sitting in `## Unreleased` even
+  though it already shipped in v0.4.7, which would have made it look
+  new twice. Tagged `v0.4.8`, `installer-build` triggered via
+  `workflow_dispatch`. **Real transient network failures hit twice this
+  round** (both `gh run watch` and the first `gh run download` timed
+  out mid-poll/mid-download against GitHub's API -- confirmed via the
+  actual error text, `read tcp ...: read: operation timed out`, not a
+  real build or artifact problem) -- recovered by re-running `gh run
+  watch` (the workflow itself was still healthy and finished
+  `success`) and re-running `gh run download` from scratch after a
+  first partial/inconsistent download (mixing the bulk download's
+  `installers-<triple>/<format>/` layout with a couple of files pulled
+  individually via `-n <artifact>`, which extracts flat and does not
+  nest under that prefix) confused `build_updater_manifest.py`, which
+  expects the bulk layout consistently -- a clean full re-download
+  fixed it. `build_updater_manifest.py` produced a freshly-signed
+  `dist/latest.json`. `gh release create v0.4.8` with all 8 assets.
+  README/README.ko updated to v0.4.8 (PR #57).
+- **Verified**: `python3 handoff_bridge.py check` -- 620/620 pass.
+  `scan_secrets.py` PASS. Source zip sanity check (extracted outside
+  the repo, `--version`/`check` both pass standalone). Every
+  `latest.json` URL and README link independently verified 200.
+- **Remaining**: none for this release. The multi-session tab bar
+  itself still has not been interactively clicked through in a real
+  browser by this session (see the M2 entry above) -- genuinely
+  awaiting the user's own hands-on confirmation now that it's shipped
+  in a real installable release, not just on `main`.
+- **Blocked**: none. **Next**: nothing specifically queued. Open items
+  across this whole session, for whenever the user wants to pick one
+  up: M4 (split-pane layout, a separate future decision, not
+  auto-continued), and the much-earlier-deferred design interview for
+  task-based auto-model-switching + cross-model review pipeline
+  (several entries back, still fully undesigned).
