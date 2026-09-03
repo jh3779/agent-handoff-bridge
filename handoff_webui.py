@@ -27,6 +27,9 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
+import re
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -692,6 +695,60 @@ def _check_for_update_in_background(state: "AppState") -> None:
     state.update_checked = True
 
 
+def augment_path_for_gui_launch() -> None:
+    """macOS-only fix: a Tauri/pywebview desktop launch (double-clicked
+    from Finder/Dock/Spotlight, not run from a terminal) inherits
+    launchd's minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), not the
+    user's shell PATH -- Homebrew (/opt/homebrew/bin, /usr/local/bin),
+    nvm, and other common install locations for the codex/claude/gemini
+    CLIs live outside that, so shutil.which() finds nothing here even
+    though the same CLI works fine from Terminal.app. Fixed by asking
+    the user's own login shell for its real PATH and merging in
+    whatever entries are missing (this project's own well-known
+    equivalent of Electron's "fix-path"/"shell-path" packages -- no new
+    dependency needed for one small shell call).
+
+    Only ever appends entries, never removes any -- a no-op when this
+    process is already running with a complete PATH (i.e. every
+    non-macOS platform, and macOS when actually launched from a
+    terminal), so it is safe to call unconditionally at startup.
+    """
+    if sys.platform != "darwin":
+        return
+    shell = os.environ.get("SHELL") or "/bin/zsh"
+    marker = "__AHB_PATH__"
+    try:
+        # ${PATH}, not $PATH -- with the marker string immediately
+        # abutting it (no separator), a bare $PATH greedily consumes the
+        # marker's own leading underscores as part of the variable name
+        # (`$PATH__AHB_PATH__` parses as one identifier), silently
+        # expanding to empty. Verified this actually happens, not just
+        # theoretical: an unbraced version passed every test here (all
+        # mocked) but produced an empty PATH against a real shell.
+        result = subprocess.run(
+            [shell, "-ilc", f"echo {marker}${{PATH}}{marker}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return  # best-effort -- an unusual/broken $SHELL must not block startup
+    match = re.search(re.escape(marker) + r"(.*?)" + re.escape(marker), result.stdout, re.S)
+    if not match:
+        return
+    shell_path = match.group(1).strip()
+    if not shell_path:
+        return
+    current_parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    seen = set(current_parts)
+    merged = list(current_parts)
+    for part in shell_path.split(os.pathsep):
+        if part and part not in seen:
+            merged.append(part)
+            seen.add(part)
+    os.environ["PATH"] = os.pathsep.join(merged)
+
+
 def main(argv: list[str] | None = None) -> int:
     # Phase 7a (DEC-22): when this process is spawned as a Tauri sidecar
     # (src-tauri/src/lib.rs), the caller waits for a specific line on
@@ -708,6 +765,7 @@ def main(argv: list[str] | None = None) -> int:
     # stream directly here is unaffected by that and by any other
     # environment-variable propagation question.
     sys.stdout.reconfigure(line_buffering=True)
+    augment_path_for_gui_launch()
     args = build_parser().parse_args(argv)
     if not is_loopback_host(args.host):
         print(f"refusing to bind to non-loopback host: {args.host!r}", file=sys.stderr)

@@ -75,6 +75,63 @@ class IsLoopbackHostTests(unittest.TestCase):
         self.assertFalse(webui.is_loopback_host(""))
 
 
+class AugmentPathForGuiLaunchTests(unittest.TestCase):
+    """A GUI launch (Finder/Dock, not a terminal) inherits launchd's
+    minimal PATH on macOS -- codex/claude/gemini CLIs installed via
+    Homebrew/nvm/etc. become invisible to shutil.which() as a result.
+    augment_path_for_gui_launch() asks the user's login shell for its
+    real PATH and merges in whatever's missing."""
+
+    def setUp(self):
+        self._orig_path = os.environ.get("PATH", "")
+        self.addCleanup(lambda: os.environ.__setitem__("PATH", self._orig_path))
+
+    def test_no_op_on_non_macos(self):
+        os.environ["PATH"] = "/usr/bin:/bin"
+        with mock.patch.object(webui.sys, "platform", "linux"), mock.patch.object(webui.subprocess, "run") as run:
+            webui.augment_path_for_gui_launch()
+        run.assert_not_called()
+        self.assertEqual(os.environ["PATH"], "/usr/bin:/bin")
+
+    def test_merges_missing_entries_from_login_shell_path(self):
+        os.environ["PATH"] = "/usr/bin:/bin"
+        fake_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="__AHB_PATH__/opt/homebrew/bin:/usr/bin:/bin__AHB_PATH__\n"
+        )
+        with mock.patch.object(webui.sys, "platform", "darwin"), mock.patch.object(
+            webui.subprocess, "run", return_value=fake_result
+        ) as run:
+            webui.augment_path_for_gui_launch()
+        run.assert_called_once()
+        # New entry appended; already-present entries not duplicated.
+        self.assertEqual(os.environ["PATH"], "/usr/bin:/bin:/opt/homebrew/bin")
+
+    def test_shell_spawn_failure_leaves_path_untouched(self):
+        os.environ["PATH"] = "/usr/bin:/bin"
+        with mock.patch.object(webui.sys, "platform", "darwin"), mock.patch.object(
+            webui.subprocess, "run", side_effect=OSError("no such shell")
+        ):
+            webui.augment_path_for_gui_launch()
+        self.assertEqual(os.environ["PATH"], "/usr/bin:/bin")
+
+    def test_shell_timeout_leaves_path_untouched(self):
+        os.environ["PATH"] = "/usr/bin:/bin"
+        with mock.patch.object(webui.sys, "platform", "darwin"), mock.patch.object(
+            webui.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="zsh", timeout=5)
+        ):
+            webui.augment_path_for_gui_launch()
+        self.assertEqual(os.environ["PATH"], "/usr/bin:/bin")
+
+    def test_unparseable_shell_output_leaves_path_untouched(self):
+        os.environ["PATH"] = "/usr/bin:/bin"
+        fake_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="some unrelated shell startup noise\n")
+        with mock.patch.object(webui.sys, "platform", "darwin"), mock.patch.object(
+            webui.subprocess, "run", return_value=fake_result
+        ):
+            webui.augment_path_for_gui_launch()
+        self.assertEqual(os.environ["PATH"], "/usr/bin:/bin")
+
+
 class MainRefusesNonLoopbackHostTests(unittest.TestCase):
     """Integration-level: main() must refuse before ever opening a socket,
     so this must return fast and never hang waiting on a server thread."""
