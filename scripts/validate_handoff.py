@@ -74,6 +74,7 @@ REQUIRED_FILES = [
     "webui/index.html",
     "webui/app.css",
     "webui/app.js",
+    "webui/i18n.js",
     "tests/__init__.py",
     "tests/test_handoff_bridge.py",
     "tests/test_handoff_control.py",

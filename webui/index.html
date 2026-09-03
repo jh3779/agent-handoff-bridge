@@ -28,55 +28,55 @@
 <body>
   <div class="app">
     <div class="titlebar">
-      <button class="ws" id="open-folder-btn" type="button" title="다른 폴더 열기">
+      <button class="ws" id="open-folder-btn" type="button" data-i18n-title="titlebar.openFolder.title">
         <span>📁</span>
         <span id="workspace-label">workspace</span>
       </button>
       <select class="provider-select" id="provider-select" title="Provider">
         <option value="auto">auto</option>
       </select>
-      <button class="tbtn update-btn" id="update-btn" type="button" title="업데이트 확인">
-        <span>⬇️</span> 업데이트
+      <button class="tbtn update-btn" id="update-btn" type="button" data-i18n-title="titlebar.update.title">
+        <span>⬇️</span> <span data-i18n="titlebar.update">업데이트</span>
         <span class="update-dot" id="update-dot"></span>
       </button>
-      <button class="tbtn" id="history-btn" type="button" title="다른 프로젝트의 최근 대화">
-        <span>🕐</span> History
+      <button class="tbtn" id="history-btn" type="button" data-i18n-title="titlebar.history.title">
+        <span>🕐</span> <span data-i18n="titlebar.history">History</span>
       </button>
-      <button class="tbtn" id="settings-btn" type="button" title="설정 · provider 연결 상태 · 공용 context">
-        <span>⚙️</span> 설정
+      <button class="tbtn" id="settings-btn" type="button" data-i18n-title="titlebar.settings.title">
+        <span>⚙️</span> <span data-i18n="titlebar.settings">설정</span>
       </button>
     </div>
     <div class="body">
       <div class="sidebar">
         <div class="sidebar-h">Workspace</div>
         <div class="tree" id="tree"></div>
-        <div class="sidebar-footer" id="sidebar-footer">파일을 클릭하면 첨부됩니다</div>
+        <div class="sidebar-footer" id="sidebar-footer" data-i18n="sidebar.footer">파일을 클릭하면 첨부됩니다</div>
       </div>
       <div class="chat-col">
         <div class="chat-thread" id="chat-thread">
           <div class="chat-empty">
-            아직 메시지가 없습니다.<br>
-            왼쪽에서 파일을 클릭하거나, 이 영역에 파일을 드래그해서 놓아보세요.
+            <span data-i18n="chat.empty.line1">아직 메시지가 없습니다.</span><br>
+            <span data-i18n="chat.empty.line2">왼쪽에서 파일을 클릭하거나, 이 영역에 파일을 드래그해서 놓아보세요.</span>
           </div>
         </div>
         <div class="dropzone" id="dropzone">
           <span class="glyph">📥</span>
-          <div>여기에 파일을 놓아 첨부</div>
+          <div data-i18n="dropzone.text">여기에 파일을 놓아 첨부</div>
         </div>
         <div class="composer">
           <div class="composer-attachments" id="composer-attachments"></div>
           <div class="composer-row">
-            <button class="iconbtn" id="attach-btn" title="파일 첨부" type="button">📎</button>
+            <button class="iconbtn" id="attach-btn" data-i18n-title="composer.attach.title" type="button">📎</button>
             <input type="file" id="file-input" multiple style="display:none">
-            <textarea id="composer-input" placeholder="메시지를 입력하세요…" rows="1"></textarea>
+            <textarea id="composer-input" data-i18n-placeholder="composer.placeholder.hasWorkspace" placeholder="메시지를 입력하세요…" rows="1"></textarea>
             <button class="send" id="send-btn" type="button" disabled>➤</button>
           </div>
-          <div class="composer-note">전송은 선택한 provider를 실제로 호출합니다 — 토큰이 소비될 수 있습니다. 이 세션의 첫 전송만 확인을 거치고, 이후는 바로 실행됩니다.</div>
+          <div class="composer-note" data-i18n="composer.note">전송은 선택한 provider를 실제로 호출합니다 — 토큰이 소비될 수 있습니다. 이 세션의 첫 전송만 확인을 거치고, 이후는 바로 실행됩니다.</div>
         </div>
       </div>
       <div class="scrim" id="history-scrim"></div>
       <div class="history-drawer" id="history-drawer">
-        <div class="hd-h">이전 대화 기록<button type="button" id="history-close-btn" title="닫기">✕</button></div>
+        <div class="hd-h"><span data-i18n="history.title">이전 대화 기록</span><button type="button" id="history-close-btn" data-i18n-title="history.close.title" title="닫기">✕</button></div>
         <div class="hd-list" id="history-list"></div>
       </div>
     </div>
@@ -85,14 +85,14 @@
 
   <div class="folder-prompt-overlay" id="settings-panel-overlay">
     <div class="folder-prompt settings-panel" id="settings-panel" style="width:520px">
-      <h3>설정</h3>
+      <h3 data-i18n="settings.title">설정</h3>
 
       <div class="settings-section">
-        <div class="settings-section-title">일반</div>
+        <div class="settings-section-title" data-i18n="settings.general">일반</div>
         <div class="settings-row">
           <div>
-            <div class="label">Auto-fallback</div>
-            <div class="note">선택한 provider가 quota/rate/컨텍스트 한도로 실패하면 다른 provider로 자동 전환</div>
+            <div class="label" data-i18n="settings.autoFallback.label">Auto-fallback</div>
+            <div class="note" data-i18n="settings.autoFallback.note">선택한 provider가 quota/rate/컨텍스트 한도로 실패하면 다른 provider로 자동 전환</div>
           </div>
           <label class="toggle">
             <input type="checkbox" id="auto-fallback-toggle" checked>
@@ -102,13 +102,23 @@
         </div>
         <div class="settings-row">
           <div>
-            <div class="label">테마</div>
-            <div class="note">기본값은 시스템 설정을 따라갑니다</div>
+            <div class="label" data-i18n="settings.theme.label">테마</div>
+            <div class="note" data-i18n="settings.theme.note">기본값은 시스템 설정을 따라갑니다</div>
           </div>
           <select id="theme-select">
-            <option value="system">시스템 설정</option>
-            <option value="light">라이트</option>
-            <option value="dark">다크</option>
+            <option value="system" data-i18n="settings.theme.system">시스템 설정</option>
+            <option value="light" data-i18n="settings.theme.light">라이트</option>
+            <option value="dark" data-i18n="settings.theme.dark">다크</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <div>
+            <div class="label" data-i18n="settings.language.label">언어</div>
+            <div class="note" data-i18n="settings.language.note">앱 화면 표시 언어입니다</div>
+          </div>
+          <select id="language-select">
+            <option value="ko">한국어</option>
+            <option value="en">English</option>
           </select>
         </div>
       </div>
@@ -116,12 +126,12 @@
       <div class="pp-divider"></div>
 
       <div class="settings-section">
-        <div class="settings-section-title">연결된 AI 모델</div>
-        <p>CLI가 없는 provider는 API 키로 직접 연결할 수 있습니다. 파일 읽기/쓰기/수정, 명령 실행 등
+        <div class="settings-section-title" data-i18n="settings.providers.title">연결된 AI 모델</div>
+        <p data-i18n-html="settings.providers.intro_html">CLI가 없는 provider는 API 키로 직접 연결할 수 있습니다. 파일 읽기/쓰기/수정, 명령 실행 등
            CLI 모드와 동일한 도구 사용을 지원합니다.</p>
         <div id="provider-panel-list"></div>
         <div class="pp-divider"></div>
-        <p><b>커스텀 provider</b> — CLI 없이 토큰을 직접 구매해 쓰는 OpenAI/Anthropic 호환 endpoint
+        <p data-i18n-html="settings.customProviders.intro_html"><b>커스텀 provider</b> — CLI 없이 토큰을 직접 구매해 쓰는 OpenAI/Anthropic 호환 endpoint
            (OpenRouter, Groq, 로컬 Ollama/LM Studio 등)를 원하는 이름으로 여러 개 등록할 수 있습니다.</p>
         <div id="custom-provider-panel-list"></div>
         <div id="custom-provider-add-form"></div>
@@ -130,15 +140,15 @@
       <div class="pp-divider"></div>
 
       <div class="settings-section">
-        <div class="settings-section-title">공용 Context</div>
-        <p>이 프로젝트에서 어떤 provider를 쓰든(CLI든 커스텀 API 키든) 항상 함께 전달되는 내용입니다.
+        <div class="settings-section-title" data-i18n="settings.instructions.title">지침</div>
+        <p data-i18n-html="settings.instructions.intro_html">이 프로젝트에서 어떤 provider를 쓰든(CLI든 커스텀 API 키든) 항상 함께 전달되는 지침입니다.
            프로젝트별로 저장되며, <code>.handoff/shared-context.md</code>로 워크스페이스에 남습니다.</p>
-        <textarea id="context-textarea" rows="8" placeholder="예: legacy/ 폴더는 절대 수정하지 마세요. 이 프로젝트는 4-space indent를 씁니다…" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
+        <textarea id="context-textarea" rows="8" data-i18n-placeholder="settings.instructions.placeholder" placeholder="예: legacy/ 폴더는 절대 수정하지 마세요. 이 프로젝트는 4-space indent를 씁니다…" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
       </div>
 
       <div class="row" style="justify-content:flex-end;margin-top:14px;gap:8px">
-        <button type="button" id="settings-panel-close">닫기</button>
-        <button type="button" id="context-panel-save" class="primary">Context 저장</button>
+        <button type="button" id="settings-panel-close" data-i18n="settings.close">닫기</button>
+        <button type="button" id="context-panel-save" class="primary" data-i18n="settings.instructions.save">지침 저장</button>
       </div>
     </div>
   </div>
@@ -147,24 +157,25 @@
     <div class="pp-title"><span>🆕</span> <span id="update-popover-version">v0.0.0 사용 가능</span></div>
     <div class="note" id="update-popover-note" style="margin-top:6px"></div>
     <div class="row" style="margin-top:10px;gap:8px;justify-content:flex-end">
-      <button type="button" id="update-later-btn">나중에</button>
-      <button type="button" id="update-release-notes-btn" class="primary">릴리즈 노트 보기</button>
+      <button type="button" id="update-later-btn" data-i18n="update.later">나중에</button>
+      <button type="button" id="update-release-notes-btn" class="primary" data-i18n="update.viewReleaseNotes">릴리즈 노트 보기</button>
     </div>
   </div>
 
   <div class="folder-prompt-overlay" id="folder-prompt-overlay">
     <div class="folder-prompt">
-      <h3>폴더 열기</h3>
-      <p>네이티브 폴더 선택 창을 쓰려면 <code>pip install pywebview</code> 후 다시 실행하세요.
+      <h3 data-i18n="folderPrompt.title">폴더 열기</h3>
+      <p data-i18n-html="folderPrompt.note_html">네이티브 폴더 선택 창을 쓰려면 <code>pip install pywebview</code> 후 다시 실행하세요.
          지금은 절대 경로를 직접 입력해주세요.</p>
       <input type="text" id="folder-prompt-input" placeholder="/Users/me/project">
       <div class="row">
-        <button type="button" id="folder-prompt-cancel">취소</button>
-        <button type="button" id="folder-prompt-confirm" class="primary">열기</button>
+        <button type="button" id="folder-prompt-cancel" data-i18n="folderPrompt.cancel">취소</button>
+        <button type="button" id="folder-prompt-confirm" class="primary" data-i18n="folderPrompt.open">열기</button>
       </div>
     </div>
   </div>
 
+  <script src="/i18n.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

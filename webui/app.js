@@ -8,6 +8,11 @@
 (function () {
   "use strict";
 
+  // AHB_I18N is defined in webui/i18n.js, loaded before this file --
+  // see that file's own header for why translation is a separate module
+  // (and its narrow scope: UI chrome only, never chat message content).
+  const t = AHB_I18N.t;
+
   const MAX_PREVIEW_CHARS = 20000;
 
   const treeEl = document.getElementById("tree");
@@ -41,6 +46,7 @@
   const contextPanelSave = document.getElementById("context-panel-save");
   const autoFallbackToggle = document.getElementById("auto-fallback-toggle");
   const themeSelect = document.getElementById("theme-select");
+  const languageSelect = document.getElementById("language-select");
   const updateBtn = document.getElementById("update-btn");
   const updateDot = document.getElementById("update-dot");
   const updatePopover = document.getElementById("update-popover");
@@ -69,7 +75,14 @@
   // to use, without re-fetching /api/info on every keystroke.
   let hasWorkspace = true;
 
-  const STATUS_LABEL = { success: "완료", handoff: "핸드오프 필요", fail: "실패" };
+  // Functions, not static objects: STATUS_LABEL's text must reflect
+  // whichever language is active *at render time*, not whichever was
+  // active when this script first evaluated -- a static object baked in
+  // here would never update after a language switch.
+  const STATUS_LABEL_KEY = { success: "status.success", handoff: "status.handoff", fail: "status.fail" };
+  function statusLabel(status) {
+    return STATUS_LABEL_KEY[status] ? t(STATUS_LABEL_KEY[status]) : status;
+  }
   const STATUS_ICON = { success: "✅", handoff: "🔀", fail: "⚠️" };
 
   function showToast(message) {
@@ -118,15 +131,15 @@
 
   function updateComposerPlaceholder() {
     composerInput.placeholder = hasWorkspace
-      ? "메시지를 입력하세요…"
-      : "메시지를 입력하면 자동으로 폴더가 만들어집니다…";
+      ? t("composer.placeholder.hasWorkspace")
+      : t("composer.placeholder.noWorkspace");
   }
 
   function refreshWorkspaceLabel() {
     return fetchJSON("/api/info").then((info) => {
       hasWorkspace = info.workspace !== null;
-      workspaceLabel.textContent = hasWorkspace ? info.name : "워크스페이스 없음";
-      openFolderBtn.title = hasWorkspace ? info.workspace : "워크스페이스 없음";
+      workspaceLabel.textContent = hasWorkspace ? info.name : t("workspace.none");
+      openFolderBtn.title = hasWorkspace ? info.workspace : t("workspace.none");
       updateComposerPlaceholder();
       return info;
     });
@@ -142,13 +155,13 @@
     // settles. sendMessage() already refuses a second concurrent /api/run
     // this way; workspace switches need the same guard.
     if (runInFlight) {
-      showToast("응답을 기다리는 중에는 워크스페이스를 전환할 수 없습니다.");
+      showToast(t("workspace.cannotSwitchWhileRunning"));
       return;
     }
     try {
       await postJSON("/api/open-folder", { path: rawPath });
     } catch (err) {
-      showToast(`폴더를 열 수 없음: ${err.message}`);
+      showToast(t("workspace.openFailed", { msg: err.message }));
       return;
     }
     attachments = [];
@@ -186,7 +199,7 @@
       try {
         chosen = await window.__TAURI__.dialog.open({ directory: true, multiple: false });
       } catch (err) {
-        showToast(`폴더 선택 실패: ${err}`);
+        showToast(t("workspace.pickFailed", { err }));
         return;
       }
       if (chosen) await switchWorkspaceTo(chosen);
@@ -199,7 +212,7 @@
       try {
         chosen = await window.pywebview.api.pick_folder();
       } catch (err) {
-        showToast(`폴더 선택 실패: ${err}`);
+        showToast(t("workspace.pickFailed", { err }));
         return;
       }
       if (chosen) await switchWorkspaceTo(chosen);
@@ -233,13 +246,13 @@
     if (Number.isNaN(then)) return "";
     const diffMs = Date.now() - then;
     const minutes = Math.floor(diffMs / 60000);
-    if (minutes < 1) return "방금";
-    if (minutes < 60) return `${minutes}분 전`;
+    if (minutes < 1) return t("time.justNow");
+    if (minutes < 60) return t("time.minutesAgo", { n: minutes });
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}시간 전`;
+    if (hours < 24) return t("time.hoursAgo", { n: hours });
     const days = Math.floor(hours / 24);
-    if (days === 1) return "어제";
-    if (days < 7) return `${days}일 전`;
+    if (days === 1) return t("time.yesterday");
+    if (days < 7) return t("time.daysAgo", { n: days });
     return new Date(iso).toISOString().slice(0, 10);
   }
 
@@ -248,12 +261,12 @@
     const top = el("div", { class: "hi-top" }, [el("span", { text: turn.provider || "-" }, [])]);
     if (turn.status) {
       top.appendChild(
-        el("span", { class: `status-badge status-${turn.status}`, text: STATUS_LABEL[turn.status] || turn.status }, [])
+        el("span", { class: `status-badge status-${turn.status}`, text: statusLabel(turn.status) }, [])
       );
     }
     top.appendChild(el("span", { class: "hi-time", text: formatRelativeTime(turn.ts) }, []));
     row.appendChild(top);
-    row.appendChild(el("div", { class: "hi-task", text: turn.text || "(빈 메시지)" }, []));
+    row.appendChild(el("div", { class: "hi-task", text: turn.text || t("history.emptyMessage") }, []));
     row.addEventListener("click", () => {
       closeHistoryDrawer();
       if (!group.current) switchWorkspaceTo(group.path);
@@ -264,7 +277,7 @@
   function renderHistoryGroups(groups) {
     historyList.innerHTML = "";
     if (!groups || groups.length === 0) {
-      historyList.appendChild(el("div", { class: "hd-empty", text: "아직 대화 기록이 없습니다." }, []));
+      historyList.appendChild(el("div", { class: "hd-empty", text: t("history.empty") }, []));
       return;
     }
     for (const group of groups) {
@@ -272,7 +285,7 @@
         el("span", { text: "📁" }, []),
         el("span", { text: group.name }, []),
       ]);
-      if (group.current) header.appendChild(el("span", { class: "current-tag", text: "현재" }, []));
+      if (group.current) header.appendChild(el("span", { class: "current-tag", text: t("history.current") }, []));
       header.appendChild(el("span", { class: "cnt", text: String(group.turns.length) }, []));
       historyList.appendChild(header);
       for (const turn of group.turns) {
@@ -289,7 +302,7 @@
       renderHistoryGroups(data.groups);
     } catch (err) {
       historyList.innerHTML = "";
-      historyList.appendChild(el("div", { class: "hd-empty", text: `불러올 수 없음: ${err.message}` }, []));
+      historyList.appendChild(el("div", { class: "hd-empty", text: t("history.loadError", { msg: err.message }) }, []));
     }
   }
 
@@ -312,8 +325,8 @@
   function renderProviderRow(info) {
     const row = el("div", { class: "pp-row" }, []);
     const badge = info.cli_detected
-      ? el("span", { class: "status-badge status-success", text: "CLI 감지됨" }, [])
-      : el("span", { class: "status-badge status-fail", text: "CLI 없음" }, []);
+      ? el("span", { class: "status-badge status-success", text: t("provider.cliDetected") }, [])
+      : el("span", { class: "status-badge status-fail", text: t("provider.cliNotFound") }, []);
     row.appendChild(
       el("div", { class: "pp-top" }, [
         el("span", { class: "pp-name", text: PROVIDER_LABEL[info.provider] || info.provider }, []),
@@ -330,7 +343,7 @@
       // 추가되지 않은 과도기(같은 패턴이 DEC-15 당시 Gemini에서
       // 실제로 있었음)를 위해 그대로 남겨둔다.
       row.appendChild(
-        el("div", { class: "pp-note", text: "로컬에 CLI가 설치되어 있지 않습니다. 이 provider는 아직 API 키 모드를 지원하지 않습니다." }, [])
+        el("div", { class: "pp-note", text: t("provider.noCliNoApiKeySupport") }, [])
       );
       return row;
     }
@@ -338,23 +351,23 @@
       row.appendChild(
         el(
           "div",
-          { class: "pp-note", text: `API 키로 연결됨 (model: ${info.model || "설정 필요"})` },
+          { class: "pp-note", text: t("provider.connectedViaApiKey", { model: info.model || t("provider.modelRequired") }) },
           []
         )
       );
     } else {
       row.appendChild(
-        el("div", { class: "pp-note", text: "로컬에 CLI가 설치되어 있지 않습니다. API 키로 연결할까요?" }, [])
+        el("div", { class: "pp-note", text: t("provider.noCliConnectWithKey") }, [])
       );
     }
-    const keyInput = el("input", { type: "password", placeholder: "API 키", "data-field": "key" }, []);
+    const keyInput = el("input", { type: "password", placeholder: t("provider.apiKeyPlaceholder"), "data-field": "key" }, []);
     const modelInput = el("input", {
       type: "text",
-      placeholder: "model",
+      placeholder: t("provider.modelPlaceholder"),
       "data-field": "model",
       value: info.model || "",
     }, []);
-    const saveBtn = el("button", { type: "button", class: "primary", text: "저장" }, []);
+    const saveBtn = el("button", { type: "button", class: "primary", text: t("provider.save") }, []);
     saveBtn.addEventListener("click", async () => {
       const key = keyInput.value.trim();
       // A saved key is never echoed back into keyInput (POST
@@ -367,7 +380,7 @@
       // codex has no built-in default and must be set explicitly) without
       // re-pasting the key would otherwise delete it.
       if (!key) {
-        showToast("API 키를 입력해야 저장됩니다. 연결을 해제하려면 \"연결 해제\"를 사용하세요.");
+        showToast(t("provider.saveRequiresKey"));
         return;
       }
       const model = modelInput.value.trim();
@@ -377,24 +390,24 @@
         // saving it (result.verified/result.confirmation) -- surface that
         // actual reply, not just "저장됨", so the user sees real proof the
         // key works rather than an unconditional success message.
-        const suffix = result.verified ? ` (확인 응답: "${result.confirmation}")` : "";
-        showToast(`${PROVIDER_LABEL[info.provider]} API 키가 확인되어 저장되었습니다.${suffix}`);
+        const suffix = result.verified ? t("provider.verifiedConfirmation", { text: result.confirmation }) : "";
+        showToast(t("provider.savedAndVerified", { provider: PROVIDER_LABEL[info.provider], suffix }));
         await refreshProviderPanel();
       } catch (err) {
-        showToast(`저장 실패: ${err.message}`);
+        showToast(t("provider.saveFailed", { msg: err.message }));
       }
     });
     const keyRow = el("div", { class: "pp-key-row" }, [keyInput, modelInput, saveBtn]);
     row.appendChild(keyRow);
     if (info.api_key_configured) {
-      const removeBtn = el("button", { type: "button", text: "연결 해제" }, []);
+      const removeBtn = el("button", { type: "button", text: t("provider.disconnect") }, []);
       removeBtn.addEventListener("click", async () => {
         try {
           await postJSON("/api/provider-key", { provider: info.provider, key: "" });
-          showToast(`${PROVIDER_LABEL[info.provider]} API 키가 삭제되었습니다.`);
+          showToast(t("provider.disconnected", { provider: PROVIDER_LABEL[info.provider] }));
           await refreshProviderPanel();
         } catch (err) {
-          showToast(`삭제 실패: ${err.message}`);
+          showToast(t("provider.deleteFailed", { msg: err.message }));
         }
       });
       row.appendChild(el("div", { class: "row", style: "justify-content:flex-end;margin-top:4px" }, [removeBtn]));
@@ -412,18 +425,18 @@
     row.appendChild(
       el("div", { class: "pp-top" }, [
         el("span", { class: "pp-name", text: info.name }, []),
-        el("span", { class: "status-badge status-success", text: info.api_format === "openai" ? "OpenAI 호환" : "Anthropic 호환" }, []),
+        el("span", { class: "status-badge status-success", text: info.api_format === "openai" ? t("customProvider.openaiCompat") : t("customProvider.anthropicCompat") }, []),
       ])
     );
     row.appendChild(el("div", { class: "pp-note", text: `${info.base_url} · model: ${info.model}` }, []));
-    const removeBtn = el("button", { type: "button", text: "삭제" }, []);
+    const removeBtn = el("button", { type: "button", text: t("customProvider.delete") }, []);
     removeBtn.addEventListener("click", async () => {
       try {
         await postJSON("/api/custom-provider", { name: info.name, key: "" });
-        showToast(`${info.name}가 삭제되었습니다.`);
+        showToast(t("customProvider.deleted", { name: info.name }));
         await refreshProviderPanel();
       } catch (err) {
-        showToast(`삭제 실패: ${err.message}`);
+        showToast(t("provider.deleteFailed", { msg: err.message }));
       }
     });
     row.appendChild(el("div", { class: "row", style: "justify-content:flex-end;margin-top:4px" }, [removeBtn]));
@@ -431,15 +444,15 @@
   }
 
   function renderAddCustomProviderForm() {
-    const nameInput = el("input", { type: "text", placeholder: "이름 (예: openrouter)", "data-field": "name" }, []);
+    const nameInput = el("input", { type: "text", placeholder: t("customProvider.namePlaceholder"), "data-field": "name" }, []);
     const formatSelect = el("select", { "data-field": "api_format" }, [
-      el("option", { value: "openai", text: "OpenAI 호환" }, []),
-      el("option", { value: "anthropic", text: "Anthropic 호환" }, []),
+      el("option", { value: "openai", text: t("customProvider.openaiCompat") }, []),
+      el("option", { value: "anthropic", text: t("customProvider.anthropicCompat") }, []),
     ]);
-    const baseUrlInput = el("input", { type: "text", placeholder: "base URL (예: https://openrouter.ai/api/v1)", "data-field": "base_url" }, []);
-    const modelInput = el("input", { type: "text", placeholder: "model", "data-field": "model" }, []);
-    const keyInput = el("input", { type: "password", placeholder: "API 키", "data-field": "key" }, []);
-    const addBtn = el("button", { type: "button", class: "primary", text: "추가" }, []);
+    const baseUrlInput = el("input", { type: "text", placeholder: t("customProvider.baseUrlPlaceholder"), "data-field": "base_url" }, []);
+    const modelInput = el("input", { type: "text", placeholder: t("provider.modelPlaceholder"), "data-field": "model" }, []);
+    const keyInput = el("input", { type: "password", placeholder: t("provider.apiKeyPlaceholder"), "data-field": "key" }, []);
+    const addBtn = el("button", { type: "button", class: "primary", text: t("customProvider.add") }, []);
     addBtn.addEventListener("click", async () => {
       const name = nameInput.value.trim();
       const key = keyInput.value.trim();
@@ -447,16 +460,16 @@
       const base_url = baseUrlInput.value.trim();
       const api_format = formatSelect.value;
       if (!name || !key || !model || !base_url) {
-        showToast("이름/API 키/model/base URL을 모두 입력하세요.");
+        showToast(t("customProvider.fillAllFields"));
         return;
       }
       try {
         const result = await postJSON("/api/custom-provider", { name, key, model, base_url, api_format });
-        const suffix = result.verified ? ` (확인 응답: "${result.confirmation}")` : "";
-        showToast(`${name}가 확인되어 추가되었습니다.${suffix}`);
+        const suffix = result.verified ? t("provider.verifiedConfirmation", { text: result.confirmation }) : "";
+        showToast(t("customProvider.addedAndVerified", { name, suffix }));
         await refreshProviderPanel();
       } catch (err) {
-        showToast(`추가 실패: ${err.message}`);
+        showToast(t("customProvider.addFailed", { msg: err.message }));
       }
     });
     const row1 = el("div", { class: "pp-key-row wrap" }, [nameInput, formatSelect]);
@@ -505,7 +518,7 @@
     customProviderPanelList.innerHTML = "";
     customProviderAddForm.innerHTML = "";
     if (error) {
-      providerPanelList.appendChild(el("div", { class: "hd-empty", text: `불러올 수 없음: ${error.message}` }, []));
+      providerPanelList.appendChild(el("div", { class: "hd-empty", text: t("history.loadError", { msg: error.message }) }, []));
       return;
     }
     for (const info of data.providers) {
@@ -528,14 +541,14 @@
   // workspace-scoped POST already returns).
 
   async function loadSharedContext() {
-    contextTextarea.value = "불러오는 중…";
+    contextTextarea.value = t("settings.instructions.loading");
     contextTextarea.disabled = true;
     try {
       const data = await fetchJSON("/api/shared-context");
       contextTextarea.value = data.text;
     } catch (err) {
       contextTextarea.value = "";
-      showToast(`불러올 수 없음: ${err.message}`);
+      showToast(t("history.loadError", { msg: err.message }));
     } finally {
       contextTextarea.disabled = false;
     }
@@ -564,9 +577,9 @@
   contextPanelSave.addEventListener("click", async () => {
     try {
       await postJSON("/api/shared-context", { text: contextTextarea.value });
-      showToast("공용 context가 저장되었습니다.");
+      showToast(t("settings.instructions.saved"));
     } catch (err) {
-      showToast(`저장 실패: ${err.message}`);
+      showToast(t("provider.saveFailed", { msg: err.message }));
     }
   });
 
@@ -649,6 +662,42 @@
 
   loadThemePreference();
 
+  // ---------- language ----------
+  // Unlike theme, there is no pre-paint script for this (see i18n.js's own
+  // header for why a brief text flash is an acceptable tradeoff a color
+  // flash isn't). AHB_I18N.getLanguage()/setLanguage() own the actual
+  // localStorage read/write; this only owns the <select> and re-rendering
+  // whatever's currently on screen after a change.
+  function applyLanguageChangeToVisibleContent() {
+    AHB_I18N.applyI18n();
+    updateComposerPlaceholder();
+    if (!hasWorkspace) {
+      // The only thing chatThread can be showing while hasWorkspace is
+      // false is showNoWorkspaceState()'s own card -- safe to
+      // unconditionally re-render it in the new language.
+      showNoWorkspaceState();
+    }
+    if (settingsPanelOverlay.classList.contains("show")) {
+      // Re-fetches and re-renders provider rows/custom-provider form with
+      // the new language's t() calls -- cheap, and the panel being open
+      // means the user is looking at exactly this content right now.
+      refreshProviderPanel();
+    }
+    // Deliberately not handled: an already-rendered chat-empty placeholder
+    // (no messages yet, but a real workspace open) and an already-open
+    // history drawer both keep their old-language text until the next
+    // time they're actually re-rendered (switching workspace, reopening
+    // history, sending the first message) -- a narrow, low-stakes staleness
+    // window rather than engineering a full re-render for every possible
+    // visible state.
+  }
+
+  languageSelect.value = AHB_I18N.getLanguage();
+  languageSelect.addEventListener("change", () => {
+    AHB_I18N.setLanguage(languageSelect.value);
+    applyLanguageChangeToVisibleContent();
+  });
+
   // ---------- file tree ----------
 
   function iconFor(entry) {
@@ -662,11 +711,11 @@
       const data = await fetchJSON(`/api/tree?path=${encodeURIComponent(relPath)}`);
       entries = data.entries;
     } catch (err) {
-      container.appendChild(el("div", { class: "tree-error", text: `불러올 수 없음: ${err.message}` }, []));
+      container.appendChild(el("div", { class: "tree-error", text: t("tree.loadError", { msg: err.message }) }, []));
       return;
     }
     if (entries.length === 0) {
-      container.appendChild(el("div", { class: "tree-empty", text: "(비어 있음)" }, []));
+      container.appendChild(el("div", { class: "tree-empty", text: t("tree.empty") }, []));
       return;
     }
     for (const entry of entries) {
@@ -701,7 +750,7 @@
       });
     } else {
       row.addEventListener("click", () => attachWorkspaceFile(entry));
-      row.title = "클릭하면 첨부됩니다";
+      row.title = t("tree.clickToAttach");
     }
     return row;
   }
@@ -718,7 +767,7 @@
     } catch (err) {
       // Binary or unreadable: still attach as a reference-only chip.
       addAttachment({ name: entry.name, path: entry.path, content: null, truncated: false });
-      showToast(`미리보기 없이 첨부됨: ${err.message}`);
+      showToast(t("tree.attachedWithoutPreview", { msg: err.message }));
     }
   }
 
@@ -816,9 +865,9 @@
     chatThread.innerHTML = "";
     chatThread.appendChild(
       el("div", { class: "chat-empty" }, [
-        document.createTextNode("아직 메시지가 없습니다."),
+        document.createTextNode(t("chat.empty.line1")),
         el("br", {}, []),
-        document.createTextNode("왼쪽에서 파일을 클릭하거나, 이 영역에 파일을 드래그해서 놓아보세요."),
+        document.createTextNode(t("chat.empty.line2")),
       ])
     );
   }
@@ -830,18 +879,18 @@
   // button (if either) was clicked.
   function showNoWorkspaceState() {
     chatThread.innerHTML = "";
-    const autoBtn = el("button", { type: "button", class: "primary", text: "새 폴더 자동 생성" }, []);
+    const autoBtn = el("button", { type: "button", class: "primary", text: t("noWorkspace.autoCreate") }, []);
     autoBtn.addEventListener("click", () => composerInput.focus());
-    const pickBtn = el("button", { type: "button", text: "폴더 직접 선택…" }, []);
+    const pickBtn = el("button", { type: "button", text: t("noWorkspace.pickFolder") }, []);
     pickBtn.addEventListener("click", pickFolder);
     chatThread.appendChild(
       el("div", { class: "no-workspace-card" }, [
         el("div", { class: "nw-icon", text: "📂" }, []),
-        el("div", { class: "nw-title", text: "작업할 폴더가 아직 없습니다" }, []),
-        el("div", { class: "nw-note", text: "기존 폴더를 고르거나, 새 프로젝트 폴더를 자동으로 만들 수 있습니다." }, []),
+        el("div", { class: "nw-title", text: t("noWorkspace.title") }, []),
+        el("div", { class: "nw-note", text: t("noWorkspace.note") }, []),
         el("div", { class: "nw-actions" }, [autoBtn, pickBtn]),
         el("div", { class: "nw-path" }, [
-          document.createTextNode("자동 생성 위치: "),
+          document.createTextNode(t("noWorkspace.autoCreateLocation")),
           el("span", { class: "mono", text: "~/Documents/Agent Handoff Bridge/" }, []),
         ]),
       ])
@@ -886,7 +935,7 @@
     if (message.role === "user") {
       roleClass = "user";
       avatar = "🧑";
-      metaParts.push(document.createTextNode("나"));
+      metaParts.push(document.createTextNode(t("msg.you")));
     } else if (message.role === "agent") {
       roleClass = "agent";
       avatar = "🤖";
@@ -894,12 +943,12 @@
       if (message.status) {
         metaParts.push(
           el("span", { class: `status-badge status-${message.status}` }, [
-            document.createTextNode(`${STATUS_ICON[message.status] || ""} ${STATUS_LABEL[message.status] || message.status}`),
+            document.createTextNode(`${STATUS_ICON[message.status] || ""} ${statusLabel(message.status)}`),
           ])
         );
       }
     } else {
-      metaParts.push(document.createTextNode("시스템"));
+      metaParts.push(document.createTextNode(t("msg.system")));
     }
 
     const msg = el("div", { class: `msg ${roleClass}` }, [
@@ -917,7 +966,7 @@
       el("div", { class: "avatar", text: "🤖" }, []),
       el("div", {}, [
         el("div", { class: "meta" }, [document.createTextNode(providerLabel)]),
-        el("div", { class: "bubble" }, [el("span", { class: "spinner" }, []), document.createTextNode(" 실행 중…")]),
+        el("div", { class: "bubble" }, [el("span", { class: "spinner" }, []), document.createTextNode(t("msg.running"))]),
       ]),
     ]);
     chatThread.appendChild(msg);
@@ -935,7 +984,7 @@
       chatThread.innerHTML = "";
       for (const message of data.messages) renderMessage(message);
     } catch (err) {
-      showToast(`대화 기록을 불러오지 못함: ${err.message}`);
+      showToast(t("msg.historyLoadFailed", { msg: err.message }));
       showChatEmptyState();
     }
   }
@@ -970,7 +1019,7 @@
     // is blocking/synchronous by design here -- we want the user's answer
     // before any token-spending call goes out, not a fire-and-forget toast.
     if (!sessionRunConfirmed) {
-      const ok = window.confirm("Codex/Claude를 실행합니다. 토큰이 소비될 수 있습니다. 계속할까요?");
+      const ok = window.confirm(t("send.confirm"));
       if (!ok) return;
       sessionRunConfirmed = true;
     }
@@ -998,7 +1047,7 @@
       // worst the agent's reply renders and persists with no
       // corresponding user turn backing it, which pair_messages_into_turns()
       // (Phase 3) can't attribute to anything in the history drawer.
-      showToast(`대화 기록 저장 실패(화면에는 남아있음): ${err.message}`);
+      showToast(t("send.chatSaveFailed", { msg: err.message }));
       return;
     }
     if (workspaceWasMissing) {
@@ -1009,7 +1058,7 @@
         await refreshWorkspaceLabel();
         await renderTree(treeEl, "");
       } catch (err) {
-        showToast(`워크스페이스 정보를 새로고침하지 못함: ${err.message}`);
+        showToast(t("send.workspaceRefreshFailed", { msg: err.message }));
       }
     }
 
@@ -1028,8 +1077,8 @@
       for (const agentMessage of result.messages) renderMessage(agentMessage);
     } catch (err) {
       busyMsg.remove();
-      renderMessage({ role: "system", text: `실행 실패: ${err.message}`, attachments: [] });
-      showToast(`provider 실행 실패: ${err.message}`);
+      renderMessage({ role: "system", text: t("send.runFailedSystemMsg", { msg: err.message }), attachments: [] });
+      showToast(t("send.runFailedToast", { msg: err.message }));
     } finally {
       runInFlight = false;
       composerInput.disabled = false;
@@ -1055,11 +1104,11 @@
 
   function openUpdatePopover() {
     if (latestUpdateStatus === "pending") {
-      showToast("업데이트 확인 중입니다…");
+      showToast(t("update.checking"));
       return;
     }
     if (latestUpdateStatus === "unavailable") {
-      showToast("업데이트를 확인할 수 없습니다.");
+      showToast(t("update.cannotCheck"));
       return;
     }
     if (latestUpdateStatus === "current") {
@@ -1067,12 +1116,12 @@
       // 아이콘만"), only the dot is conditional -- reuse the existing
       // toast mechanism for the "you're already current" case instead of
       // inventing a second popover layout the wireframe never mocked.
-      showToast("최신 버전을 사용 중입니다.");
+      showToast(t("update.upToDate"));
       return;
     }
     // "available"
-    updatePopoverVersion.textContent = `v${latestUpdateInfo.latest_version} 사용 가능`;
-    updatePopoverNote.textContent = `현재 v${latestUpdateInfo.current_version} 사용 중. 릴리즈 노트를 확인하고 업데이트하세요.`;
+    updatePopoverVersion.textContent = t("update.availableVersion", { version: latestUpdateInfo.latest_version });
+    updatePopoverNote.textContent = t("update.currentVersionNote", { version: latestUpdateInfo.current_version });
     updatePopover.classList.add("show");
   }
 
@@ -1151,6 +1200,11 @@
   // ---------- boot ----------
 
   async function boot() {
+    // Translates all of index.html's static markup (data-i18n/-title/
+    // -placeholder/-html attributes) as the very first thing boot() does --
+    // before any network round trip, so the chrome renders in the right
+    // language even if /api/info or the others are slow.
+    AHB_I18N.applyI18n();
     // Fire-and-forget, not awaited: the update check is independent of
     // workspace state (SCR-07 runs it "앱 시작 시" regardless of whether a
     // workspace is even open yet) and must never delay the rest of boot

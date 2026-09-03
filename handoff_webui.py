@@ -153,7 +153,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
 
             if parsed.path == "/":
                 self._send_static("index.html")
-            elif parsed.path in ("/app.css", "/app.js"):
+            elif parsed.path in ("/app.css", "/app.js", "/i18n.js"):
                 self._send_static(parsed.path.lstrip("/"))
             elif parsed.path == "/api/info":
                 if workspace is None:
