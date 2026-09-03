@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- **Fix: sending a message failed outright for both codex and claude**
+  ("Not inside a trusted directory and --skip-git-repo-check was not
+  specified" / "Error: When using --print, --output-format=stream-json
+  requires --verbose"). The installed CLIs now require flags this
+  bridge never passed -- codex refuses to run in any workspace that
+  isn't a git repo (every workspace this app auto-creates) without
+  `--skip-git-repo-check`; a newer claude CLI build requires
+  `--verbose` alongside `--output-format=stream-json`. Both are now
+  always passed.
+
 ## v0.4.8 — 2026-09-03
 
 - **New: multi-session tabs.** Open multiple chats at once via a new tab
