@@ -4122,3 +4122,53 @@ tag" rule by construction rather than by discipline.
   (`gh run view 33734705478`) before resuming -- it may already be done
   by the time work resumes -- then continue the release from wherever
   that leaves off, following the exact sequence in "Not yet done" above.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (v0.4.10 released)
+
+- **Task**: resume the v0.4.10 release checkpointed in the entry above.
+- **Changed**: PR #68 (checkpoint doc itself) merged first. Then, per
+  `docs/release-process.md`: verified run 33734705478 (triggered before
+  the checkpoint) had finished -- `success`, all 3 `installer-build`
+  jobs green. Cleared stale `dist/` left over from the v0.4.9 release
+  before downloading (the mixed-layout mistake from the v0.4.8 release
+  was specifically about *not* doing this), `gh run download
+  33734705478 --dir dist` -- clean `installers-<triple>/<format>/`
+  layout, no individual `-n` pulls mixed in this time.
+  `scripts/package_platforms.py` (missed on the first pass -- the
+  checkpoint only covered installer artifacts, not the source zips --
+  caught by re-reading `docs/release-process.md`'s actual documented
+  `gh release create` command list rather than reconstructing it from
+  memory) produced the two source zips.
+  `scripts/build_updater_manifest.py --installers-dir dist --output
+  dist/latest.json` -- verified its `platforms` URLs all point at
+  `v0.4.10`. `gh release create v0.4.10` with the exact 8 documented
+  assets (2 source zips, `latest.json`, `.dmg`, `.app.tar.gz`+`.sig`,
+  `.exe`, `.AppImage` -- matches v0.4.9's asset list exactly, confirmed
+  via `gh release view v0.4.9 --json assets` before publishing) and
+  `--notes-file` extracted from the `## v0.4.10` section of
+  `docs/release-notes.md`. README.md/README.ko.md updated to v0.4.10
+  (PR #69) -- this pass's `sed` needed two passes (`v0.4.9` -> `v0.4.10`
+  for the link labels, then bare `0.4.9` -> `0.4.10` for the asset
+  filenames embedded in the URLs, which the first pass alone missed and
+  would have left pointing at nonexistent `..._0.4.9_...` filenames
+  under the new `v0.4.10` release path).
+- **Verified**: macOS source zip sanity-checked standalone (extracted
+  outside the repo, `--version` reports `0.4.10`, `check` passes with no
+  git repo present, matching step 4's documented procedure). All 8
+  release asset URLs independently curl'd (`-L -A "curl/8.0"`) -- every
+  one `200`. `releases/latest/download/latest.json` also independently
+  curl'd -- `200`, resolves to the `0.4.10` manifest (confirms GitHub's
+  "latest" alias picked up this release correctly, not a stale one).
+  All 3 updated README asset URLs independently curl'd -- `200`.
+- **Remaining**: none for this release. All of PRs #64/#65/#67/#68/#69
+  merged, tag `v0.4.10` built and published with a complete, verified
+  asset set.
+- **Blocked**: none. **Next**: nothing specifically queued. Still-open
+  items carried over from earlier in this session, untouched by this
+  release: the parked in-app-OAuth-login design question, M4
+  (split-pane layout), and the task-based auto-model-switching +
+  cross-model review pipeline design interview (still fully
+  undesigned). `docs/release-notes.ko.md` remains behind (last entry
+  v0.2.0) -- pre-existing drift, not touched by this release, flagged
+  again here only so it isn't mistaken for an oversight of this pass
+  specifically.
