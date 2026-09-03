@@ -24,11 +24,13 @@ the concrete mechanism, not a menu of options:
   — matching how Phase 7 (`docs/research-phase7-framework.md`) and
   API-key mode (`docs/research-api-key-mode.md`) were both designed
   before being built. **Status as of 2026-09-03**: M1 (backend session
-  model) and M2 (frontend tab bar) have both since shipped — see
-  "Proposed Milestones" below for what was actually built, including one
-  correction to this doc's original concurrency design and one scope
-  reduction in the frontend, both found and resolved during
-  implementation rather than being re-designed from scratch.
+  model), M2 (frontend tab bar), and M3 (verified concurrent execution)
+  have all since shipped — see "Proposed Milestones" below for what was
+  actually built, including one correction to this doc's original
+  concurrency design and one scope reduction in the frontend, both found
+  and resolved during implementation rather than being re-designed from
+  scratch. Only M4 (split-pane layout, a separate future decision) remains
+  unstarted.
 
 **Key finding that shapes everything below**: this is achievable as a
 **pure Python (`handoff_webui.py`/`webui_*.py`) + JS (`webui/app.js`)
@@ -263,14 +265,39 @@ giant PR:
   every changed HTTP-facing behavior, `node --check` on both JS files,
   and the ko/en i18n key-parity script, but the actual UI interaction
   needs the user's own confirmation once used for real.
-- **M3 — Verified concurrent execution.** Not started. Confirm two real
-  CLI subprocesses actually run side by side (not just structurally
-  permitted to) under real load; the tab-bar busy/badge indicators M2
-  already built are the UI half of this. M1 already proved the locking
-  logic itself at the unit/HTTP-test level (`GetRunLockForTests`,
-  `MultiSessionLiveServerTests` in `tests/test_handoff_webui.py`) — M3 is
-  about confirming it holds up against real provider CLIs under real
-  concurrent load, not re-proving that logic.
+- **M3 — Verified concurrent execution. ✅ Done** (2026-09-03). New
+  `RealConcurrentExecutionTests` in `tests/test_handoff_webui.py`, using
+  a deliberately slow fake provider script (`FAKE_CODEX_SLOW_SUCCESS`,
+  a real subprocess that sleeps 1.2s) driven through the real HTTP
+  server with two real threads — timing and status codes prove what a
+  mocked lock (M1's `GetRunLockForTests`/`MultiSessionLiveServerTests`)
+  can't actually demonstrate on its own:
+  - **Different workspaces genuinely overlap**: two concurrent
+    `/api/run` calls against two different workspaces both return 200
+    in well under 2x the single-call duration (would be >=2.4s if
+    serialized; observed comfortably under 2.0s) — real parallel
+    subprocess execution, not just "structurally allowed to be."
+  - **Same workspace correctly rejects the overlap, not just delays
+    it**: `run_lock.acquire(blocking=False)` (`webui_bridge_run.py`)
+    means the *correct* behavior for two genuinely concurrent same-
+    workspace calls is one 200 + one immediate 409, not a queued wait —
+    so this is a status-code assertion, not a timing one (elapsed time
+    can't distinguish "correctly serialized" from "buggy: both ran
+    concurrently," since both produce the same ~1.2s wall-clock
+    result). Confirmed both calls do land as exactly one 200 and one
+    409 when run through the real server with a real overlapping
+    subprocess window.
+  - **Sequential (non-overlapping) same-workspace calls each get
+    exactly their own record**: reproduces M1's original bug scenario
+    end-to-end (real HTTP server + real subprocess, not a
+    webui_bridge_run.py-level unit test) — two sequential runs from two
+    different sessions on the same workspace each see exactly one new
+    message, confirming the position-based history diff isn't
+    misattributing across sessions when there's no actual race.
+  The tab-bar busy/badge indicators this milestone's own description
+  called for were already built as part of M2 (`meta.runInFlight`/
+  `meta.hasUnseenReply` in `webui/app.js`) — nothing further was needed
+  there.
 - **M4 (separate future decision, not part of this feature at all)** —
   split-pane layout, if/when greenlit separately. A fully-cached,
   zero-round-trip tab switch (the capability this doc originally
