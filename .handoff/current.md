@@ -3429,3 +3429,56 @@ tag" rule by construction rather than by discipline.
   folder-picker fix works for the user; deferred model-routing design
   interview) -- this version-display feature is done and just waiting
   to ride along with whatever ships next.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (real fix: CLI providers undetected on macOS, merged, not yet released)
+
+- **Task**: user reported connected AI models (codex/claude/gemini) all
+  show as not detected in the macOS desktop app, despite being
+  installed and working from Terminal.
+- **Root cause**: a macOS app launched from Finder/Dock/Spotlight (not
+  a terminal) inherits launchd's minimal PATH
+  (`/usr/bin:/bin:/usr/sbin:/sbin`), not the user's shell PATH --
+  Homebrew (`/opt/homebrew/bin`), nvm, and other common CLI install
+  locations for `codex`/`claude`/`gemini` live outside that, so
+  `shutil.which()` finds nothing even though the same binary works
+  fine in Terminal.app. Same class of problem Electron apps solve with
+  the "fix-path"/"shell-path" npm packages.
+- **Changed**: `augment_path_for_gui_launch()` (`handoff_webui.py`),
+  called once at the very start of `main()` -- macOS-only, asks the
+  user's login shell (`$SHELL -ilc 'echo ...${PATH}...'`) for its real
+  PATH and merges in whatever entries are missing; a safe no-op
+  everywhere else (only ever appends, never removes). `main()` is the
+  single entry point for both the Tauri sidecar and the pywebview
+  native fallback, and every later `shutil.which()`/subprocess spawn
+  in that process -- including the CLI sidecar it launches mid-run,
+  which inherits this process's now-fixed `os.environ` -- benefits.
+  Branch `fix/macos-gui-launch-path`, PR #38, merged.
+- **Caught a real bug in the fix's own first draft before shipping**:
+  interpolating the PATH-capturing marker directly against `$PATH`
+  with no separator (`echo __AHB_PATH__$PATH__AHB_PATH__`) makes zsh/
+  bash parse `$PATH__AHB_PATH__` as one (undefined) variable name,
+  silently expanding to empty -- every mocked unit test passed (they
+  never exercised a real shell), but it would have done nothing at all
+  in production. Only caught by testing against an actual restricted-
+  PATH environment (`os.environ["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"`,
+  then calling the real function against the real installed CLIs on
+  this dev machine) instead of trusting the mocks -- fixed with
+  explicit `${PATH}` bracing.
+- **Verified**: `python3 handoff_bridge.py check` -- 570/570 (5 new
+  tests: non-macOS no-op, successful merge, shell-spawn failure,
+  timeout, unparseable output -- all mocked, which is exactly why they
+  didn't catch the `${PATH}` bug above; the real-shell test below is
+  what actually caught it). `scan_secrets.py` PASS. Real-world check:
+  with `PATH` forced to a launchd-style minimal value,
+  `shutil.which("codex"/"claude"/"gemini")` all return `None` before
+  the fix runs and the real installed paths after. End-to-end via a
+  real server process: `env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin ...
+  python3 handoff_webui.py` (fully scrubbed environment, not just an
+  overridden PATH var), `GET /api/providers` reports
+  `cli_detected: true` for all three.
+- **Remaining**: on `main`, **not yet released** -- same "batch or
+  release now" question as the version-display entry above, not yet
+  asked/answered for this specific fix.
+- **Blocked**: none. **Next**: ask the user whether to cut a release
+  (bundling this fix + the version-display feature) now, or continue
+  batching.
