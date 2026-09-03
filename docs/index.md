@@ -61,6 +61,10 @@ context.
 - [Research: Framework Migration](research-phase7-framework.md): Phase 7's
   pre-implementation research into Tauri vs Electron, Python-backend
   sidecar support, auto-update against a private repo, and code signing.
+- [Design: Multi-Session Support](research-session-splitting.md):
+  pre-implementation design for parallel chat sessions/tabs (same
+  workspace and across workspaces), settled via a design interview but
+  not yet implemented.
 
 ## Templates And Machine Contracts
 
