@@ -3912,3 +3912,58 @@ tag" rule by construction rather than by discipline.
   auto-continued), and the much-earlier-deferred design interview for
   task-based auto-model-switching + cross-model review pipeline
   (several entries back, still fully undesigned).
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (real, severe bug: every codex/claude call failing outright, fixed and merged)
+
+- **Task**: user tried the real v0.4.8 release (first hands-on use of
+  the new multi-session tab bar) and sent a screenshot: typing "test"
+  and sending via `auto` provider made *both* codex and claude fail
+  immediately.
+- **Root cause, straight from the real error text (not guessed)**:
+  - codex: `Not inside a trusted directory and --skip-git-repo-check
+    was not specified.` -- `codex exec` refuses to run at all in any
+    directory that isn't itself a git repo. Every workspace this
+    bridge auto-creates (`create_workspace_for_first_message()`, under
+    `AUTO_WORKSPACE_BASE_DIR`) is not a git repo by default, so this
+    failed on essentially every fresh workspace -- almost certainly
+    every first-time user's very first message.
+  - claude: `Error: When using --print, --output-format=stream-json
+    requires --verbose` -- a newer installed claude CLI build
+    hard-requires `--verbose` alongside `-p`/`--output-format=
+    stream-json`, a requirement `provider_command()` never accounted
+    for.
+- **Changed** (branch `fix/codex-claude-cli-flag-requirements`, PR
+  #59, merged): `handoff_bridge.py`'s `provider_command()` now always
+  passes `--skip-git-repo-check` for codex (both the first-call and
+  `resume` command shapes) and `--verbose` for claude (both shapes) --
+  confirmed `--verbose`'s extra stream-json event types don't break
+  `summarize_claude()`, which only reads `"system"`/`"result"`/
+  `"error"` event types and already silently ignores anything else via
+  `parse_jsonl()`'s existing tolerant line-by-line parsing.
+- **Verified both flags are real** on the actual installed CLI
+  versions on this dev machine (`codex exec --help` /
+  `claude --help` both list them) before shipping -- not just assumed
+  from the error text. Did **not** spend real provider tokens
+  re-running a live `codex`/`claude` turn to confirm the fix
+  end-to-end, deliberately -- that would consume the user's own API
+  quota for a verification this session could do more cheaply another
+  way; the user's own next real message after updating is the actual
+  end-to-end confirmation.
+- **Real, pre-existing test-coverage gap found and closed**:
+  `provider_command()` had *zero* test coverage for codex or claude
+  before this -- only `ProviderCommandGeminiTests` existed. This is
+  exactly the kind of gap that let a real CLI flag requirement change
+  through unnoticed until a user hit it in production. Added
+  `ProviderCommandCodexTests`/`ProviderCommandClaudeTests` (8 new
+  tests): first-call and resumed-session command shapes, model
+  pass-through, for both providers.
+- **Verified**: `python3 handoff_bridge.py check` -- 628/628 pass.
+  `scan_secrets.py` PASS.
+- **Remaining**: this is a severe, release-blocking-grade bug (the
+  app's core "send a message" feature was completely broken for both
+  primary providers on essentially every fresh workspace) that shipped
+  in v0.4.8 -- the fix is merged to `main` but **not yet released**.
+- **Blocked**: none. **Next**: this should very likely be released
+  promptly (v0.4.9) given severity, but releasing wasn't part of this
+  turn's explicit instruction -- surfaced to the user directly rather
+  than assumed.
