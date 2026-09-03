@@ -4013,3 +4013,112 @@ tag" rule by construction rather than by discipline.
   in this session: M4 (split-pane layout, a separate future decision)
   and the task-based auto-model-switching + cross-model review
   pipeline design interview (still fully undesigned).
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (v0.4.10: classify_handoff fix + CLI model picker — release in progress, checkpointed mid-release at user's request)
+
+- **Task**: user reported (screenshots) two issues: (1) a workspace where
+  a successful claude reply still showed "핸드오프 필요" and triggered an
+  unwanted gemini auto-fallback (which then failed, no gemini auth on
+  this machine); (2) claude failing with an invalid model value
+  "Sonnet5". Separately, an earlier still-open request: "회사별로 cli
+  모델을 리스트 형식으로 보여줘서 선택할 수 있도록 해줘" (show CLI models
+  per provider as a pickable list) plus "auto로 하면 ... 너무 오래걸림".
+- **Root-caused (1)**: `classify_handoff()`'s fallback substring scan
+  (`ERROR_PATTERNS` against raw combined stdout+stderr) already excluded
+  the model's own final answer text, but never excluded tool-echoed
+  content -- codex's `item.completed`/`command_execution.aggregated_output`,
+  claude's `type: "user"` tool_result events. A file read or command
+  output containing ordinary text like "rate limit and quota" (e.g. in a
+  README) got misclassified as a real provider error signal, discarding a
+  good reply and (with auto-fallback) silently re-running on gemini.
+  Reproduced empirically for both codex and claude with a synthetic
+  README before fixing. Also found and fixed a second, previously-latent
+  bug in the *existing* final_text exclusion itself: it compared decoded
+  text against *raw* (JSON-escaped) stdout, so any multi-line final
+  answer silently failed to be stripped at all -- untested before this
+  because all prior fixtures were single-line.
+- **Root-caused (2)**: grepped the whole codebase -- "Sonnet5" is
+  hardcoded nowhere. The Settings-panel default-model field (and the
+  titlebar per-message override) were plain free-text `<input>`s with
+  zero validation, saved verbatim via `save_cli_provider_model()`/
+  `POST /api/cli-model` and sent as `--model` on every call thereafter.
+  Almost certainly a hand-typed value (claude's real valid values are
+  aliases like "sonnet"/"opus"/"fable" or full names like
+  "claude-sonnet-5", never "Sonnet5").
+- **Changed** (3 PRs, all merged to `main`):
+  - PR #64 `fix/classify-handoff-tool-echo-false-positive`:
+    `summarize_codex()`/`summarize_claude()` now also collect tool-echoed
+    text into a new `parsed["quoted_text"]`; `classify_handoff()` excludes
+    it (plus final_text) from its scan, stripping both the raw and
+    JSON-escaped form of each excluded chunk. 6 new tests (2 real-shape
+    `SummarizeCodexTests`/`SummarizeClaudeTests` classes + 3
+    `ClassifyHandoffTests` regressions reproducing the exact bug for both
+    providers + the multi-line JSON-escaping gap).
+  - PR #65 `feature/cli-model-picker`: new `known_cli_models(provider)` in
+    `webui_credentials.py`, exposed as `known_models` on each
+    `GET /api/providers` entry. codex reads its own live
+    `~/.codex/models_cache.json` (filtering `visibility: "hide"`); claude
+    uses the exact example aliases from `claude --help`
+    ("fable"/"opus"/"sonnet" -- deliberately did **not** add "haiku",
+    not confirmed as a real alias); gemini uses geminicli.com's
+    documented model ids (explicitly flagged in a code comment as *not*
+    independently verified against a real authenticated call -- no gemini
+    auth on this dev machine). Frontend: both the Settings-panel model
+    field and the titlebar override are now `<input list=...>` bound to a
+    `<datalist>` of the above -- still free text underneath, so a custom/
+    unlisted model id still works. New `KnownCliModelsTests` class (7
+    tests: claude's exact 3 aliases, gemini non-empty, unknown provider,
+    real codex cache-file shape + `visibility` filtering, 3 defensive
+    cases -- missing file / malformed JSON / entry missing `slug` -- all
+    degrade to `[]`, never raise).
+  - PR #67 `release/v0-4-10` (recreated from #66, which was closed
+    unmerged: `release/v0.4.10` failed the branch-name CI check --
+    dots aren't kebab-case; this repo's convention is `release/vX-Y-Z`,
+    confirmed against `release/v0-4-9`/`v0-4-8`/`v0-4-7`. No work was
+    lost -- the commit was recovered from local reflog and
+    re-branched). Version bumped 0.4.9 -> 0.4.10 in all 3 tracked spots
+    + `Cargo.lock`; `docs/release-notes.md` `## Unreleased` moved to a
+    dated `## v0.4.10` heading covering both fixes above.
+    (`docs/release-notes.ko.md` intentionally left untouched -- it has
+    been behind since v0.2.0, pre-existing drift from before this
+    session, not something this release caused or was asked to fix.)
+- **Verified**: `python3 handoff_bridge.py check` -- 645/645 pass (628
+  baseline + 17 new: 6 classify_handoff + 4 SummarizeCodex/Claude + 7
+  KnownCliModels, roughly). All 3 PRs' CI green (branch-name, validate,
+  rust-build, sidecar-build x3) before merge. Manually verified
+  `GET /api/providers` against a real dev server -- codex's
+  `known_models` came back from the real local `models_cache.json` (7
+  real, current slugs). Manually re-ran both original bug reproductions
+  (synthetic README with "rate limit and quota" text) through
+  `classify_handoff()` post-fix -- both now correctly return
+  `handoff_needed: False`.
+- **Release progress (v0.4.10) -- IN PROGRESS, stopped mid-flight at
+  explicit user request ("체크포인트찍고 작업 중단해줘")**:
+  - `main` is at `65fccb0` ("Release v0.4.10 (#67)"), tag `v0.4.10`
+    pushed and points at it.
+  - `gh workflow run ci.yml --ref v0.4.10` triggered the installer-build
+    workflow -- **run id 33734705478**, was still `in_progress`
+    (macOS/Windows/Linux `installer-build` jobs all running; `rust-build`/
+    `branch-name`/`sidecar-build`/`validate` all `skipped` as expected for
+    a tag-triggered installer run) at the moment work was stopped. This
+    is a **remote GitHub Actions run and is unaffected by stopping this
+    session** -- it will keep running/finish on GitHub's own servers
+    regardless. The only thing actually stopped locally was this
+    session's `gh run watch` polling process.
+  - **Not yet done**: watch run 33734705478 to completion, download all
+    installer artifacts (expected `installers-<triple>/<format>/` layout
+    per `gh run download`'s bulk mode -- do **not** mix with individual
+    `-n <artifact>` pulls, that produced a broken mixed layout during the
+    v0.4.8 release), run `scripts/build_updater_manifest.py` to produce a
+    freshly-signed `dist/latest.json`, `gh release create v0.4.10` with
+    all 8 assets (2 source zips, `latest.json`, `.dmg`, `.app.tar.gz`+
+    `.sig`, Windows `.exe`, Linux `.AppImage`), verify every asset/
+    `latest.json` URL and the README download links return 200, update
+    `README.md`/`README.ko.md` to point at v0.4.10 (its own branch+PR,
+    main is protected), and a final handoff-packet entry recording the
+    completed release.
+- **Blocked**: none -- purely a "stop here for now" checkpoint, not a
+  technical blocker. **Next**: check run 33734705478's status first
+  (`gh run view 33734705478`) before resuming -- it may already be done
+  by the time work resumes -- then continue the release from wherever
+  that leaves off, following the exact sequence in "Not yet done" above.
