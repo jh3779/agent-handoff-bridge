@@ -981,6 +981,85 @@ class NextAvailableProviderTests(unittest.TestCase):
             self.assertEqual(hb.next_available_provider("codex"), hb.next_provider("codex"))
 
 
+class ProviderCommandCodexTests(unittest.TestCase):
+    """Regression coverage for a real bug a user hit in production
+    (2026-09-03): codex exec refuses to run at all ("Not inside a
+    trusted directory and --skip-git-repo-check was not specified") in
+    any workspace that isn't itself a git repo -- which every workspace
+    this bridge auto-creates is not, by default. provider_command() had
+    no test coverage at all for codex/claude before this (only Gemini,
+    see ProviderCommandGeminiTests below) -- exactly the kind of gap
+    that let a real CLI flag requirement change through unnoticed."""
+
+    def test_first_call_has_no_resume_flag_and_skips_the_git_repo_check(self):
+        state = {"sessions": {"codex": None}}
+        command = hb.provider_command("codex", state)
+        self.assertEqual(command[0], "codex")
+        self.assertIn("--skip-git-repo-check", command)
+        self.assertIn("--sandbox", command)
+        self.assertIn("workspace-write", command)
+        self.assertNotIn("resume", command)
+        self.assertEqual(command[-1], "-")  # prompt travels via stdin
+
+    def test_a_prior_session_adds_resume_and_still_skips_the_git_repo_check(self):
+        state = {"sessions": {"codex": "fake-codex-session"}}
+        command = hb.provider_command("codex", state)
+        self.assertIn("resume", command)
+        self.assertIn("--skip-git-repo-check", command)
+        self.assertIn('sandbox_mode="workspace-write"', command)
+        self.assertEqual(command[-2:], ["fake-codex-session", "-"])
+
+    def test_model_is_passed_through_on_a_first_call(self):
+        state = {"sessions": {"codex": None}}
+        command = hb.provider_command("codex", state, model="gpt-5-codex")
+        idx = command.index("--model")
+        self.assertEqual(command[idx + 1], "gpt-5-codex")
+
+    def test_model_is_passed_through_on_a_resumed_call(self):
+        state = {"sessions": {"codex": "fake-codex-session"}}
+        command = hb.provider_command("codex", state, model="gpt-5-codex")
+        idx = command.index("--model")
+        self.assertEqual(command[idx + 1], "gpt-5-codex")
+
+
+class ProviderCommandClaudeTests(unittest.TestCase):
+    """Regression coverage for a real bug a user hit in production
+    (2026-09-03): "Error: When using --print, --output-format=stream-json
+    requires --verbose" -- a newer claude CLI build hard-requires
+    --verbose alongside -p/--output-format=stream-json. See
+    ProviderCommandCodexTests' own docstring for why this class exists
+    at all (no prior codex/claude coverage here)."""
+
+    def test_first_call_has_no_resume_flag_and_includes_verbose(self):
+        state = {"sessions": {"claude": None}}
+        command = hb.provider_command("claude", state)
+        self.assertEqual(command[0], "claude")
+        self.assertIn("-p", command)
+        self.assertIn("--verbose", command)
+        idx = command.index("--output-format")
+        self.assertEqual(command[idx + 1], "stream-json")
+        self.assertNotIn("--resume", command)
+
+    def test_a_prior_session_adds_resume_and_still_includes_verbose(self):
+        state = {"sessions": {"claude": "fake-claude-session"}}
+        command = hb.provider_command("claude", state)
+        idx = command.index("--resume")
+        self.assertEqual(command[idx + 1], "fake-claude-session")
+        self.assertIn("--verbose", command)
+
+    def test_model_is_passed_through_on_a_first_call(self):
+        state = {"sessions": {"claude": None}}
+        command = hb.provider_command("claude", state, model="claude-opus")
+        idx = command.index("--model")
+        self.assertEqual(command[idx + 1], "claude-opus")
+
+    def test_model_is_passed_through_on_a_resumed_call(self):
+        state = {"sessions": {"claude": "fake-claude-session"}}
+        command = hb.provider_command("claude", state, model="claude-opus")
+        idx = command.index("--model")
+        self.assertEqual(command[idx + 1], "claude-opus")
+
+
 class ProviderCommandGeminiTests(unittest.TestCase):
     def test_first_call_in_a_workspace_has_no_resume_flag(self):
         state = {"sessions": {"gemini": None}}
