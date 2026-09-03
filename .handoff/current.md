@@ -3670,3 +3670,80 @@ tag" rule by construction rather than by discipline.
   M1 (backend session model) has not started.
 - **Blocked**: none. **Next**: begin M1 of the multi-session design
   whenever the user says go.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (multi-session M1 implemented, merged; design doc corrected)
+
+- **Task**: user said "릴리즈 하고 시작하자" (release then start) --
+  released v0.4.7 (CLI model selection, previous entries), then began
+  implementing M1 of `docs/research-session-splitting.md`.
+- **Real concurrency bug found and fixed mid-implementation, before any
+  of it shipped**: the design doc's original plan gave every *session*
+  its own run lock. While implementing it, re-read
+  `webui_bridge_run.py`'s existing pre-M1 comment explaining *why* its
+  lock was global (`run_provider_via_bridge()` diffs
+  `<workspace>/.handoff/state.json`'s history length before/after the
+  subprocess call, safe only because exactly one lock guarded all
+  access to that one shared file) and realized a per-session lock
+  reintroduces exactly that race for the "same workspace, multiple
+  sessions" case specifically -- the pair-of-sessions example the
+  user's own answer used ("codex refactoring backend while claude
+  writes tests"). Stopped, explained the problem and a recommended fix
+  via `AskUserQuestion` rather than silently building the broken
+  version or silently downgrading the "genuine parallelism"
+  requirement. User's own suggestion ("워크스페이스를 폴더 오픈시 그
+  폴더를 기준으로 잡으면") independently converged on the same fix:
+  key the lock by **workspace path**, not session id.
+- **Changed** (branch `feature/multi-session-m1-backend`, PR #50,
+  merged): `handoff_webui.py` -- `AppState.sessions: dict[str,
+  SessionState]` (each just a `workspace` pointer) replaces the single
+  `workspace` field; a `workspace`/`workspace=` property still proxies
+  to the default session for `main()`'s startup code and a couple of
+  pre-existing tests. `AppState.get_run_lock_for(workspace)`: one lock
+  object per distinct workspace path (lazily created, dict + meta-lock)
+  -- any two sessions on the same workspace share one lock (serialize
+  correctly), sessions on different workspaces get independent locks
+  (genuinely parallel). New `X-AHB-Session` header
+  (`Handler._session_id()`/`._resolve_session()`), falling back to
+  `DEFAULT_SESSION_ID` so the shipped frontend (which sends no such
+  header) is completely unaffected. New `POST`/`GET`/
+  `DELETE /api/sessions` (in-memory only -- disk persistence is M2's
+  job once a frontend exists to restore into). `webui_chat_storage.py`
+  -- `chat_dir()` and everything built on it take an optional
+  `session_id`; only a non-`"default"` id gets its own subfolder, so no
+  migration is needed for any workspace's existing chat history.
+  `webui_bridge_run.py` -- `run_provider_via_bridge()` takes the lock
+  to use as a parameter instead of holding a module-level `_RUN_LOCK`.
+  Docs updated to match: `docs/cli-reference.md` (new endpoints,
+  corrected the now-stale `handoff_webui._RUN_LOCK` reference),
+  `docs/webui-chat-storage.md` (session-scoped path), and
+  `docs/research-session-splitting.md` itself (the "Concurrency"
+  section and M1's milestone entry rewritten to describe what was
+  actually built, not the original per-session-lock plan that turned
+  out to be wrong).
+- **Verified**: `python3 handoff_bridge.py check` -- 607/607 pass. All
+  585 pre-existing tests pass with **zero modification to their
+  expected behavior** (only mechanical signature updates where they
+  called `run_provider_via_bridge()`/touched the old `_RUN_LOCK`
+  directly) -- strong evidence the refactor is genuinely
+  behavior-preserving for the default/single-session case. New: 4
+  session-scoped chat-storage tests, 3 `get_run_lock_for()` unit tests,
+  18 HTTP-level multi-session tests -- including the two tests that
+  directly encode the bug-fix: same-workspace sessions block each
+  other (409), different-workspace sessions don't (200). `scan_secrets.py`
+  PASS. Real dev-server round trip via `curl` (not just the test
+  harness): create/list/delete sessions, per-session workspace
+  isolation, unknown-session -> 400 -- all confirmed against an
+  actually-running server.
+- **Remaining**: M2 (frontend tab bar + `sessions.json` restart
+  persistence) and M3 (verified concurrent execution under real
+  provider CLI load, not just unit-level lock logic) are both fully
+  unstarted. A **known, accepted limitation** is now explicitly
+  documented: two sessions on the *same* workspace cannot run
+  literally concurrent provider calls (they safely serialize instead)
+  -- removing that needs a separate, larger fix to
+  `handoff_bridge.py run` (a stable per-invocation id instead of
+  position-based history diffing), not yet scoped.
+- **Blocked**: none. **Next**: M2 (frontend tab bar) whenever the user
+  wants to continue the multi-session work; otherwise this backend
+  groundwork sits ready and inert (identical to before, from every
+  existing client's point of view) until a frontend actually uses it.
