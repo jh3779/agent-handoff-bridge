@@ -47,6 +47,7 @@
   const autoFallbackToggle = document.getElementById("auto-fallback-toggle");
   const themeSelect = document.getElementById("theme-select");
   const languageSelect = document.getElementById("language-select");
+  const settingsVersionValue = document.getElementById("settings-version-value");
   const updateBtn = document.getElementById("update-btn");
   const updateDot = document.getElementById("update-dot");
   const updatePopover = document.getElementById("update-popover");
@@ -141,6 +142,7 @@
       workspaceLabel.textContent = hasWorkspace ? info.name : t("workspace.none");
       openFolderBtn.title = hasWorkspace ? info.workspace : t("workspace.none");
       updateComposerPlaceholder();
+      if (info.version) settingsVersionValue.textContent = "v" + info.version;
       return info;
     });
   }
