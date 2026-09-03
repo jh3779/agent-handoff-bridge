@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.9 — 2026-09-03
+
 - **Fix: sending a message failed outright for both codex and claude**
   ("Not inside a trusted directory and --skip-git-repo-check was not
   specified" / "Error: When using --print, --output-format=stream-json
@@ -12,7 +14,8 @@
   isn't a git repo (every workspace this app auto-creates) without
   `--skip-git-repo-check`; a newer claude CLI build requires
   `--verbose` alongside `--output-format=stream-json`. Both are now
-  always passed.
+  always passed. Confirmed fixed against real installed CLIs, not just
+  unit tests -- both providers now reply normally.
 
 ## v0.4.8 — 2026-09-03
 
