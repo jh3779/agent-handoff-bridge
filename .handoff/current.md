@@ -3646,3 +3646,27 @@ tag" rule by construction rather than by discipline.
   to start M1 now, do another release first (v0.4.7, bundling the
   already-merged-but-unreleased CLI-model-selection feature), or
   something else entirely.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (v0.4.7 released: CLI provider model selection)
+
+- **Task**: user chose to release before starting the multi-session
+  work ("릴리즈 하고 시작하자") -- ships the already-merged
+  CLI-model-selection feature (PR #43) that was waiting on `main`.
+- **Changed**: version bumped 0.4.6 -> 0.4.7 in all 3 tracked spots +
+  `Cargo.lock`, `## Unreleased` moved to a dated `## v0.4.7` heading
+  (PR #47). Tagged `v0.4.7`, `installer-build` triggered via
+  `workflow_dispatch`, watched to green (all 3 OSes) via a background
+  `gh run watch` (same pattern as v0.4.5/v0.4.6 -- routinely exceeds a
+  single foreground command's time budget). `build_updater_manifest.py`
+  produced a freshly-signed `dist/latest.json`. `gh release create
+  v0.4.7` with all 8 assets. README/README.ko updated to v0.4.7 (PR
+  #48).
+- **Verified**: `python3 handoff_bridge.py check` -- 585/585 pass.
+  `scan_secrets.py` PASS. Source zip sanity check (extracted outside
+  the repo, `--version`/`check` both pass standalone). Every
+  `latest.json` URL and README link independently verified 200.
+- **Remaining**: none for this release. The multi-session/tabs design
+  (previous entry, `docs/research-session-splitting.md`) is next --
+  M1 (backend session model) has not started.
+- **Blocked**: none. **Next**: begin M1 of the multi-session design
+  whenever the user says go.
