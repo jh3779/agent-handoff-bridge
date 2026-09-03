@@ -795,12 +795,25 @@ def provider_command(provider: str, state: dict[str, Any], model: str | None = N
     sessions = state.get("sessions", {})
     session_id = sessions.get(provider)
     if provider == "codex":
+        # --skip-git-repo-check: codex exec refuses to run at all ("Not
+        # inside a trusted directory and --skip-git-repo-check was not
+        # specified") in any workspace that isn't itself a git repo --
+        # which every workspace this bridge auto-creates
+        # (create_workspace_for_first_message(), AUTO_WORKSPACE_BASE_DIR)
+        # is not, by default. This bridge's own "workspace" concept (Open
+        # Folder / auto-create) already establishes the same trust
+        # boundary codex's own check exists to protect -- the user chose
+        # this exact directory through this app -- so this is the
+        # deliberate, no-narrower equivalent of running codex from inside
+        # a directory it already trusts, not a broadened grant beyond
+        # what --sandbox workspace-write already allows there.
         if session_id:
             command = [
                 "codex",
                 "exec",
                 "resume",
                 "--json",
+                "--skip-git-repo-check",
                 "-c",
                 'sandbox_mode="workspace-write"',
             ]
@@ -808,13 +821,20 @@ def provider_command(provider: str, state: dict[str, Any], model: str | None = N
                 command.extend(["--model", model])
             command.extend([session_id, "-"])
             return command
-        command = ["codex", "exec", "--json", "--sandbox", "workspace-write"]
+        command = ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write"]
         if model:
             command.extend(["--model", model])
         command.append("-")
         return command
 
     if provider == "claude":
+        # --verbose: newer claude CLI builds hard-require this alongside
+        # --print (-p) + --output-format=stream-json ("Error: When using
+        # --print, --output-format=stream-json requires --verbose") --
+        # this only affects stdout's event stream (more event types, e.g.
+        # tool-use events), not the "system"/"result"/"error" event
+        # shapes summarize_claude() actually reads; parse_jsonl() already
+        # tolerates and skips any event type it doesn't recognize.
         if session_id:
             command = [
                 "claude",
@@ -825,6 +845,7 @@ def provider_command(provider: str, state: dict[str, Any], model: str | None = N
                 "text",
                 "--output-format",
                 "stream-json",
+                "--verbose",
                 "--permission-mode",
                 "auto",
             ]
@@ -838,6 +859,7 @@ def provider_command(provider: str, state: dict[str, Any], model: str | None = N
             "text",
             "--output-format",
             "stream-json",
+            "--verbose",
             "--permission-mode",
             "auto",
         ]
