@@ -3815,3 +3815,59 @@ tag" rule by construction rather than by discipline.
 - **Blocked**: none. **Next**: M3 whenever the user wants to continue,
   or ship this as a release once the user has had a chance to try the
   tab bar for real.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (multi-session M3: verified concurrent execution, merged -- M1-M3 all complete)
+
+- **Task**: user said "계속 진행해줘" again -- implemented M3, the
+  verification milestone: confirm two real CLI subprocesses actually
+  run side by side, not just structurally permitted to by the locking
+  code M1 wrote and M1's own tests exercised only with instant mocked
+  locks.
+- **Changed** (branch `test/multi-session-m3-concurrency`, PR #54,
+  merged): pure test addition, no production code -- new
+  `RealConcurrentExecutionTests` in `tests/test_handoff_webui.py`,
+  built on a new `FAKE_CODEX_SLOW_SUCCESS` fixture (a real subprocess
+  that `sleep 1.2`s before replying), driven through the real
+  `ThreadingHTTPServer` with genuine Python threads, not mocks.
+- **A real design subtlety caught while writing this**: an early draft
+  asserted elapsed wall-clock time to "prove serialization" for the
+  same-workspace case. That assertion was actually meaningless --
+  `run_lock.acquire(blocking=False)` in `webui_bridge_run.py` means the
+  *correct* behavior for a genuine same-workspace overlap is an
+  immediate 409 for whichever request loses the race, not a queued
+  wait. A **buggy** version where both calls wrongly ran fully-
+  concurrent subprocesses would produce the *exact same* ~1.2s elapsed
+  time as the correct one-runs/one-rejected outcome -- timing cannot
+  distinguish those two cases here. Caught this before it shipped and
+  replaced the assertion with the actual thing that CAN distinguish
+  them: the real status codes (exactly one 200 + one 409, not two
+  200s). Timing remains the right tool for the *different*-workspace
+  case, where there's no fail-fast rejection to check instead (both
+  calls should succeed, and only elapsed time proves whether they
+  overlapped or serialized).
+- **Three tests total**: (1) different workspaces -- both `/api/run`
+  calls return 200 well under 2x the single-call duration; (2) same
+  workspace, concurrent -- exactly one 200 and one 409; (3) same
+  workspace, sequential (no overlap) -- each of two sessions gets
+  exactly one new record, reproducing M1's original bug scenario
+  end-to-end through the real server rather than only at the
+  `webui_bridge_run.py` unit level.
+- **Verified**: `python3 handoff_bridge.py check` -- 620/620 pass.
+  `scan_secrets.py` PASS. Ran the new test class 3x locally in a row to
+  check for timing flakiness before opening the PR -- consistently
+  green. **CI's `validate` job (a real `ubuntu-latest` GitHub Actions
+  runner, not just this dev machine) also passed** -- real independent
+  evidence this timing-sensitive test isn't only passing by luck in one
+  specific environment.
+- **Status**: M1 (backend session model), M2 (frontend tab bar), and M3
+  (verified concurrent execution) are now all complete --
+  `docs/research-session-splitting.md` updated accordingly. Only M4
+  (split-pane layout) remains, and it was always scoped as "a separate
+  future decision, not part of this feature at all," not something to
+  pick up automatically. The multi-session feature as originally
+  requested by the user is functionally done, pending their own
+  real-world confirmation of the tab bar UI (still not interactively
+  tested in this dev environment, per M2's own entry above).
+- **Blocked**: none. **Next**: awaiting the user's decision on whether
+  to release this now, continue with something else, or have the user
+  try the tab bar for real first before deciding.
