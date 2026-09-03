@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.4.7 — 2026-09-03
+
 - **New: model selection for CLI-detected providers** (codex/claude/
   gemini). Previously only API-key-mode providers could specify a
   model -- a CLI-detected provider's row in Settings now has its own
