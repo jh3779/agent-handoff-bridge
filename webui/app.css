@@ -449,6 +449,9 @@ body {
   border: 1px solid var(--outline); background: var(--bg); color: var(--on-bg);
   font-family: var(--font); font-size: 11.5px;
 }
+.settings-version-value {
+  font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--muted);
+}
 
 /* 토글 스위치 (auto-fallback 등 즉시 적용되는 on/off 설정용) -- 네이티브
    checkbox를 숨기고 라벨을 스위치 모양으로 그린다, 별도 JS 상태 관리 불필요

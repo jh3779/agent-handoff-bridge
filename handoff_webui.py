@@ -34,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from handoff_bridge import PROVIDERS
+from handoff_bridge import BRIDGE_VERSION, PROVIDERS
 
 from webui_api_key_mode import validate_provider_api_key
 from webui_bridge_run import (
@@ -157,9 +157,16 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 self._send_static(parsed.path.lstrip("/"))
             elif parsed.path == "/api/info":
                 if workspace is None:
-                    self._send_json(200, {"workspace": None, "name": None})
+                    self._send_json(200, {"workspace": None, "name": None, "version": BRIDGE_VERSION})
                 else:
-                    self._send_json(200, {"workspace": str(workspace), "name": workspace.name or str(workspace)})
+                    self._send_json(
+                        200,
+                        {
+                            "workspace": str(workspace),
+                            "name": workspace.name or str(workspace),
+                            "version": BRIDGE_VERSION,
+                        },
+                    )
             elif parsed.path == "/api/tree":
                 if workspace is None:
                     # Nothing to browse yet -- an empty tree, not an error;

@@ -340,6 +340,7 @@ class LiveServerTests(unittest.TestCase):
         status, data = self._get("/api/info")
         self.assertEqual(status, 200)
         self.assertIn("workspace", data)
+        self.assertEqual(data["version"], hb.BRIDGE_VERSION)
 
     def test_api_tree_lists_real_entries(self):
         status, data = self._get("/api/tree?path=")
@@ -1966,6 +1967,7 @@ class NoWorkspaceLiveServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIsNone(data["workspace"])
         self.assertIsNone(data["name"])
+        self.assertEqual(data["version"], hb.BRIDGE_VERSION)
 
     def test_api_tree_returns_empty_entries_not_an_error(self):
         status, data = self._get("/api/tree?path=")
