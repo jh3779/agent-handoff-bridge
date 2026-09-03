@@ -18,7 +18,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
-BRIDGE_VERSION = "0.4.8"
+BRIDGE_VERSION = "0.4.9"
 
 # Phase 6 (docs/design-system/roadmap.md, SCR-07, resolves CFL-11):
 # written while this repo was still private (docs/security-model.md), when
