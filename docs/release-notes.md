@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- **New: model selection for CLI-detected providers** (codex/claude/
+  gemini). Previously only API-key-mode providers could specify a
+  model -- a CLI-detected provider's row in Settings now has its own
+  model field (no API key needed, saved via a new
+  `POST /api/cli-model`), used as the default `--model` on every send.
+  A model field next to the titlebar's provider selector lets you
+  override it per message.
+
 ## v0.4.6 — 2026-09-03
 
 - **Fix: connected AI models (codex/claude/gemini) showed as not

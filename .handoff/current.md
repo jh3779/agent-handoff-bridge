@@ -3526,3 +3526,64 @@ tag" rule by construction rather than by discipline.
   confirm CLI providers show as detected; then the deferred
   model-routing/review-pipeline design interview (still open, several
   entries back) whenever they want to return to it.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (model selection for CLI-detected providers, merged, not yet released)
+
+- **Task**: user pointed out the Settings panel only ever showed a
+  "CLI detected" badge for codex/claude/gemini, with no way to pick
+  which model that CLI actually uses -- asked to check into it.
+- **Found**: the backend already fully supported a `--model` override
+  end-to-end (`/api/run`'s `model` field -> `webui_bridge_run.py`'s
+  `run_provider_via_bridge()` -> `handoff_bridge.py run --model` ->
+  the real CLI subprocess argv, all pre-existing) -- the frontend
+  simply never sent a `model` for the CLI-detected path.
+  `renderProviderRow()` (`webui/app.js`) returned immediately for any
+  `cli_detected` provider, before ever reaching the model-input code
+  that only existed on the (unrelated) API-key-mode branch below it.
+- **Design interview** (`AskUserQuestion`, two rounds): first
+  confirmed the model-selection mechanism -- user chose **both**
+  (persisted Settings default + live per-message override), the
+  larger option over either alone. The same answer also proposed a
+  much bigger "IDE-like session splitting" idea (parallel chat
+  sessions/tabs); asked a follow-up specifically about that, and the
+  user chose to **defer it to its own design pass**, not bundle it
+  into this change -- this PR is scoped to model selection only.
+- **Changed**: `webui_credentials.py` -- new
+  `read_cli_provider_models()`/`save_cli_provider_model()`, a
+  `"cli_models"` key in the same `credentials.json` (provider -> model
+  string, no key involved at all -- deliberately not reusing
+  `read_credentials()`/`save_credential()`, which require a key to
+  store anything). `handoff_webui.py` -- new `POST /api/cli-model`
+  (no verification call, unlike `/api/provider-key`, since the CLI
+  handles its own auth); `GET /api/providers` now includes a
+  `cli_model` field per fixed provider. `webui/app.js` --
+  `renderProviderRow()`'s CLI-detected branch now renders a model
+  input + save button; new `model-override-input` next to the
+  titlebar's provider-select (visible only for a CLI-detected fixed
+  provider, not "auto"/API-key-mode/custom, where "model" means
+  something different or doesn't resolve to one provider at all),
+  pre-filled from the saved default, cleared/refilled on provider
+  switch; `sendMessage()` now actually includes `model` in
+  `POST /api/run`'s body -- the one line that makes all of the above
+  reachable. New i18n keys (ko/en, 115/115 parity confirmed via the
+  key-check script from the earlier i18n work). Branch
+  `feature/cli-model-selection`, PR #43, merged.
+- **Verified**: `python3 handoff_bridge.py check` -- 585/585 (15 new:
+  8 for the new credentials functions, 7 HTTP-level for
+  `/api/cli-model` + `/api/providers`'s new field).
+  `scan_secrets.py` PASS. `node --check` both JS files. Real dev-server
+  round trip: `POST /api/cli-model` for `codex` -> `GET /api/providers`
+  reflects `cli_model: "gpt-5-codex"`; confirmed the served `index.html`
+  contains the new titlebar input. Did not build/launch a real Tauri
+  `.app` for this one (lower-risk additive UI, well covered by the
+  HTTP-level + unit tests, matching the verification depth used for
+  the earlier i18n feature rather than the deeper per-binary checks
+  used for the two real bug fixes this session).
+- **Remaining**: on `main`, not yet released -- same batch-or-release
+  question as prior entries, not yet asked for this one.
+  Session-splitting/IDE-like parallel work is a fully separate, still
+  entirely undesigned feature -- deliberately not started.
+- **Blocked**: none. **Next**: ask the user about release timing for
+  this feature; the deferred model-routing/review-pipeline design
+  interview and the newly-deferred session-splitting idea are both
+  open for whenever the user wants to pick either up.
