@@ -3967,3 +3967,49 @@ tag" rule by construction rather than by discipline.
   promptly (v0.4.9) given severity, but releasing wasn't part of this
   turn's explicit instruction -- surfaced to the user directly rather
   than assumed.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (v0.4.9 released: codex/claude CLI flag fix)
+
+- **Task**: user asked "무슨 문제때문에 안된건지" (what caused the
+  failure) -- explained the root cause in plain terms, then asked to
+  release. Before releasing, did one more real-world verification pass
+  specifically because the user's own "문제 확인해줘" framing invited
+  it: ran a real `codex`/`claude` turn end-to-end against a genuine
+  non-git temp workspace (`say only the word OK` as the prompt, minimal
+  cost) -- both returned exit code 0 and the literal reply "OK",
+  conclusively confirming the fix works against the real installed
+  CLIs, not just the unit tests from the prior entry. Also checked
+  whether Gemini has the same class of bug (it has an analogous
+  `--skip-trust` flag) -- empirically it does not: a real piped-stdin
+  call in a non-git directory passed straight through to the *next*
+  failure stage (no Gemini auth configured on this dev machine) instead
+  of hitting a trust-check error, so Gemini's non-interactive path
+  doesn't enforce the same gate codex's `exec` subcommand does.
+  No code change needed for Gemini.
+- **Changed**: version bumped 0.4.8 -> 0.4.9 in all 3 tracked spots +
+  `Cargo.lock`, `## Unreleased` moved to a dated `## v0.4.9` heading
+  (PR #61). Tagged `v0.4.9`, `installer-build` triggered via
+  `workflow_dispatch`, watched to green (all 3 OSes). Artifacts
+  downloaded correctly in the expected `installers-<triple>/<format>/`
+  layout this time (no repeat of the mixed-layout mistake from the
+  v0.4.8 release). `build_updater_manifest.py` produced a freshly-
+  signed `dist/latest.json`. `gh release create v0.4.9` with all 8
+  assets. README/README.ko updated to v0.4.9 (PR #62).
+- **Verified**: `python3 handoff_bridge.py check` -- 628/628 pass.
+  `scan_secrets.py` PASS. Source zip sanity check standalone. Every
+  `latest.json` URL and README link independently verified 200.
+- **Remaining**: none for this release specifically. The severe bug
+  that shipped in v0.4.8 (core "send a message" feature broken for
+  both primary providers on essentially every fresh workspace) is now
+  fixed in a real published release, not just on `main` -- the gap
+  between "fixed on main" and "actually released" that the previous
+  entry flagged as a real risk is now closed.
+- **Blocked**: none. **Next**: nothing specifically queued. The
+  earlier-raised "should this app do its own in-app OAuth login like
+  VS Code's Claude/Codex extensions, vs. relying on the CLI's own
+  system-wide login" question was explicitly parked by the user
+  ("그냥 현황 유지하면서") -- not started, not forgotten, revisit only
+  if the user brings it up again. Other still-open items from earlier
+  in this session: M4 (split-pane layout, a separate future decision)
+  and the task-based auto-model-switching + cross-model review
+  pipeline design interview (still fully undesigned).
