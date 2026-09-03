@@ -1067,6 +1067,53 @@ class ChatStorageTests(unittest.TestCase):
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0]["text"], "hello")
 
+    def test_default_session_id_uses_the_original_unscoped_path(self):
+        # M1 (multi-session): a workspace's history from before this
+        # feature existed must keep working with zero migration -- the
+        # default session id is a no-op on chat_dir(), not a real
+        # subfolder.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(webui_chat_storage.chat_dir(root), root / ".handoff" / "webui" / "chat")
+            self.assertEqual(
+                webui_chat_storage.chat_dir(root, webui_chat_storage.DEFAULT_SESSION_ID),
+                webui_chat_storage.chat_dir(root),
+            )
+
+    def test_non_default_session_id_gets_its_own_subfolder(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertEqual(
+                webui_chat_storage.chat_dir(root, "abc123"),
+                root / ".handoff" / "webui" / "chat" / "abc123",
+            )
+
+    def test_two_sessions_in_the_same_workspace_have_independent_histories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = datetime(2026, 9, 3, 10, 0, 0, tzinfo=timezone.utc)
+            webui_chat_storage.append_chat_message(root, "user", "in the default session", [], now)
+            webui_chat_storage.append_chat_message(root, "user", "in session A", [], now, session_id="session-a")
+            webui_chat_storage.append_chat_message(root, "user", "in session B", [], now, session_id="session-b")
+
+            default_msgs = webui_chat_storage.read_month_messages(root, "2026-09")
+            a_msgs = webui_chat_storage.read_month_messages(root, "2026-09", session_id="session-a")
+            b_msgs = webui_chat_storage.read_month_messages(root, "2026-09", session_id="session-b")
+
+            self.assertEqual([m["text"] for m in default_msgs], ["in the default session"])
+            self.assertEqual([m["text"] for m in a_msgs], ["in session A"])
+            self.assertEqual([m["text"] for m in b_msgs], ["in session B"])
+
+    def test_list_available_months_is_session_scoped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = datetime(2026, 9, 3, 10, 0, 0, tzinfo=timezone.utc)
+            webui_chat_storage.append_chat_message(root, "user", "default", [], now)
+            webui_chat_storage.append_chat_message(root, "user", "session A", [], now, session_id="session-a")
+            self.assertEqual(webui_chat_storage.list_available_months(root), ["2026-09"])
+            self.assertEqual(webui_chat_storage.list_available_months(root, "session-a"), ["2026-09"])
+            self.assertEqual(webui_chat_storage.list_available_months(root, "session-b"), [])
+
     def test_multiple_appends_preserve_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1306,26 +1353,32 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         # .handoff/state.json's history length before/after the subprocess
         # call with no lock -- two concurrent calls could both read the
         # same "before" length and duplicate an already-persisted record.
-        # A held _RUN_LOCK must make a second call fail immediately
-        # (RunAlreadyInProgressError), not block for the full timeout or
-        # silently race.
+        # A held run_lock must make a second call using the *same lock
+        # object* fail immediately (RunAlreadyInProgressError), not block
+        # for the full timeout or silently race. M1: the caller now
+        # supplies the lock (AppState.get_run_lock_for() in real use,
+        # keyed by workspace) rather than this module holding one itself.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-            webui_bridge_run._RUN_LOCK.acquire()
+            run_lock = threading.Lock()
+            run_lock.acquire()
             try:
                 with self.assertRaises(webui_bridge_run.RunAlreadyInProgressError):
-                    webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+                    webui_bridge_run.run_provider_via_bridge(run_lock, root, "codex", "hello", None, "continue")
             finally:
-                webui_bridge_run._RUN_LOCK.release()
+                run_lock.release()
 
     def test_lock_is_released_after_a_normal_call_so_the_next_one_can_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-            webui_bridge_run.run_provider_via_bridge(root, "codex", "first", None, "continue")
-            # Would raise RunAlreadyInProgressError if the lock leaked.
-            records = webui_bridge_run.run_provider_via_bridge(root, "codex", "second", None, "continue")
+            run_lock = threading.Lock()
+            webui_bridge_run.run_provider_via_bridge(run_lock, root, "codex", "first", None, "continue")
+            # Would raise RunAlreadyInProgressError if the lock leaked --
+            # reusing the *same* run_lock object for both calls is the
+            # point of this test.
+            records = webui_bridge_run.run_provider_via_bridge(run_lock, root, "codex", "second", None, "continue")
             self.assertEqual(len(records), 1)
 
     def test_delegates_provider_timeout_to_the_bridge(self):
@@ -1338,7 +1391,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
             with mock.patch("webui_bridge_run.subprocess.run", wraps=subprocess.run) as spy:
-                webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+                webui_bridge_run.run_provider_via_bridge(threading.Lock(), root, "codex", "hello", None, "continue")
             command = spy.call_args.args[0]
             self.assertIn("--timeout-seconds", command)
             idx = command.index("--timeout-seconds")
@@ -1358,7 +1411,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
             with mock.patch("webui_bridge_run.subprocess.run", wraps=subprocess.run) as spy:
-                webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", "--weird-model-name", "continue")
+                webui_bridge_run.run_provider_via_bridge(threading.Lock(), root, "codex", "hello", "--weird-model-name", "continue")
             command = spy.call_args.args[0]
             self.assertIn("--model=--weird-model-name", command)
             # never as a separate token (that's the old, broken ["--model", value] form)
@@ -1384,7 +1437,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
                 "do the thing", [{"name": "a.py", "path": "a.py", "content": "print('hi')", "truncated": False}]
             )
             with mock.patch("webui_bridge_run.subprocess.run", side_effect=_capture_prompt_file_then_run):
-                webui_bridge_run.run_provider_via_bridge(root, "codex", prompt, None, "continue")
+                webui_bridge_run.run_provider_via_bridge(threading.Lock(), root, "codex", prompt, None, "continue")
 
         self.assertIn("do the thing", captured["prompt_text"])
         self.assertIn("a.py", captured["prompt_text"])
@@ -1394,7 +1447,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
-            records = webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), root, "codex", "hello", None, "continue")
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["provider"], "codex")
             self.assertFalse(records[0]["handoff_needed"])
@@ -1408,7 +1461,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
             root = Path(tmp)
             _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_RATE_LIMITED)
             _write_fake_provider(self.fake_bin, "claude", FAKE_CLAUDE_SUCCESS)
-            records = webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), root, "codex", "hello", None, "continue")
             self.assertEqual(len(records), 2)
             self.assertEqual(records[0]["provider"], "codex")
             self.assertTrue(records[0]["handoff_needed"])
@@ -1422,7 +1475,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         # when --workspace doesn't exist -- run_provider_via_bridge() must
         # still return something rather than an empty list.
         records = webui_bridge_run.run_provider_via_bridge(
-            Path("/definitely/does/not/exist"), "codex", "hello", None, "continue"
+            threading.Lock(), Path("/definitely/does/not/exist"), "codex", "hello", None, "continue"
         )
         self.assertEqual(len(records), 1)
         self.assertTrue(records[0]["handoff_needed"])
@@ -1439,7 +1492,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
         # for resolving it via choose_auto_provider() instead.
         _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
         records = webui_bridge_run.run_provider_via_bridge(
-            Path("/definitely/does/not/exist"), "auto", "hello", None, "continue"
+            threading.Lock(), Path("/definitely/does/not/exist"), "auto", "hello", None, "continue"
         )
         self.assertEqual(len(records), 1)
         self.assertIn(records[0]["provider"], ("codex", "claude"))
@@ -1491,7 +1544,7 @@ class RunProviderViaBridgeTests(FakeProviderPathMixin, unittest.TestCase):
             with mock.patch("webui_bridge_run.subprocess.run", side_effect=_seed_partial_history_then_hang), mock.patch(
                 "webui_bridge_run._bridge_next_provider", return_value="claude"
             ):
-                records = webui_bridge_run.run_provider_via_bridge(root, "codex", "hello", None, "continue")
+                records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), root, "codex", "hello", None, "continue")
 
             self.assertEqual(len(records), 2)
             self.assertEqual(records[0]["provider"], "codex")
@@ -1519,7 +1572,7 @@ class RunProviderViaBridgeSubprocessEncodingTests(unittest.TestCase):
                 "webui_bridge_run.subprocess.run",
                 return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
             ) as run_spy:
-                webui_bridge_run.run_provider_via_bridge(workspace, "codex", "hello", None, "continue")
+                webui_bridge_run.run_provider_via_bridge(threading.Lock(), workspace, "codex", "hello", None, "continue")
         self.assertEqual(run_spy.call_args.kwargs["encoding"], "utf-8")
         self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
 
@@ -1538,7 +1591,7 @@ class RunProviderViaBridgeAutoFallbackFlagTests(unittest.TestCase):
                 "webui_bridge_run.subprocess.run",
                 return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
             ) as run_spy:
-                webui_bridge_run.run_provider_via_bridge(workspace, "codex", "hello", None, "continue", auto_fallback)
+                webui_bridge_run.run_provider_via_bridge(threading.Lock(), workspace, "codex", "hello", None, "continue", auto_fallback)
         return run_spy.call_args.args[0]
 
     def test_default_includes_auto_fallback(self):
@@ -1548,7 +1601,7 @@ class RunProviderViaBridgeAutoFallbackFlagTests(unittest.TestCase):
                 "webui_bridge_run.subprocess.run",
                 return_value=subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr=""),
             ) as run_spy:
-                webui_bridge_run.run_provider_via_bridge(workspace, "codex", "hello", None, "continue")
+                webui_bridge_run.run_provider_via_bridge(threading.Lock(), workspace, "codex", "hello", None, "continue")
         self.assertIn("--auto-fallback", run_spy.call_args.args[0])
 
     def test_explicit_true_includes_the_flag(self):
@@ -1714,11 +1767,16 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         self.assertEqual(data["messages"][0]["provider"], "custom:openrouter")
 
     def test_concurrent_run_gets_409_not_a_hang_or_duplicate_message(self):
-        webui_bridge_run._RUN_LOCK.acquire()
+        # M1: the lock is keyed by workspace path (AppState.get_run_lock_for()),
+        # not a single global lock -- must grab the *same* lock object the
+        # server itself will resolve for this session's workspace (self.root)
+        # to actually simulate "already in progress" for it.
+        run_lock = self.state.get_run_lock_for(self.root)
+        run_lock.acquire()
         try:
             status, data = self._post("/api/run", {"provider": "codex", "text": "hi"})
         finally:
-            webui_bridge_run._RUN_LOCK.release()
+            run_lock.release()
         self.assertEqual(status, 409)
         self.assertIn("error", data)
 
@@ -1728,11 +1786,12 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         # switching state.workspace out from under it mid-run would
         # misdirect where that write (and the client's eventual render of
         # it) ends up.
-        webui_bridge_run._RUN_LOCK.acquire()
+        run_lock = self.state.get_run_lock_for(self.root)
+        run_lock.acquire()
         try:
             status, data = self._post("/api/open-folder", {"path": str(self.root)})
         finally:
-            webui_bridge_run._RUN_LOCK.release()
+            run_lock.release()
         self.assertEqual(status, 409)
         self.assertIn("error", data)
 
@@ -1745,11 +1804,12 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         # message in the history drawer once it lands. Rejecting the new
         # message outright means two user turns can never be
         # simultaneously unanswered in the same workspace.
-        webui_bridge_run._RUN_LOCK.acquire()
+        run_lock = self.state.get_run_lock_for(self.root)
+        run_lock.acquire()
         try:
             status, data = self._post("/api/chat", {"role": "user", "text": "a second message", "attachments": []})
         finally:
-            webui_bridge_run._RUN_LOCK.release()
+            run_lock.release()
         self.assertEqual(status, 409)
         self.assertIn("error", data)
 
@@ -1762,11 +1822,12 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
     def test_system_message_is_still_accepted_while_a_run_is_in_flight(self):
         # The 409 guard is specifically for "user" (new turns) -- a system
         # message doesn't start a turn and shouldn't be blocked by it.
-        webui_bridge_run._RUN_LOCK.acquire()
+        run_lock = self.state.get_run_lock_for(self.root)
+        run_lock.acquire()
         try:
             status, data = self._post("/api/chat", {"role": "system", "text": "note", "attachments": []})
         finally:
-            webui_bridge_run._RUN_LOCK.release()
+            run_lock.release()
         self.assertEqual(status, 200)
 
     def test_run_with_invalid_provider_is_rejected(self):
@@ -1776,6 +1837,257 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         status, data = self._post("/api/run", {"provider": "not-a-real-provider", "text": "hi"})
         self.assertEqual(status, 400)
         self.assertIn("error", data)
+
+
+class GetRunLockForTests(unittest.TestCase):
+    """AppState.get_run_lock_for() in isolation, no HTTP involved -- the
+    exact mechanism M1 depends on to make "same workspace, two sessions"
+    safe (one shared lock) and "different workspaces, two sessions"
+    genuinely parallel (independent locks). See its own docstring in
+    handoff_webui.py for the real state.json race this was found fixing
+    mid-implementation."""
+
+    def test_same_workspace_path_returns_the_same_lock_object(self):
+        state = webui.AppState(None)
+        workspace = Path("/some/workspace")
+        self.assertIs(state.get_run_lock_for(workspace), state.get_run_lock_for(workspace))
+
+    def test_different_workspace_paths_get_different_lock_objects(self):
+        state = webui.AppState(None)
+        self.assertIsNot(
+            state.get_run_lock_for(Path("/workspace/a")), state.get_run_lock_for(Path("/workspace/b"))
+        )
+
+    def test_holding_one_workspaces_lock_does_not_affect_anothers(self):
+        state = webui.AppState(None)
+        lock_a = state.get_run_lock_for(Path("/workspace/a"))
+        lock_b = state.get_run_lock_for(Path("/workspace/b"))
+        lock_a.acquire()
+        try:
+            self.assertTrue(lock_a.locked())
+            self.assertFalse(lock_b.locked())
+        finally:
+            lock_a.release()
+
+
+class MultiSessionLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
+    """POST/GET/DELETE /api/sessions and the X-AHB-Session header contract
+    (docs/research-session-splitting.md, M1) over a real HTTP server --
+    covers both required session-unit shapes: a second session on the
+    *same* workspace as the default one, and a second session on a
+    *different* workspace."""
+
+    def setUp(self):
+        self.setUpFakeProviders()
+        self.tmp = tempfile.TemporaryDirectory()
+        # .resolve(): validate_workspace_candidate() (POST /api/open-folder)
+        # resolves whatever path it's given, so session.workspace ends up
+        # e.g. /private/var/... on macOS even when given a /var/... path
+        # (a symlink). Matching that here up front means str(self.root)/
+        # get_run_lock_for(self.root) actually refer to the same path the
+        # server itself resolves to -- unresolved, a couple of assertions
+        # below would silently compare/lock against a *different* path
+        # than the one the server is really using.
+        self.root = (Path(self.tmp.name) / "workspace-a").resolve()
+        self.root.mkdir()
+        self.root_b = (Path(self.tmp.name) / "workspace-b").resolve()
+        self.root_b.mkdir()
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.state = webui.AppState(self.root)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+        self.tmp.cleanup()
+
+    def _request(self, method, path, payload=None, session_id=None):
+        url = f"http://127.0.0.1:{self.port}{path}"
+        headers = {}
+        body = None
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        if session_id is not None:
+            headers[webui.SESSION_HEADER] = session_id
+        req = urllib.request.Request(url, data=body, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def _get(self, path, session_id=None):
+        return self._request("GET", path, session_id=session_id)
+
+    def _post(self, path, payload, session_id=None):
+        return self._request("POST", path, payload=payload, session_id=session_id)
+
+    def _delete(self, path, session_id=None):
+        return self._request("DELETE", path, session_id=session_id)
+
+    def test_get_sessions_lists_the_default_session_at_boot(self):
+        status, data = self._get("/api/sessions")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["sessions"], [{"session_id": "default", "workspace": str(self.root)}])
+
+    def test_no_session_header_resolves_to_default_unchanged(self):
+        # The whole point of the fallback: a request that predates M1 (or
+        # a direct API script) keeps working exactly as before.
+        status, data = self._get("/api/info")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["workspace"], str(self.root))
+
+    def test_post_sessions_creates_a_new_empty_session(self):
+        status, data = self._post("/api/sessions", {})
+        self.assertEqual(status, 200)
+        self.assertIsNone(data["workspace"])
+        session_id = data["session_id"]
+        self.assertTrue(session_id)
+
+        _, listing = self._get("/api/sessions")
+        ids = {s["session_id"] for s in listing["sessions"]}
+        self.assertEqual(ids, {"default", session_id})
+
+    def test_new_session_starts_with_no_workspace_independent_of_default(self):
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        status, info = self._get("/api/info", session_id=session_id)
+        self.assertEqual(status, 200)
+        self.assertIsNone(info["workspace"])
+        # The default session is completely unaffected by a new session existing.
+        _, default_info = self._get("/api/info")
+        self.assertEqual(default_info["workspace"], str(self.root))
+
+    def test_switching_a_new_sessions_workspace_does_not_move_the_default_one(self):
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        status, data = self._post("/api/open-folder", {"path": str(self.root_b)}, session_id=session_id)
+        self.assertEqual(status, 200)
+
+        _, session_info = self._get("/api/info", session_id=session_id)
+        self.assertEqual(session_info["workspace"], str(self.root_b))
+        _, default_info = self._get("/api/info")
+        self.assertEqual(default_info["workspace"], str(self.root))
+
+    def test_two_sessions_on_the_same_workspace_have_independent_chat_history(self):
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        self._post("/api/open-folder", {"path": str(self.root)}, session_id=session_id)
+        self._post("/api/chat", {"role": "user", "text": "from default", "attachments": []})
+        self._post("/api/chat", {"role": "user", "text": "from the new session", "attachments": []}, session_id=session_id)
+
+        _, default_chat = self._get("/api/chat")
+        _, session_chat = self._get("/api/chat", session_id=session_id)
+        self.assertEqual([m["text"] for m in default_chat["messages"]], ["from default"])
+        self.assertEqual([m["text"] for m in session_chat["messages"]], ["from the new session"])
+
+    def test_unknown_session_header_is_rejected(self):
+        status, data = self._get("/api/info", session_id="totally-made-up")
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_app_level_endpoints_do_not_require_a_known_session(self):
+        # Provider credentials/models are app-level, not workspace state --
+        # never needed a session concept even before M1.
+        status, data = self._post(
+            "/api/cli-model", {"provider": "codex", "model": "x"}, session_id="totally-made-up"
+        )
+        self.assertEqual(status, 200)
+
+    def test_default_session_cannot_be_closed(self):
+        status, data = self._delete("/api/sessions/default")
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
+    def test_deleting_an_unknown_session_is_404(self):
+        status, data = self._delete("/api/sessions/totally-made-up")
+        self.assertEqual(status, 404)
+        self.assertIn("error", data)
+
+    def test_closed_session_id_is_no_longer_usable(self):
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        status, _ = self._delete(f"/api/sessions/{session_id}")
+        self.assertEqual(status, 200)
+
+        status, data = self._get("/api/info", session_id=session_id)
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+        _, listing = self._get("/api/sessions")
+        self.assertEqual([s["session_id"] for s in listing["sessions"]], ["default"])
+
+    def test_closing_a_session_does_not_delete_its_chat_history_on_disk(self):
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        self._post("/api/open-folder", {"path": str(self.root)}, session_id=session_id)
+        self._post("/api/chat", {"role": "user", "text": "keep me", "attachments": []}, session_id=session_id)
+        self._delete(f"/api/sessions/{session_id}")
+        chat_dir = webui_chat_storage.chat_dir(self.root, session_id)
+        self.assertTrue(chat_dir.exists())
+        self.assertTrue(any(chat_dir.glob("*.jsonl")))
+
+    def test_deleting_a_session_with_a_run_in_flight_is_409(self):
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        self._post("/api/open-folder", {"path": str(self.root_b)}, session_id=session_id)
+        run_lock = self.state.get_run_lock_for(self.root_b)
+        run_lock.acquire()
+        try:
+            status, data = self._delete(f"/api/sessions/{session_id}")
+        finally:
+            run_lock.release()
+        self.assertEqual(status, 409)
+        self.assertIn("error", data)
+
+    def test_a_run_in_one_session_blocks_a_new_message_in_another_session_on_the_SAME_workspace(self):
+        # The critical regression this whole redesign exists for: two
+        # sessions pointed at the same workspace share handoff_bridge.py's
+        # one <workspace>/.handoff/state.json, so their runs must still
+        # serialize against each other even though they're different
+        # sessions -- otherwise the before/after history-length diff in
+        # webui_bridge_run.py can misattribute or duplicate a record.
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        self._post("/api/open-folder", {"path": str(self.root)}, session_id=session_id)  # same workspace as default
+        run_lock = self.state.get_run_lock_for(self.root)
+        run_lock.acquire()
+        try:
+            status, data = self._post(
+                "/api/chat", {"role": "user", "text": "hi", "attachments": []}, session_id=session_id
+            )
+        finally:
+            run_lock.release()
+        self.assertEqual(status, 409)
+        self.assertIn("error", data)
+
+    def test_a_run_in_one_session_does_NOT_block_a_new_message_in_another_session_on_a_DIFFERENT_workspace(self):
+        # The actual parallelism guarantee this feature is supposed to
+        # deliver: two sessions on two different workspaces have
+        # independent state.json files and independent locks, so one
+        # being "busy" must never affect the other.
+        _, created = self._post("/api/sessions", {})
+        session_id = created["session_id"]
+        self._post("/api/open-folder", {"path": str(self.root_b)}, session_id=session_id)  # different workspace
+        run_lock = self.state.get_run_lock_for(self.root)  # holding the DEFAULT session's workspace lock
+        run_lock.acquire()
+        try:
+            status, data = self._post(
+                "/api/chat", {"role": "user", "text": "hi", "attachments": []}, session_id=session_id
+            )
+        finally:
+            run_lock.release()
+        self.assertEqual(status, 200)
 
 
 class EnsureChatGitignoreTests(unittest.TestCase):
@@ -3937,7 +4249,7 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
         webui_credentials.save_credential("codex", "sk-should-be-unused", None)
         with mock.patch("webui_api_key_mode.call_openai_responses_api") as spy:
-            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "codex", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "codex", "hello", None, "continue")
         spy.assert_not_called()
         self.assertEqual(records[0]["session_id"], "fake-codex-session")
 
@@ -3952,7 +4264,7 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
         webui_credentials.save_credential("codex", "sk-should-be-unused", None)
         with mock.patch("webui_bridge_run.read_credentials", wraps=webui_bridge_run.read_credentials) as spy:
-            webui_bridge_run.run_provider_via_bridge(self.workspace, "codex", "hello", None, "continue")
+            webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "codex", "hello", None, "continue")
         spy.assert_not_called()
 
     def test_auto_with_a_cli_available_never_reads_credentials_file(self):
@@ -3961,7 +4273,7 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
         webui_credentials.save_credential("claude", "sk-should-be-unused", "claude-sonnet-5")
         with mock.patch("webui_bridge_run.read_credentials", wraps=webui_bridge_run.read_credentials) as spy:
-            webui_bridge_run.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+            webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "auto", "hello", None, "continue")
         spy.assert_not_called()
 
     def test_cli_missing_provider_with_a_saved_key_uses_the_api_path(self):
@@ -3969,7 +4281,7 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         with mock.patch("webui_credentials.shutil.which", return_value=None), mock.patch(
             "webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "api reply"}
         ) as spy:
-            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "claude", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "claude", "hello", None, "continue")
         spy.assert_called_once()
         self.assertEqual(records[0]["final_text"], "api reply")
         self.assertIsNone(records[0]["run_dir"])
@@ -3987,7 +4299,7 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         # either, and handoff_bridge.py's own FileNotFoundError -> exit_code
         # 127 handling is what's actually being exercised here.
         with mock.patch.dict(os.environ, {"PATH": str(self.fake_bin)}):
-            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "claude", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "claude", "hello", None, "continue")
         self.assertEqual(records[0]["exit_code"], 127)
 
     def test_auto_with_no_cli_at_all_falls_back_to_a_provider_with_a_saved_key(self):
@@ -3995,13 +4307,13 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         with mock.patch("webui_credentials.shutil.which", return_value=None), mock.patch(
             "webui_api_key_mode.call_anthropic_messages_api", return_value={"ok": True, "text": "api reply"}
         ):
-            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "auto", "hello", None, "continue")
         self.assertEqual(records[0]["provider"], "claude")
         self.assertEqual(records[0]["final_text"], "api reply")
 
     def test_auto_with_no_cli_and_no_saved_key_returns_a_clear_error_not_a_crash(self):
         with mock.patch("webui_credentials.shutil.which", return_value=None):
-            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "auto", "hello", None, "continue")
         self.assertEqual(len(records), 1)
         self.assertTrue(records[0]["reason"].startswith("tool_failure"))
         # Same invariant RunProviderViaBridgeTests::
@@ -4021,7 +4333,7 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SUCCESS)
         webui_credentials.save_credential("claude", "sk-should-be-unused", "claude-sonnet-5")
         with mock.patch("webui_api_key_mode.call_anthropic_messages_api") as spy:
-            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "auto", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "auto", "hello", None, "continue")
         spy.assert_not_called()
         self.assertEqual(records[0]["provider"], "codex")
 
@@ -4033,7 +4345,7 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         with mock.patch("webui_bridge_run.cli_available") as cli_spy, mock.patch(
             "webui_api_key_mode.call_openai_compatible_chat_api", return_value={"ok": True, "text": "custom reply"}
         ):
-            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "custom:openrouter", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "custom:openrouter", "hello", None, "continue")
         cli_spy.assert_not_called()
         self.assertEqual(records[0]["provider"], "custom:openrouter")
         self.assertEqual(records[0]["final_text"], "custom reply")
@@ -4043,7 +4355,7 @@ class ProviderDispatchTests(FakeProviderPathMixin, unittest.TestCase):
         # the connection panel before sending, must not KeyError/crash --
         # a clear tool_failure record instead.
         with mock.patch("webui_api_key_mode.call_openai_compatible_chat_api") as spy:
-            records = webui_bridge_run.run_provider_via_bridge(self.workspace, "custom:never-configured", "hello", None, "continue")
+            records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "custom:never-configured", "hello", None, "continue")
         spy.assert_not_called()
         self.assertEqual(len(records), 1)
         self.assertTrue(records[0]["reason"].startswith("tool_failure"))

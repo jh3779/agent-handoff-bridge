@@ -24,12 +24,23 @@ from webui_common import WorkspaceError, month_key
 
 CHAT_DIR_RELATIVE = Path(".handoff") / "webui" / "chat"
 
-def chat_dir(workspace: Path) -> Path:
-    return workspace / CHAT_DIR_RELATIVE
+# M1 (multi-session, docs/research-session-splitting.md): the very first
+# session against any workspace -- including every workspace that already
+# had chat history before this feature existed -- keeps using the
+# original unscoped path below, unchanged. Only a session created *after*
+# multi-session support shipped gets its own subfolder
+# (CHAT_DIR_RELATIVE/<session_id>/), so no migration of existing chat logs
+# is ever needed.
+DEFAULT_SESSION_ID = "default"
 
 
-def chat_lock_path(workspace: Path) -> Path:
-    return chat_dir(workspace) / ".write.lock"
+def chat_dir(workspace: Path, session_id: str = DEFAULT_SESSION_ID) -> Path:
+    base = workspace / CHAT_DIR_RELATIVE
+    return base if session_id == DEFAULT_SESSION_ID else base / session_id
+
+
+def chat_lock_path(workspace: Path, session_id: str = DEFAULT_SESSION_ID) -> Path:
+    return chat_dir(workspace, session_id) / ".write.lock"
 
 
 def ensure_chat_gitignore(workspace: Path) -> None:
@@ -70,6 +81,7 @@ def append_chat_message(
     provider: str | None = None,
     status: str | None = None,
     reason: str | None = None,
+    session_id: str = DEFAULT_SESSION_ID,
 ) -> dict:
     if role not in CHAT_ROLES:
         raise WorkspaceError(f"invalid role: {role}")
@@ -86,8 +98,8 @@ def append_chat_message(
         message["provider"] = provider
         message["status"] = status
         message["reason"] = reason
-    target_dir = chat_dir(workspace)
-    with WriteLock(chat_lock_path(workspace)):
+    target_dir = chat_dir(workspace, session_id)
+    with WriteLock(chat_lock_path(workspace, session_id)):
         target_dir.mkdir(parents=True, exist_ok=True)
         ensure_chat_gitignore(workspace)
         path = target_dir / f"{month_key(now)}.jsonl"
@@ -96,8 +108,8 @@ def append_chat_message(
     return message
 
 
-def read_month_messages(workspace: Path, month: str) -> list[dict]:
-    target_dir = chat_dir(workspace)
+def read_month_messages(workspace: Path, month: str, session_id: str = DEFAULT_SESSION_ID) -> list[dict]:
+    target_dir = chat_dir(workspace, session_id)
     plain = target_dir / f"{month}.jsonl"
     archived = target_dir / f"{month}.jsonl.gz"
     try:
@@ -127,8 +139,8 @@ def read_month_messages(workspace: Path, month: str) -> list[dict]:
     return messages
 
 
-def list_available_months(workspace: Path) -> list[str]:
-    target_dir = chat_dir(workspace)
+def list_available_months(workspace: Path, session_id: str = DEFAULT_SESSION_ID) -> list[str]:
+    target_dir = chat_dir(workspace, session_id)
     if not target_dir.exists():
         return []
     months = set()
@@ -140,7 +152,7 @@ def list_available_months(workspace: Path) -> list[str]:
     return sorted(months)
 
 
-def archive_old_months(workspace: Path, now: datetime) -> list[str]:
+def archive_old_months(workspace: Path, now: datetime, session_id: str = DEFAULT_SESSION_ID) -> list[str]:
     """Gzip-compress every past month's plain .jsonl file, freeing it up.
 
     The current month is left uncompressed and appendable. Safe to call
@@ -150,12 +162,12 @@ def archive_old_months(workspace: Path, now: datetime) -> list[str]:
     pass can never read-compress-delete a month file while a message is
     mid-append to it.
     """
-    target_dir = chat_dir(workspace)
+    target_dir = chat_dir(workspace, session_id)
     if not target_dir.exists():
         return []
     current = month_key(now)
     archived: list[str] = []
-    with WriteLock(chat_lock_path(workspace)):
+    with WriteLock(chat_lock_path(workspace, session_id)):
         for path in sorted(target_dir.glob("*.jsonl")):
             month = path.name[: -len(".jsonl")]
             if month == current:
@@ -263,7 +275,9 @@ def pair_messages_into_turns(messages: list[dict]) -> list[dict]:
     return turns
 
 
-def collect_recent_turns(workspace: Path, limit: int = HISTORY_TURNS_PER_WORKSPACE) -> list[dict]:
+def collect_recent_turns(
+    workspace: Path, limit: int = HISTORY_TURNS_PER_WORKSPACE, session_id: str = DEFAULT_SESSION_ID
+) -> list[dict]:
     """Newest-first, scanning months backward only as far as needed to
     fill `limit` -- DEC-11's "그룹당 최근 5개" doesn't require reading
     every month a long-lived project has ever had.
@@ -278,20 +292,28 @@ def collect_recent_turns(workspace: Path, limit: int = HISTORY_TURNS_PER_WORKSPA
     """
     messages: list[dict] = []
     turns: list[dict] = []
-    for month in reversed(list_available_months(workspace)):
-        messages = read_month_messages(workspace, month) + messages
+    for month in reversed(list_available_months(workspace, session_id)):
+        messages = read_month_messages(workspace, month, session_id) + messages
         turns = pair_messages_into_turns(messages)
         if len(turns) >= limit:
             break
     return list(reversed(turns))[:limit]
 
 
-def build_history_drawer(current_workspace: Path | None) -> list[dict]:
+def build_history_drawer(current_workspace: Path | None, session_id: str = DEFAULT_SESSION_ID) -> list[dict]:
     """DEC-09/11: the current workspace (if any) is pinned first
     regardless of recency, then the rest of the registry ordered
     most-recently-opened first. A registry entry whose folder no longer
     exists is silently skipped (DEC-09) -- not surfaced as an error, since
-    "some project you opened once got deleted" isn't actionable here."""
+    "some project you opened once got deleted" isn't actionable here.
+
+    `session_id` (M1, multi-session): the registry itself is cross-session
+    (a workspace is "recently opened" regardless of which session opened
+    it), but the turns shown for each workspace come from one specific
+    session's chat log -- the caller's own active session, defaulting to
+    DEFAULT_SESSION_ID so this is a no-op change for the single-session
+    frontend that exists as of M1.
+    """
     groups: list[dict] = []
     seen_paths: set[str] = set()
 
@@ -307,7 +329,7 @@ def build_history_drawer(current_workspace: Path | None) -> list[dict]:
                 "path": path_str,
                 "name": name,
                 "current": current_workspace is not None and workspace == current_workspace,
-                "turns": collect_recent_turns(workspace),
+                "turns": collect_recent_turns(workspace, session_id=session_id),
             }
         )
 
