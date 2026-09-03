@@ -74,6 +74,7 @@ from webui_credentials import (
     cli_available,
     custom_provider_id,
     is_custom_provider,
+    known_cli_models,
     read_cli_provider_models,
     read_credentials,
     read_custom_providers,
@@ -249,6 +250,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                             "api_key_configured": entry is not None,
                             "model": (entry or {}).get("model") if entry else None,
                             "cli_model": cli_models.get(provider),
+                            "known_models": known_cli_models(provider),
                         }
                     )
                 # Custom providers (DEC-26) have no CLI concept at all --

@@ -2906,6 +2906,77 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(webui_credentials.read_cli_provider_models()["codex"], "gpt-5-codex")
 
 
+class KnownCliModelsTests(unittest.TestCase):
+    """known_cli_models(): real model suggestions surfaced in the Settings
+    panel and titlebar model-override <datalist> (message: "회사별로 cli
+    모델을 리스트 형식으로 보여줘서 선택할 수 있도록 해줘"), so a user picks
+    a valid id instead of typing one by hand -- which is exactly how a
+    prior real-world bug report ("Sonnet5", not a valid claude alias or
+    full model name) happened."""
+
+    def test_claude_returns_the_documented_help_text_aliases(self):
+        models = webui_credentials.known_cli_models("claude")
+        ids = [m["id"] for m in models]
+        self.assertEqual(ids, ["sonnet", "opus", "fable"])
+        for m in models:
+            self.assertIn("id", m)
+            self.assertIn("label", m)
+
+    def test_gemini_returns_a_nonempty_static_list(self):
+        models = webui_credentials.known_cli_models("gemini")
+        self.assertTrue(models)
+        for m in models:
+            self.assertIn("id", m)
+
+    def test_unknown_provider_returns_empty_list(self):
+        self.assertEqual(webui_credentials.known_cli_models("totally-unknown"), [])
+
+    def test_codex_reads_a_real_models_cache_file(self):
+        with tempfile.TemporaryDirectory() as home_dir:
+            codex_dir = Path(home_dir) / ".codex"
+            codex_dir.mkdir()
+            (codex_dir / "models_cache.json").write_text(
+                json.dumps(
+                    {
+                        "models": [
+                            {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list"},
+                            {"slug": "gpt-reserve", "display_name": "GPT-Reserve", "visibility": "hide"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("pathlib.Path.home", return_value=Path(home_dir)):
+                models = webui_credentials.known_cli_models("codex")
+        # "hide"-visibility entries (codex's own vocabulary for "not meant
+        # to be user-facing") are filtered out; only "list" ones surface.
+        self.assertEqual(models, [{"id": "gpt-5.5", "label": "GPT-5.5"}])
+
+    def test_codex_missing_cache_file_returns_empty_list_not_an_error(self):
+        with tempfile.TemporaryDirectory() as home_dir:
+            with mock.patch("pathlib.Path.home", return_value=Path(home_dir)):
+                self.assertEqual(webui_credentials.known_cli_models("codex"), [])
+
+    def test_codex_malformed_cache_file_returns_empty_list_not_an_error(self):
+        with tempfile.TemporaryDirectory() as home_dir:
+            codex_dir = Path(home_dir) / ".codex"
+            codex_dir.mkdir()
+            (codex_dir / "models_cache.json").write_text("not json", encoding="utf-8")
+            with mock.patch("pathlib.Path.home", return_value=Path(home_dir)):
+                self.assertEqual(webui_credentials.known_cli_models("codex"), [])
+
+    def test_codex_entry_missing_slug_is_skipped_not_raised(self):
+        with tempfile.TemporaryDirectory() as home_dir:
+            codex_dir = Path(home_dir) / ".codex"
+            codex_dir.mkdir()
+            (codex_dir / "models_cache.json").write_text(
+                json.dumps({"models": [{"display_name": "No Slug", "visibility": "list"}]}),
+                encoding="utf-8",
+            )
+            with mock.patch("pathlib.Path.home", return_value=Path(home_dir)):
+                self.assertEqual(webui_credentials.known_cli_models("codex"), [])
+
+
 class CustomProviderCredentialsTests(unittest.TestCase):
     """Custom providers (DEC-26): a user-named, user-supplied HTTP
     endpoint stored alongside the fixed codex/claude/gemini entries in
@@ -4678,6 +4749,10 @@ class ProviderApiLiveServerTests(unittest.TestCase):
         for info in by_name.values():
             self.assertIn("cli_detected", info)
             self.assertFalse(info["api_key_configured"])
+            self.assertIsInstance(info["known_models"], list)
+        # claude's list doesn't depend on any local cache file, so it's a
+        # reliable non-empty check at the HTTP layer too.
+        self.assertTrue(by_name["claude"]["known_models"])
         # DEC-25: all three now support API-key mode.
         self.assertTrue(by_name["codex"]["api_key_mode_supported"])
         self.assertTrue(by_name["claude"]["api_key_mode_supported"])

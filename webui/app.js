@@ -30,6 +30,7 @@
   const openFolderBtn = document.getElementById("open-folder-btn");
   const providerSelect = document.getElementById("provider-select");
   const modelOverrideInput = document.getElementById("model-override-input");
+  const modelOverrideDatalist = document.getElementById("model-override-datalist");
   const chatThread = document.getElementById("chat-thread");
   const dropzone = document.getElementById("dropzone");
   const composerInput = document.getElementById("composer-input");
@@ -410,6 +411,18 @@
   // oddly in the connection panel's save/delete toasts.
   const PROVIDER_LABEL = { codex: "Codex", claude: "Claude Code", gemini: "Gemini" };
 
+  // Fills a <datalist> with a provider's known models (see
+  // known_cli_models() server-side) so a model input can offer a pickable
+  // list while still accepting free text for anything not listed --
+  // replaces what used to be a plain text field with no protection against
+  // a typo'd/invalid model id being saved and silently sent on every call.
+  function renderModelDatalist(datalistEl, knownModels) {
+    datalistEl.innerHTML = "";
+    for (const m of knownModels || []) {
+      datalistEl.appendChild(el("option", { value: m.id, label: m.label || m.id }, []));
+    }
+  }
+
   function renderProviderRow(info) {
     const row = el("div", { class: "pp-row" }, []);
     const badge = info.cli_detected
@@ -429,10 +442,14 @@
       // model-override-input 프리필 기본값이 되고, 매 전송 시 그 입력을
       // 비워두면 이 기본값이, 채워두면 그 값이 우선 적용된다.
       row.appendChild(el("div", { class: "pp-note", text: t("provider.cliModelNote") }, []));
+      const cliModelDatalistId = `cli-model-list-${info.provider}`;
+      const cliModelDatalist = el("datalist", { id: cliModelDatalistId }, []);
+      renderModelDatalist(cliModelDatalist, info.known_models);
       const cliModelInput = el("input", {
         type: "text",
         placeholder: t("provider.modelPlaceholder"),
         "data-field": "model",
+        list: cliModelDatalistId,
         value: info.cli_model || "",
       }, []);
       const cliModelSaveBtn = el("button", { type: "button", class: "primary", text: t("provider.save") }, []);
@@ -450,7 +467,7 @@
           showToast(t("provider.saveFailed", { msg: err.message }));
         }
       });
-      row.appendChild(el("div", { class: "pp-key-row" }, [cliModelInput, cliModelSaveBtn]));
+      row.appendChild(el("div", { class: "pp-key-row" }, [cliModelInput, cliModelSaveBtn, cliModelDatalist]));
       return row;
     }
     if (!info.api_key_mode_supported) {
@@ -625,6 +642,7 @@
     const info = providerCliInfoByName[providerSelect.value];
     const show = Boolean(info && info.cli_detected);
     modelOverrideInput.hidden = !show;
+    renderModelDatalist(modelOverrideDatalist, show ? info.known_models : []);
     modelOverrideInput.value = show ? meta.model || (info && info.cli_model) || "" : "";
     meta.model = modelOverrideInput.value;
   }
@@ -658,6 +676,7 @@
     const info = providerCliInfoByName[providerSelect.value];
     const show = Boolean(info && info.cli_detected);
     modelOverrideInput.hidden = !show;
+    renderModelDatalist(modelOverrideDatalist, show ? info.known_models : []);
     // A provider *change* refills with the new provider's own saved
     // default, unlike restoring a tab (which keeps whatever was typed).
     modelOverrideInput.value = show ? info.cli_model || "" : "";
