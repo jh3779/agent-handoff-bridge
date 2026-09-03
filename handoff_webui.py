@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from handoff_bridge import BRIDGE_VERSION, PROVIDERS
+from handoff_bridge import BRIDGE_VERSION, PROVIDERS, atomic_write_text
 
 from webui_api_key_mode import validate_provider_api_key
 from webui_bridge_run import (
@@ -350,10 +350,10 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
             if parsed.path == "/api/sessions":
                 # M1: create a new session (empty workspace, same starting
                 # state as this server's own startup with no --workspace).
-                # In-memory only -- see GET /api/sessions' own comment.
                 session_id = secrets.token_hex(8)
                 with state.sessions_lock:
                     state.sessions[session_id] = SessionState(None)
+                write_persisted_sessions(state)  # M2: survive a restart
                 self._send_json(200, {"session_id": session_id, "workspace": None})
                 return
             session_id = self._session_id()
@@ -459,6 +459,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     ensure_chat_gitignore(candidate)
                     archive_old_months(candidate, utc_now(), session_id)
                     touch_registry(candidate, utc_now())
+                    write_persisted_sessions(state)  # M2: a non-default session's new workspace survives a restart too
                     self._send_json(200, {"workspace": str(candidate), "name": candidate.name or str(candidate)})
                 except RunAlreadyInProgressError as exc:
                     self._send_json(409, {"error": str(exc)})
@@ -706,6 +707,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     )
                     return
                 del state.sessions[session_id]
+            write_persisted_sessions(state)  # M2: outside the lock above -- write_persisted_sessions() takes it itself
             self._send_json(200, {"session_id": session_id})
 
     return Handler
@@ -716,6 +718,62 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
 # predates this feature, or a direct API script) falls back to
 # DEFAULT_SESSION_ID, so nothing that talks to this server today breaks.
 SESSION_HEADER = "X-AHB-Session"
+
+
+def sessions_registry_path() -> Path:
+    # A function, not a module-level constant -- same reasoning as
+    # webui_chat_storage.registry_path(): tests patch
+    # webui_common.AUTO_WORKSPACE_BASE_DIR to a tempdir, and a constant
+    # computed at import time wouldn't see that patch.
+    return webui_common.AUTO_WORKSPACE_BASE_DIR / "sessions.json"
+
+
+def read_persisted_sessions() -> list[dict]:
+    """M2: the extra (non-default) sessions to restore on boot -- written
+    by write_persisted_sessions() whenever one is created, closed, or has
+    its workspace switched. Never raises, same posture as
+    read_registry()/read_credentials(). The default session is never in
+    here -- it's always freshly resolved from --workspace/discovery at
+    every startup, exactly as it was in every version of this file before
+    M1 existed."""
+    data = webui_common.read_json_or_default(sessions_registry_path(), [])
+    return [e for e in data if isinstance(e, dict) and isinstance(e.get("session_id"), str)]
+
+
+def write_persisted_sessions(state: "AppState") -> None:
+    """Best-effort, like touch_registry() -- a write failure here (full
+    disk, permissions, base dir exists as a file) must never break the
+    session create/close/workspace-switch it's attached to; every one of
+    those has already changed real in-memory state by the time this
+    runs."""
+    with state.sessions_lock:
+        entries = [
+            {"session_id": sid, "workspace": str(session.workspace) if session.workspace else None}
+            for sid, session in state.sessions.items()
+            if sid != DEFAULT_SESSION_ID
+        ]
+    try:
+        atomic_write_text(sessions_registry_path(), json.dumps(entries, ensure_ascii=False, indent=2))
+    except OSError as exc:
+        print(f"[webui] warning: failed to persist open sessions: {exc}", file=sys.stderr)
+
+
+def restore_persisted_sessions(state: "AppState") -> None:
+    """Called once from main() right after AppState is constructed --
+    recreates every session write_persisted_sessions() saved on a
+    previous run, in addition to the default session AppState.__init__()
+    already set up from --workspace/discovery. A persisted workspace path
+    that no longer exists is silently dropped (same posture
+    build_history_drawer() already has for a stale registry.json entry)
+    rather than restoring a tab pointed at nothing."""
+    for entry in read_persisted_sessions():
+        session_id = entry["session_id"]
+        raw_workspace = entry.get("workspace")
+        workspace = Path(raw_workspace) if isinstance(raw_workspace, str) else None
+        if workspace is not None and not workspace.is_dir():
+            workspace = None
+        with state.sessions_lock:
+            state.sessions[session_id] = SessionState(workspace)
 
 
 class SessionState:
@@ -1013,6 +1071,7 @@ def main(argv: list[str] | None = None) -> int:
         ensure_chat_gitignore(state.workspace)
         archive_old_months(state.workspace, utc_now())
         touch_registry(state.workspace, utc_now())  # DEC-10: CLI startup counts too
+    restore_persisted_sessions(state)  # M2: any extra tabs left open last time
 
     threading.Thread(target=_check_for_update_in_background, args=(state,), daemon=True).start()
 
