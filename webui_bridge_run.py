@@ -26,18 +26,24 @@ PROVIDER_RUN_TIMEOUT_SECONDS = 600
 
 # run_provider_via_bridge() reads .handoff/state.json's history length
 # before the subprocess call and diffs against it after, with no lock in
-# between -- two concurrent POST /api/run calls (e.g. the Enter-key path in
-# webui/app.js doesn't check whether a run is already in flight) would both
+# between -- two concurrent runs against the *same* workspace would both
 # read the same "before" length, and whichever finishes second would slice
 # in the first call's already-persisted record too, duplicating it as a
-# second agent chat message. There's only one AppState.workspace server-wide,
-# so a single process-wide lock (not a per-workspace one) is correct here --
-# every concurrent run is necessarily against the same active workspace.
-# A plain threading.Lock, not handoff_bridge.WriteLock: the contention here
-# is between HTTP request threads in this one process, not separate CLI
-# processes, and WriteLock's 10s default timeout is far too short for a
-# provider call that can legitimately take minutes.
-_RUN_LOCK = threading.Lock()
+# second agent chat message. M1 (multi-session,
+# docs/research-session-splitting.md) is why this is a caller-supplied
+# `run_lock` parameter rather than a module-level lock defined here: two
+# sessions on two *different* workspaces must be able to run genuinely in
+# parallel (independent state.json files, nothing to race over), while
+# two sessions on the *same* workspace must still serialize against each
+# other (one shared state.json). AppState.get_run_lock_for()
+# (handoff_webui.py) is what actually provides that -- one lock object
+# per distinct workspace path, shared by every session pointed at it --
+# so this module has no lock of its own to hold that invariant wrong a
+# second time. A plain threading.Lock (whichever one the caller passes),
+# not handoff_bridge.WriteLock: the contention here is between HTTP
+# request threads in this one process, not separate CLI processes, and
+# WriteLock's 10s default timeout is far too short for a provider call
+# that can legitimately take minutes.
 
 
 class RunAlreadyInProgressError(Exception):
@@ -110,21 +116,29 @@ def build_run_prompt(text: str, attachments: list[dict]) -> str:
 
 
 def run_provider_via_bridge(
-    workspace: Path, provider: str, prompt: str, model: str | None, instruction_type: str, auto_fallback: bool = True
+    run_lock: threading.Lock,
+    workspace: Path,
+    provider: str,
+    prompt: str,
+    model: str | None,
+    instruction_type: str,
+    auto_fallback: bool = True,
 ) -> list[dict]:
     """Thin locking wrapper around `_run_provider_via_bridge_locked()`.
 
     Fails fast with `RunAlreadyInProgressError` instead of silently
     blocking (a provider call can legitimately take up to
-    `OUTER_SUBPROCESS_TIMEOUT_SECONDS`) or racing (see `_RUN_LOCK`'s
-    comment) when a second call arrives while one is already in flight.
+    `OUTER_SUBPROCESS_TIMEOUT_SECONDS`) or racing (see `run_lock`'s
+    caller, `AppState.get_run_lock_for()` in handoff_webui.py, for why
+    this must be *that* lock specifically -- keyed by workspace path, not
+    a single global lock or one lock per session).
     """
-    if not _RUN_LOCK.acquire(blocking=False):
+    if not run_lock.acquire(blocking=False):
         raise RunAlreadyInProgressError("a provider run is already in progress; wait for it to finish")
     try:
         return _run_provider_via_bridge_locked(workspace, provider, prompt, model, instruction_type, auto_fallback)
     finally:
-        _RUN_LOCK.release()
+        run_lock.release()
 
 
 def _run_provider_via_bridge_locked(

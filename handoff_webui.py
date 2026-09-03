@@ -29,6 +29,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -42,7 +43,6 @@ from handoff_bridge import BRIDGE_VERSION, PROVIDERS
 from webui_api_key_mode import validate_provider_api_key
 from webui_bridge_run import (
     RunAlreadyInProgressError,
-    _RUN_LOCK,
     build_run_prompt,
     classify_run_status,
     run_provider_via_bridge,
@@ -50,6 +50,7 @@ from webui_bridge_run import (
 from webui_chat_storage import (
     CHAT_DIR_RELATIVE,
     CLIENT_WRITABLE_CHAT_ROLES,
+    DEFAULT_SESSION_ID,
     append_chat_message,
     archive_old_months,
     build_history_drawer,
@@ -150,11 +151,30 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
+        def _session_id(self) -> str:
+            return self.headers.get(SESSION_HEADER) or DEFAULT_SESSION_ID
+
+        def _resolve_session(self) -> "SessionState | None":
+            """None means the caller named a session that doesn't exist
+            (closed already, or never created) -- every do_GET/do_POST
+            call site below sends a 400 and returns immediately in that
+            case, before touching any routing. Never happens for
+            DEFAULT_SESSION_ID, which AppState always creates and this
+            server never closes -- so a client that never sends
+            SESSION_HEADER at all (every one that predates M1) can never
+            hit this."""
+            return state.sessions.get(self._session_id())
+
         def do_GET(self) -> None:  # noqa: N802 (stdlib naming)
             parsed = urlparse(self.path)
             query = parse_qs(parsed.query)
             rel_path = (query.get("path", [""])[0]).strip()
-            workspace = state.workspace
+            session_id = self._session_id()
+            session = self._resolve_session()
+            if session is None:
+                self._send_json(400, {"error": f"unknown session: {session_id}"})
+                return
+            workspace = session.workspace
 
             if parsed.path == "/":
                 self._send_static("index.html")
@@ -198,12 +218,13 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     self._send_json(200, {"month": month, "months": [], "messages": []})
                 else:
                     month = (query.get("month", [""])[0]).strip() or month_key(utc_now())
-                    messages = read_month_messages(workspace, month)
+                    messages = read_month_messages(workspace, month, session_id)
                     self._send_json(
-                        200, {"month": month, "months": list_available_months(workspace), "messages": messages}
+                        200,
+                        {"month": month, "months": list_available_months(workspace, session_id), "messages": messages},
                     )
             elif parsed.path == "/api/history":
-                self._send_json(200, {"groups": build_history_drawer(workspace)})
+                self._send_json(200, {"groups": build_history_drawer(workspace, session_id)})
             elif parsed.path == "/api/providers":
                 # Backs SCR-06/components.html §14's connection panel. Never
                 # includes the raw key -- only whether one is configured.
@@ -301,6 +322,19 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 # /api/chat's "no workspace selected" branch above.
                 text = read_shared_context(workspace) if workspace is not None else ""
                 self._send_json(200, {"text": text})
+            elif parsed.path == "/api/sessions":
+                # M1: lists every currently open session (in-memory only --
+                # disk persistence for restart-restore is M2's job, once a
+                # frontend tab bar actually exists to restore into). Order
+                # is insertion order (dict preserves it since Python 3.7),
+                # i.e. DEFAULT_SESSION_ID first, then whatever was created
+                # after it.
+                with state.sessions_lock:
+                    sessions = [
+                        {"session_id": sid, "workspace": str(s.workspace) if s.workspace else None}
+                        for sid, s in state.sessions.items()
+                    ]
+                self._send_json(200, {"sessions": sessions})
             else:
                 # _send_json(), not send_error(): every other /api/* branch
                 # in do_GET responds with a JSON body, and webui/app.js's
@@ -313,6 +347,24 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path == "/api/sessions":
+                # M1: create a new session (empty workspace, same starting
+                # state as this server's own startup with no --workspace).
+                # In-memory only -- see GET /api/sessions' own comment.
+                session_id = secrets.token_hex(8)
+                with state.sessions_lock:
+                    state.sessions[session_id] = SessionState(None)
+                self._send_json(200, {"session_id": session_id, "workspace": None})
+                return
+            session_id = self._session_id()
+            session = self._resolve_session()
+            if session is None and parsed.path not in ("/api/provider-key", "/api/cli-model", "/api/custom-provider"):
+                # The three excluded endpoints are app-level (provider
+                # credentials, not workspace state) and never needed a
+                # session concept even before M1 -- no reason to start
+                # requiring one now just because every other endpoint does.
+                self._send_json(400, {"error": f"unknown session: {session_id}"})
+                return
             if parsed.path == "/api/chat":
                 try:
                     body = self._read_json_body()
@@ -323,25 +375,38 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         # would let a client forge a fake agent reply with no
                         # provider having actually run.
                         raise WorkspaceError(f"role must be one of {CLIENT_WRITABLE_CHAT_ROLES}")
-                    if role == "user" and _RUN_LOCK.locked():
+                    if (
+                        role == "user"
+                        and session.workspace is not None
+                        and state.get_run_lock_for(session.workspace).locked()
+                    ):
                         # pair_messages_into_turns() (Phase 3) walks the chat
                         # log in append order and attaches each agent reply
                         # to whichever user message it saw most recently --
-                        # a second tab/client posting a new user message
-                        # while another run is still in flight could get
-                        # that in-flight run's eventual reply misattributed
-                        # to the newer message once it lands in the drawer.
-                        # Reject outright rather than let two turns overlap;
-                        # this is a plain (non-atomic) check-then-append, not
-                        # airtight against a run starting in the gap, but it
-                        # closes the realistic window (the run's full
-                        # duration) down to a few instructions.
+                        # a second client posting a new user message into
+                        # this session's workspace while another run against
+                        # that *same workspace* (this session or another one
+                        # pointed at it) is still in flight could get that
+                        # in-flight run's eventual reply misattributed to the
+                        # newer message once it lands in the drawer. Reject
+                        # outright rather than let two turns overlap; this is
+                        # a plain (non-atomic) check-then-append, not airtight
+                        # against a run starting in the gap, but it closes the
+                        # realistic window (the run's full duration) down to a
+                        # few instructions. Scoped to this workspace's lock
+                        # (M1, see AppState.get_run_lock_for()) -- a run
+                        # against a *different* workspace never blocks this
+                        # one, by design. No workspace yet at all (`session.
+                        # workspace is None`) means no run could possibly be
+                        # in flight for it, so the check is skipped rather
+                        # than manufacturing a lock for a workspace that
+                        # doesn't exist yet.
                         raise RunAlreadyInProgressError("a provider run is already in progress; wait for it to finish")
                     text = str(body.get("text") or "")
                     attachments = body.get("attachments") or []
                     if not isinstance(attachments, list):
                         raise WorkspaceError("attachments must be a list")
-                    if state.workspace is None:
+                    if session.workspace is None:
                         # DEC-05: creation is deferred all the way to here --
                         # the first *user* message, regardless of whether the
                         # "새 폴더 자동 생성" button was clicked first. A
@@ -355,12 +420,19 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         # serializes creation, and re-checking workspace is
                         # None *after* acquiring it means a request that lost
                         # the race just uses the workspace the winner already
-                        # created, instead of creating a second one.
+                        # created, instead of creating a second one. Stays
+                        # one global lock rather than per-session (M1): this
+                        # only ever guards the rare one-time directory-
+                        # creation step, never the actual provider run, so it
+                        # doesn't meaningfully constrain cross-session
+                        # parallelism either way.
                         with _WORKSPACE_CREATE_LOCK:
-                            if state.workspace is None:
-                                state.workspace = create_workspace_for_first_message(text, attachments)
-                                touch_registry(state.workspace, utc_now())
-                    message = append_chat_message(state.workspace, role, text, attachments, utc_now())
+                            if session.workspace is None:
+                                session.workspace = create_workspace_for_first_message(text, attachments)
+                                touch_registry(session.workspace, utc_now())
+                    message = append_chat_message(
+                        session.workspace, role, text, attachments, utc_now(), session_id=session_id
+                    )
                     self._send_json(200, message)
                 except RunAlreadyInProgressError as exc:
                     self._send_json(409, {"error": str(exc)})
@@ -368,19 +440,24 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     self._send_json(400, {"error": str(exc)})
             elif parsed.path == "/api/open-folder":
                 try:
-                    if _RUN_LOCK.locked():
+                    if session.workspace is not None and state.get_run_lock_for(session.workspace).locked():
                         # A provider run writes into whatever workspace was
-                        # active when it started and persists into that
-                        # workspace's chat log when it finishes -- switching
-                        # state.workspace out from under an in-flight run
-                        # would misdirect where that write (and everything
-                        # the client renders once the run resolves) ends up.
+                        # active in this session when it started and persists
+                        # into that workspace's chat log when it finishes --
+                        # switching this session's workspace out from under
+                        # its own in-flight run would misdirect where that
+                        # write (and everything the client renders once the
+                        # run resolves) ends up. A run against a *different*
+                        # workspace is unaffected (M1, see
+                        # AppState.get_run_lock_for()) -- only switching away
+                        # from the workspace a run is actually using is
+                        # guarded here.
                         raise RunAlreadyInProgressError("a provider run is already in progress; wait for it to finish")
                     body = self._read_json_body()
                     candidate = validate_workspace_candidate(str(body.get("path") or ""))
-                    state.workspace = candidate
+                    session.workspace = candidate
                     ensure_chat_gitignore(candidate)
-                    archive_old_months(candidate, utc_now())
+                    archive_old_months(candidate, utc_now(), session_id)
                     touch_registry(candidate, utc_now())
                     self._send_json(200, {"workspace": str(candidate), "name": candidate.name or str(candidate)})
                 except RunAlreadyInProgressError as exc:
@@ -411,7 +488,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         raise WorkspaceError("attachments must be a list")
                     if not text and not attachments:
                         raise WorkspaceError("text or attachments required")
-                    if state.workspace is None:
+                    if session.workspace is None:
                         # Normal flow always creates the workspace as a side
                         # effect of the preceding POST /api/chat -- this is
                         # only reachable via a client bug or direct API use
@@ -423,9 +500,11 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     # cached frontend, a direct API call) keeps the
                     # previously-unconditional --auto-fallback behavior.
                     auto_fallback = bool(body.get("auto_fallback", True))
-                    workspace = state.workspace
+                    workspace = session.workspace
                     prompt = build_run_prompt(text, attachments)
-                    records = run_provider_via_bridge(workspace, provider, prompt, model, "continue", auto_fallback)
+                    records = run_provider_via_bridge(
+                        state.get_run_lock_for(workspace), workspace, provider, prompt, model, "continue", auto_fallback
+                    )
                     messages = []
                     for record in records:
                         status = classify_run_status(record["handoff_needed"], record["reason"])
@@ -440,6 +519,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                                 provider=record["provider"],
                                 status=status,
                                 reason=record["reason"],
+                                session_id=session_id,
                             )
                         )
                     self._send_json(200, {"messages": messages})
@@ -578,12 +658,12 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     self._send_json(400, {"error": str(exc)})
             elif parsed.path == "/api/shared-context":
                 try:
-                    if state.workspace is None:
+                    if session.workspace is None:
                         raise WorkspaceError("no workspace selected")
                     body = self._read_json_body()
                     text = str(body.get("text") or "")
                     try:
-                        write_shared_context(state.workspace, text)
+                        write_shared_context(session.workspace, text)
                     except OSError as exc:
                         raise WorkspaceError(f"failed to save shared context: {exc}") from exc
                     self._send_json(200, {"text": text})
@@ -594,12 +674,54 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 # every other /api/* branch's JSON-error contract.
                 self._send_json(405, {"error": "unsupported POST endpoint"})
 
+        def do_DELETE(self) -> None:  # noqa: N802
+            # M1's only DELETE route: closing a tab. Does not touch its
+            # chat history on disk (see webui_chat_storage.py's
+            # session-scoped chat_dir()) -- only stops tracking it as an
+            # open session.
+            parsed = urlparse(self.path)
+            prefix = "/api/sessions/"
+            if not parsed.path.startswith(prefix) or len(parsed.path) <= len(prefix):
+                self._send_json(405, {"error": "unsupported DELETE endpoint"})
+                return
+            session_id = parsed.path[len(prefix) :]
+            if session_id == DEFAULT_SESSION_ID:
+                # main() creates it once at startup and nothing else ever
+                # does -- "closing" it would leave a running server with
+                # zero sessions, a state nothing else in this file expects.
+                self._send_json(400, {"error": "the default session cannot be closed"})
+                return
+            with state.sessions_lock:
+                session = state.sessions.get(session_id)
+                if session is None:
+                    self._send_json(404, {"error": f"unknown session: {session_id}"})
+                    return
+                if session.workspace is not None and state.get_run_lock_for(session.workspace).locked():
+                    # Same reasoning as /api/chat and /api/open-folder above:
+                    # a run in flight is still writing into this session's
+                    # workspace/chat log -- reject rather than discard the
+                    # SessionState object out from under it.
+                    self._send_json(
+                        409, {"error": "a provider run is already in progress in this session; wait for it to finish"}
+                    )
+                    return
+                del state.sessions[session_id]
+            self._send_json(200, {"session_id": session_id})
+
     return Handler
 
 
-class AppState:
-    """Mutable holder for the active workspace so "Open Folder" can switch
-    it at runtime without restarting the server.
+# M1 (multi-session, docs/research-session-splitting.md): every request
+# names which session it means via this header; absent (every client that
+# predates this feature, or a direct API script) falls back to
+# DEFAULT_SESSION_ID, so nothing that talks to this server today breaks.
+SESSION_HEADER = "X-AHB-Session"
+
+
+class SessionState:
+    """One open "tab" -- just its own workspace pointer. Deliberately
+    holds no run lock of its own (an earlier draft of this class did, and
+    it was wrong -- see AppState.get_run_lock_for()'s docstring for why).
 
     `workspace` is `None` in Phase 2's "no workspace" state (DEC-04) --
     every handler that reads it must handle that case explicitly rather
@@ -608,6 +730,39 @@ class AppState:
 
     def __init__(self, workspace: Path | None):
         self.workspace = workspace
+
+
+class AppState:
+    """Holds every open session (`sessions`), keyed by session id; the
+    run locks that gate provider execution (`get_run_lock_for()`), keyed
+    by *workspace path* rather than session id; and process-wide state
+    that has nothing to do with any one session
+    (`update_checked`/`update_info`, the cached update-check result).
+
+    M1 ships with exactly one session, DEFAULT_SESSION_ID, created here
+    from the `--workspace` CLI arg / startup discovery -- identical to
+    every version of this file before multi-session support existed.
+    `workspace`/`workspace=` below are a thin convenience for that one
+    always-present default session, used by main()'s startup code and a
+    couple of pre-existing tests that only ever cared about the
+    single-session case -- request-handling code must resolve the
+    *request's own* session (Handler._resolve_session()) instead, since a
+    non-default session's workspace can legitimately differ.
+    """
+
+    def __init__(self, workspace: Path | None):
+        self.sessions: dict[str, SessionState] = {DEFAULT_SESSION_ID: SessionState(workspace)}
+        # Protects `sessions` itself (inserting/removing a session) --
+        # deliberately not the same lock as any workspace's run lock, so
+        # creating/closing one tab never blocks a completely unrelated
+        # tab's in-flight provider run.
+        self.sessions_lock = threading.Lock()
+        # get_run_lock_for()'s backing dict + the meta-lock that protects
+        # *inserting* into it (never held during an actual provider run --
+        # only while creating a workspace's lock object the first time).
+        self._workspace_run_locks: dict[str, threading.Lock] = {}
+        self._workspace_run_locks_meta_lock = threading.Lock()
+
         # Phase 6 (SCR-07): written once by a background thread started in
         # main() shortly after startup, read by GET /api/update-check.
         # Plain attributes, not behind a lock: single write-once-then-
@@ -637,6 +792,56 @@ class AppState:
         # same falsy value.
         self.update_checked = False
         self.update_info: dict | None = None
+
+    @property
+    def workspace(self) -> Path | None:
+        """The default session's workspace -- see the class docstring for
+        why this exists and where it must NOT be used (request handlers)."""
+        return self.sessions[DEFAULT_SESSION_ID].workspace
+
+    @workspace.setter
+    def workspace(self, value: Path | None) -> None:
+        self.sessions[DEFAULT_SESSION_ID].workspace = value
+
+    def get_run_lock_for(self, workspace: Path) -> threading.Lock:
+        """The lock that must be held for the whole duration of a
+        provider run against `workspace` -- keyed by workspace path, not
+        by session id.
+
+        Found empirically while implementing M1, not designed in up
+        front: webui_bridge_run.py's run_provider_via_bridge() identifies
+        "the record(s) this call produced" by reading
+        `<workspace>/.handoff/state.json`'s history length before the
+        subprocess call and diffing against it after -- a mechanism that
+        (per that function's own pre-M1 comment) was only race-free
+        because exactly one workspace existed server-wide, so exactly one
+        lock was needed to serialize every access to that one state.json.
+        A first draft of this class gave every *session* its own lock
+        instead -- correct for two sessions on two different workspaces
+        (independent state.json files, genuinely no shared state), but
+        wrong for two sessions pointed at the *same* workspace: their
+        before/after reads would interleave against the one shared
+        state.json and misattribute or duplicate records, silently
+        corrupting chat history. Keying the lock by workspace path instead
+        fixes this directly -- any two sessions on the same workspace
+        share the same lock object (their runs correctly serialize against
+        each other), while sessions on different workspaces get different
+        lock objects (their runs genuinely proceed in parallel), which is
+        exactly the guarantee this feature actually needs and can safely
+        make. A real fix that removes the need for this serialization
+        entirely (e.g. handoff_bridge.py's `run` exposing a stable
+        per-invocation id instead of relying on a position-based diff) is
+        a separate, larger, not-yet-scoped change -- see
+        docs/research-session-splitting.md's "Open Implementation
+        Questions".
+        """
+        key = str(workspace)
+        with self._workspace_run_locks_meta_lock:
+            lock = self._workspace_run_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._workspace_run_locks[key] = lock
+            return lock
 
 
 class Api:

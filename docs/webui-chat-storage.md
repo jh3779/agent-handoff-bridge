@@ -13,10 +13,12 @@ its CLI usage.
 ## Location
 
 ```
-<workspace>/.handoff/webui/chat/YYYY-MM.jsonl        # current month, appendable
-<workspace>/.handoff/webui/chat/YYYY-MM.jsonl.gz      # past months, compressed
+<workspace>/.handoff/webui/chat/YYYY-MM.jsonl                    # default session, current month
+<workspace>/.handoff/webui/chat/YYYY-MM.jsonl.gz                  # default session, past months, compressed
+<workspace>/.handoff/webui/chat/<session_id>/YYYY-MM.jsonl        # any other session (M1, multi-session)
+<workspace>/.handoff/webui/chat/<session_id>/YYYY-MM.jsonl.gz     # any other session, past months
 <workspace>/.handoff/webui/.gitignore                 # "*", see "Git Visibility" below
-<workspace>/.handoff/webui/chat/.write.lock            # transient, see "Atomicity"
+<workspace>/.handoff/webui/chat/.write.lock            # transient, see "Atomicity" (per session -- <session_id>/.write.lock for a non-default one)
 ```
 
 One file per calendar month (`month_key()` = `datetime.strftime("%Y-%m")`,
@@ -24,6 +26,15 @@ always UTC). Chosen over a single growing file so archiving (see below) can
 operate on whole months at a time without rewriting history, and over
 per-day files because a single day's volume doesn't usually justify a
 separate file.
+
+**Multi-session (M1, `docs/research-session-splitting.md`)**: `chat_dir()`
+takes a `session_id` (default `"default"`), and only ever adds a subfolder
+for a session id *other than* `"default"` — every workspace's pre-existing
+chat history (from before multi-session support existed) keeps living at
+exactly the unscoped path above, needing no migration. `"default"` is a
+fixed sentinel, not a real session that was ever explicitly created; it is
+the one session `AppState` always has, from server startup, in every
+version of this file both before and after M1.
 
 ## Schema (JSON Lines, one message per line)
 

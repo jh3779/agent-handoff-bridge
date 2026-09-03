@@ -257,19 +257,24 @@ HTTP server. What it does:
   message from the other provider, not hidden — and the fallback provider
   actually receives the original prompt/attachments, not a generic
   placeholder (`handoff_bridge.run_provider()` threads `user_prompt`
-  through the recursive call). Only one provider run at a time, process-wide
-  (`handoff_webui._RUN_LOCK`); a `POST /api/run` that arrives while one is
-  already in flight gets `409`, not a multi-minute hang or a duplicated
-  chat message — the composer also disables itself client-side while a run
-  is pending, so this is normally a defense-in-depth backstop, not
-  something a user hits directly. The same `409` applies to
-  `POST /api/open-folder` (switching workspace mid-run would misdirect
-  where the run's eventual reply gets persisted/rendered) and a new
-  `"user"`-role `POST /api/chat` (a second tab/client starting a new turn
-  while one is unanswered would confuse the history drawer's turn
-  pairing) — `system`-role messages are unaffected.
+  through the recursive call). Only one provider run at a time **per
+  workspace** (`AppState.get_run_lock_for()`, keyed by workspace path —
+  see "Multi-session support" below); a `POST /api/run` that arrives
+  while one is already in flight against the *same* workspace gets `409`,
+  not a multi-minute hang or a duplicated chat message — the composer
+  also disables itself client-side while a run is pending, so this is
+  normally a defense-in-depth backstop, not something a user hits
+  directly. The same `409` applies to `POST /api/open-folder` (switching
+  workspace mid-run would misdirect where the run's eventual reply gets
+  persisted/rendered) and a new `"user"`-role `POST /api/chat` (a second
+  session starting a new turn against the same workspace while one is
+  unanswered would confuse the history drawer's turn pairing) —
+  `system`-role messages are unaffected. A run against a *different*
+  workspace is never blocked by this.
 - Every message — yours and the agent's — persists to
-  `<workspace>/.handoff/webui/chat/YYYY-MM.jsonl`. History is scoped to the
+  `<workspace>/.handoff/webui/chat/YYYY-MM.jsonl` for the default session,
+  or `<workspace>/.handoff/webui/chat/<session_id>/YYYY-MM.jsonl` for any
+  other one (see "Multi-session support" below). History is scoped to the
   folder you have open, the same way `.handoff/current.md` already is, so it
   travels with the project if you copy/sync/zip the folder elsewhere. Past
   months are gzip-compressed automatically (`archive_old_months()`, run on
@@ -277,6 +282,20 @@ HTTP server. What it does:
   (`.handoff/webui/.gitignore`, written proactively regardless of whether
   this workspace ever ran `install`). Full schema, atomicity, and retention
   details: [Web UI Chat Storage](webui-chat-storage.md).
+- **Multi-session support (M1, backend-only as of this writing —** see
+  [Design: Multi-Session Support](research-session-splitting.md) **)**:
+  every request may carry an `X-AHB-Session` header naming which open
+  session (tab) it means; omitting it (every client that predates this,
+  including the shipped frontend as of M1) falls back to a fixed
+  `"default"` session, so nothing that talks to this API today has to
+  change. `POST /api/sessions` (body: optional `{"workspace": ...}`,
+  currently always starts empty) creates a new session and returns its
+  `session_id`; `GET /api/sessions` lists every open session
+  (`{"sessions": [{"session_id", "workspace"}, ...]}`, in-memory only —
+  not yet persisted across a restart); `DELETE /api/sessions/<id>` closes
+  one (the `"default"` session can never be closed; closing a session
+  with a run in flight against its workspace is a `409`, same posture as
+  above). Closing a session never deletes its chat history on disk.
 - Agent replies render fenced ` ```code``` ` blocks as monospace blocks;
   everything else is plain text, inserted via `textContent`/
   `createTextNode` only (never `innerHTML`) since a provider's response
@@ -434,6 +453,9 @@ Endpoints:
 | POST | `/api/open-folder` | Switch the active workspace (validates the path is a real, absolute directory) |
 | POST | `/api/run` | Run `provider` (`auto`\|`codex`\|`claude`\|`gemini`) with `text` as the turn prompt; persists and returns the resulting agent message(s) |
 | GET | `/api/history` | History drawer data: recently-opened workspaces grouped with their last 5 chat turns each (current workspace pinned first) |
+| GET | `/api/sessions` | List every open session (multi-session, M1 — see above) |
+| POST | `/api/sessions` | Create a new session, returns its `session_id` |
+| DELETE | `/api/sessions/<id>` | Close a session (not `"default"`; not while a run is in flight against its workspace) |
 
 `/api/run` is the one endpoint that reaches outside the sandbox this
 server otherwise keeps itself in — it invokes a real provider CLI via
