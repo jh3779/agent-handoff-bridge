@@ -3256,3 +3256,82 @@ tag" rule by construction rather than by discipline.
   checking `gh pr list` rather than assuming this session is the only
   one changing this repo.
 - **Blocked**: none.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-03 (UI language toggle + "지침" rename, PR #30 merged)
+
+- **Task**: continuation of the Settings-panel consolidation work
+  (v0.4.4). User asked to rename the "공용 Context" section to "지침"
+  (matches how it's actually used), then mid-turn asked for a language
+  selector -- clarified via `AskUserQuestion` as **full UI-chrome
+  i18n** (Korean/English toggle for the entire app), the larger option
+  over a lighter "AI response language" setting.
+- **Changed**: New `webui/i18n.js` -- `AHB_I18N` module, 109 keys x
+  ko/en, `t(key, params)` / `applyI18n(root)` / `getLanguage()` /
+  `setLanguage(lang)`, localStorage key `ahb-lang`, default `"ko"`
+  (not `navigator.language`-sniffed, so existing users see no change --
+  same "unset means unchanged" posture as the theme feature).
+  `webui/index.html`: `data-i18n`/`data-i18n-title`/
+  `data-i18n-placeholder`/`data-i18n-html` on nearly every static
+  string, new language `<select>` in Settings' "일반" section, "공용
+  Context" -> "지침" throughout. `webui/app.js`: every hardcoded
+  Korean string replaced with `t()` calls; `STATUS_LABEL` (static
+  object) replaced with `STATUS_LABEL_KEY` + `statusLabel()` (dynamic
+  key lookup); language-select wiring + `applyLanguageChangeToVisible
+  Content()`; `AHB_I18N.applyI18n()` as the first line of `boot()`.
+  Scope is UI chrome only -- chat message content, provider/model/file
+  names stay untranslated.
+- **Real bug found only by actually serving the page, not by the
+  manifest/key-parity checks**: `handoff_webui.py`'s `do_GET` has a
+  hardcoded static-file whitelist (`parsed.path in ("/app.css",
+  "/app.js")`) that never included `/i18n.js` -- confirmed via a real
+  dev-server `curl`, which returned 404 for `/i18n.js` even though
+  everything else (manifests, `check`, key-parity script) passed clean.
+  This would have silently worked when frozen (PyInstaller's server
+  sidecar bundles the whole `webui/` directory via
+  `scripts/build_sidecars.py`'s `add_data_arg(ROOT / "webui", "webui")`,
+  masking the route gap) but broken every dev-mode run. Fixed by adding
+  `"/i18n.js"` to the whitelist tuple. Also fixed one genuine dead key
+  (`settings.autoFallback.label` was defined in both dictionaries but
+  never wired to its HTML element) by adding the missing `data-i18n`
+  attribute; confirmed the other 3 flagged-as-"unused" keys
+  (`status.success/handoff/fail`) are a false positive of the
+  verification script's literal-string-only regex -- they're reached
+  via `STATUS_LABEL_KEY[status]` dynamic lookup, not a literal
+  `t("status.success")` call.
+- **Manifests**: `webui/i18n.js` added to all three tracked-file lists
+  (`handoff_bridge.py` `INSTALL_FILES`, `scripts/validate_handoff.py`
+  `REQUIRED_FILES`, `scripts/package_platforms.py` `COMMON_FILES`) --
+  this project's recurring three-manifest convention.
+- **Verified**: `python3 handoff_bridge.py check` -> 565/565 PASS
+  (manifest consistency included). `scan_secrets.py` -> PASS.
+  `node --check webui/app.js webui/i18n.js` -> OK. Real dev-server
+  check: `/`, `/app.js`, `/i18n.js` all 200 after the route fix;
+  `data-i18n` renders (40 hits on `/`); ko/en key-count parity
+  confirmed 109/109 with zero drift either direction. Branch
+  `feature/ui-language-toggle`, PR #30
+  (https://github.com/jh3779/agent-handoff-bridge/pull/30), all
+  required CI checks green (branch-name/validate/rust-build/
+  sidecar-build x3), squash-merged, `main` fast-forwarded locally.
+- **Not done this round**: no real Tauri app build/launch to visually
+  confirm the language switch in the actual desktop shell (only the
+  raw dev server was checked) -- matches this session's established
+  verification depth for most UI batches, but is a lighter bar than
+  the couple of times a real `.app` build was used earlier in the
+  project's history. No release cut yet -- this landed on `main` but
+  no version bump / `docs/release-notes.md` entry / tagged release has
+  happened for it.
+- **New, deliberately deferred**: user separately asked (mid-turn,
+  after this PR was already in flight) for (1) task-content-based
+  automatic model switching -- distinct from the existing `auto_
+  fallback` toggle, which only reacts to failures (quota/rate/context
+  limit), not task type -- and (2) for people who keep auto-switching
+  off, an automated cross-model review pipeline (one provider's output
+  gets reviewed by another automatically). Asked via `AskUserQuestion`
+  how each should actually work (rule-based vs. AI-classified routing;
+  fully automatic vs. button-triggered review) -- user chose to **defer
+  both to a design-only pass**, done after this i18n PR landed. No
+  code exists for either yet; this is pure scope/direction, still
+  unresolved.
+- **Blocked**: none. **Next**: design interview for the task-based
+  auto-model-switching + cross-model review pipeline (explicitly not
+  started yet, deferred by the user's own choice this round).
