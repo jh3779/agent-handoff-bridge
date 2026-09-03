@@ -1275,6 +1275,21 @@ cat <<'EOF'
 EOF
 """
 
+# M3 (docs/research-session-splitting.md, verified concurrent execution):
+# a deliberately slow fake provider -- real timing (not a mocked lock) is
+# the only way to actually prove two calls ran side by side rather than
+# one after the other. 1.2s is comfortably above scheduling/process-spawn
+# noise on a normal dev/CI machine while keeping the test suite fast.
+FAKE_CODEX_SLOW_SUCCESS = """#!/bin/sh
+cat >/dev/null
+sleep 1.2
+cat <<'EOF'
+{"type": "thread.started", "thread_id": "fake-codex-session"}
+{"type": "item.completed", "item": {"type": "agent_message", "text": "fake codex reply"}}
+{"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}
+EOF
+"""
+
 
 class ClassifyRunStatusTests(unittest.TestCase):
     def test_no_handoff_needed_is_success(self):
@@ -2177,6 +2192,165 @@ class MultiSessionLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         # here too would be redundant, not just harmless.
         self._post("/api/open-folder", {"path": str(self.root_b)})
         self.assertEqual(webui.read_persisted_sessions(), [])
+
+
+class RealConcurrentExecutionTests(FakeProviderPathMixin, unittest.TestCase):
+    """M3 (docs/research-session-splitting.md): confirm the locking model
+    holds up against genuinely slow, real subprocess calls running
+    through the actual HTTP server -- not just mocked locks acquired
+    instantly in a test body (GetRunLockForTests/MultiSessionLiveServerTests
+    already covered that at the unit level). Uses FAKE_CODEX_SLOW_SUCCESS
+    (a real subprocess that actually sleeps) and wall-clock timing as the
+    only way to actually distinguish "ran in parallel" from "ran one after
+    the other" -- a mocked lock can't tell those apart, only real elapsed
+    time can."""
+
+    def setUp(self):
+        self.setUpFakeProviders()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tmp.name) / "workspace-a").resolve()
+        self.root.mkdir()
+        self.root_b = (Path(self.tmp.name) / "workspace-b").resolve()
+        self.root_b.mkdir()
+        self.base_dir = (Path(self.tmp.name) / "Agent Handoff Bridge").resolve()
+        self.patcher = mock.patch("webui_common.AUTO_WORKSPACE_BASE_DIR", self.base_dir)
+        self.patcher.start()
+        self.addCleanup(self.patcher.stop)
+        self.state = webui.AppState(self.root)
+        handler = webui.build_handler(self.state)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.port = self.httpd.server_address[1]
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._teardown_server)
+        _write_fake_provider(self.fake_bin, "codex", FAKE_CODEX_SLOW_SUCCESS)
+
+    def _teardown_server(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+        self.tmp.cleanup()
+
+    def _request(self, method, path, payload=None, session_id=None):
+        url = f"http://127.0.0.1:{self.port}{path}"
+        headers = {}
+        body = None
+        if payload is not None:
+            body = json.dumps(payload).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        if session_id is not None:
+            headers[webui.SESSION_HEADER] = session_id
+        req = urllib.request.Request(url, data=body, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    def test_two_sessions_on_different_workspaces_run_genuinely_in_parallel(self):
+        _, created = self._request("POST", "/api/sessions", {})
+        session_b = created["session_id"]
+        self._request("POST", "/api/open-folder", {"path": str(self.root_b)}, session_id=session_b)
+
+        results = {}
+
+        def run_default():
+            results["default"] = self._request("POST", "/api/run", {"provider": "codex", "text": "hi"})
+
+        def run_b():
+            results["b"] = self._request(
+                "POST", "/api/run", {"provider": "codex", "text": "hi"}, session_id=session_b
+            )
+
+        start = time.monotonic()
+        t1 = threading.Thread(target=run_default)
+        t2 = threading.Thread(target=run_b)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(results["default"][0], 200)
+        self.assertEqual(results["b"][0], 200)
+        # Two different workspaces -> two different locks (AppState.
+        # get_run_lock_for()) -> both 1.2s calls genuinely overlap. Fully
+        # serialized would take >=2.4s; allow generous slack for process-
+        # spawn/scheduling noise while still clearly distinguishing
+        # "parallel" from "serial".
+        self.assertLess(elapsed, 2.0, "two different workspaces' runs did not overlap -- locking is over-serializing")
+
+    def test_two_sessions_on_the_same_workspace_correctly_reject_the_overlap(self):
+        # The exact scenario M1's real bug was found in: two sessions on
+        # the SAME workspace both racing handoff_bridge.py run's history-
+        # length diff against one shared .handoff/state.json. This uses
+        # the real subprocess + real lock end-to-end (no mocks), unlike
+        # GetRunLockForTests/MultiSessionLiveServerTests' instant mocked
+        # locks.
+        #
+        # Note this is NOT a timing assertion, deliberately: run_lock.
+        # acquire(blocking=False) in webui_bridge_run.py means the *correct*
+        # behavior for a genuine overlap is an immediate 409 for whichever
+        # request loses the race, not a queued wait -- so a buggy version
+        # where both requests wrongly ran fully-concurrent subprocesses
+        # would show the *same* ~1.2s elapsed time as the correct
+        # one-runs/one-rejected outcome. Elapsed time can't tell those
+        # apart here; only the actual status codes can -- which is exactly
+        # what the timing-based test above is for the *different*-workspace
+        # case, where there's no fail-fast rejection to check instead.
+        _, created = self._request("POST", "/api/sessions", {})
+        session_b = created["session_id"]
+        self._request("POST", "/api/open-folder", {"path": str(self.root)}, session_id=session_b)  # same workspace
+
+        results = {}
+
+        def run_default():
+            results["default"] = self._request("POST", "/api/run", {"provider": "codex", "text": "from default"})
+
+        def run_b():
+            results["b"] = self._request(
+                "POST", "/api/run", {"provider": "codex", "text": "from b"}, session_id=session_b
+            )
+
+        t1 = threading.Thread(target=run_default)
+        t2 = threading.Thread(target=run_b)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        # Whichever request's HTTP handler thread reached run_lock.acquire()
+        # second must have been rejected outright (409) -- both getting 200
+        # would mean two subprocesses genuinely ran concurrently against
+        # the same workspace, the exact bug this whole redesign exists to
+        # prevent. (Both landing 409 is not a real possible outcome here --
+        # at least one request necessarily acquires the uncontended lock.)
+        statuses = sorted([results["default"][0], results["b"][0]])
+        self.assertEqual(statuses, [200, 409])
+
+    def test_two_sequential_runs_on_the_same_workspace_each_get_exactly_their_own_record(self):
+        # Complements the test above: two *sequential* (not overlapping)
+        # runs against the same workspace, one from each of two sessions,
+        # must each independently see exactly one new record -- proving
+        # the lock being shared for the same workspace doesn't also cause
+        # cross-session record misattribution when there's no actual race
+        # (the specific bug class M1 was fixed for, reproduced here
+        # end-to-end through the real HTTP server + real subprocess
+        # instead of only at the webui_bridge_run.py unit level).
+        _, created = self._request("POST", "/api/sessions", {})
+        session_b = created["session_id"]
+        self._request("POST", "/api/open-folder", {"path": str(self.root)}, session_id=session_b)
+
+        status_a, data_a = self._request("POST", "/api/run", {"provider": "codex", "text": "first"})
+        self.assertEqual(status_a, 200)
+        self.assertEqual(len(data_a["messages"]), 1)
+
+        status_b, data_b = self._request(
+            "POST", "/api/run", {"provider": "codex", "text": "second"}, session_id=session_b
+        )
+        self.assertEqual(status_b, 200)
+        self.assertEqual(len(data_b["messages"]), 1)  # not two -- the first call's record must not leak in here
 
 
 class EnsureChatGitignoreTests(unittest.TestCase):
