@@ -658,6 +658,17 @@ class BuildPromptSelfContainedNoticeTests(unittest.TestCase):
         self.assertIn("full project test suite", prompt)
         self.assertIn("do not invoke a skill, subagent, or larger workflow", prompt)
 
+    def test_scope_discipline_notice_tells_the_model_to_report_blockers_not_fix_them(self):
+        # Regression (real-world reproduction, 2026-09-04, third finding):
+        # even with the notice above, a real run still fixed a real bug (a
+        # missing .gitignore) it happened to hit while merely trying to
+        # verify its own no-op turn -- its own reasoning treated "the
+        # blocker in front of me" as in-scope even though nothing about it
+        # was actually asked for.
+        prompt = hb.build_prompt("codex", {"task": "do the thing", "sessions": {}}, "hello")
+        self.assertIn("report it briefly", prompt)
+        self.assertIn("do not fix it unprompted", prompt)
+
 
 class VersionTests(unittest.TestCase):
     def test_cli_version_flag_reports_bridge_version(self):
