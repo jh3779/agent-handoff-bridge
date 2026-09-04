@@ -445,6 +445,79 @@ class BuildPromptSharedContextTests(unittest.TestCase):
         self.assertIn("Never touch the legacy/ folder.", prompt)
 
 
+class TailForPromptTests(unittest.TestCase):
+    """tail_for_prompt() -- bounds how much of an ever-growing file (in
+    practice, .handoff/current.md) gets folded into a single prompt. See
+    MAX_CURRENT_FILE_PROMPT_CHARS."""
+
+    def test_short_text_is_returned_unchanged(self):
+        text = "short and sweet"
+        self.assertEqual(hb.tail_for_prompt(text, 100), text)
+
+    def test_text_at_exactly_the_limit_is_unchanged(self):
+        text = "x" * 100
+        self.assertEqual(hb.tail_for_prompt(text, 100), text)
+
+    def test_long_text_is_cut_down_to_roughly_the_limit(self):
+        text = "x" * 1000
+        result = hb.tail_for_prompt(text, 100)
+        self.assertLess(len(result), 1000)
+
+    def test_long_text_keeps_the_most_recent_content(self):
+        text = "old " * 1000 + "MOST_RECENT_MARKER"
+        result = hb.tail_for_prompt(text, 100)
+        self.assertIn("MOST_RECENT_MARKER", result)
+
+    def test_long_text_drops_the_oldest_content(self):
+        text = "OLDEST_MARKER" + ("filler " * 1000)
+        result = hb.tail_for_prompt(text, 100)
+        self.assertNotIn("OLDEST_MARKER", result)
+
+    def test_truncation_is_noted_so_it_is_not_mistaken_for_the_whole_file(self):
+        result = hb.tail_for_prompt("x" * 1000, 100)
+        self.assertIn("earlier history omitted", result)
+
+    def test_cuts_at_a_newline_boundary_not_mid_line(self):
+        text = "## Run one\ncontent one\n" * 50 + "## Run two\nfinal content\n"
+        result = hb.tail_for_prompt(text, 40)
+        # The kept portion must start at the beginning of a line, not
+        # mid-word/mid-heading -- i.e. everything after the omission
+        # marker's blank line is a clean suffix of the original text.
+        kept = result.split("\n\n", 1)[1]
+        self.assertTrue(text.endswith(kept))
+
+
+class BuildPromptCurrentFileCapTests(unittest.TestCase):
+    """End-to-end: build_prompt() actually applies tail_for_prompt() to
+    .handoff/current.md, not just that the helper itself works in
+    isolation."""
+
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
+
+    def test_a_small_current_file_is_included_in_full(self):
+        hb.HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+        hb.CURRENT_FILE.write_text("## Run one\nsmall log\n", encoding="utf-8")
+        prompt = hb.build_prompt("codex", {"task": "do the thing"}, "hello")
+        self.assertIn("small log", prompt)
+
+    def test_a_huge_current_file_is_truncated_in_the_prompt(self):
+        hb.HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+        huge = "OLDEST_ENTRY_MARKER\n" + ("## Run\nfiller\n" * 5000) + "NEWEST_ENTRY_MARKER"
+        hb.CURRENT_FILE.write_text(huge, encoding="utf-8")
+        prompt = hb.build_prompt("codex", {"task": "do the thing"}, "hello")
+        self.assertIn("NEWEST_ENTRY_MARKER", prompt)
+        self.assertNotIn("OLDEST_ENTRY_MARKER", prompt)
+        # The full, untruncated file on disk must be completely untouched
+        # by building a prompt from it -- this caps what's *sent*, not
+        # what's *kept* as the durable handoff log.
+        self.assertIn("OLDEST_ENTRY_MARKER", hb.CURRENT_FILE.read_text(encoding="utf-8"))
+
+
 class VersionTests(unittest.TestCase):
     def test_cli_version_flag_reports_bridge_version(self):
         result = subprocess.run(
@@ -1145,6 +1218,71 @@ class ProviderCommandClaudeTests(unittest.TestCase):
         command = hb.provider_command("claude", state, model="claude-opus")
         idx = command.index("--model")
         self.assertEqual(command[idx + 1], "claude-opus")
+
+
+class GitSnapshotTests(unittest.TestCase):
+    """git_snapshot() is folded into every single build_prompt() call --
+    keep it cheap, and never leak git's own inconsistent failure-mode text
+    into every prompt. Regression (real-world report, 2026-09-04): outside
+    a git repository (the default for every workspace this bridge
+    auto-creates -- see provider_command()'s `--skip-git-repo-check`),
+    `git diff --stat` doesn't fail the way `git status --short` does --
+    it falls back to `--no-index` two-path-compare mode, finds no paths
+    were given, and dumps its own ~7KB usage/help text to stderr (exit
+    129) -- confirmed against a real installed git binary. This was
+    previously included here verbatim on *every single prompt* in every
+    non-git workspace."""
+
+    def test_clean_repo_reports_no_diff(self):
+        with mock.patch("handoff_bridge.short_run") as mock_run:
+            mock_run.side_effect = [(0, "", ""), (0, "", "")]
+            snapshot = hb.git_snapshot()
+        self.assertIn("(clean)", snapshot)
+        self.assertIn("(no diff)", snapshot)
+
+    def test_dirty_repo_reports_status_and_diff(self):
+        with mock.patch("handoff_bridge.short_run") as mock_run:
+            mock_run.side_effect = [(0, " M foo.py\n", ""), (0, " foo.py | 2 +-\n", "")]
+            snapshot = hb.git_snapshot()
+        self.assertIn("M foo.py", snapshot)
+        self.assertIn("foo.py | 2 +-", snapshot)
+
+    def test_non_git_workspace_skips_diff_entirely_instead_of_leaking_git_help_text(self):
+        with mock.patch("handoff_bridge.short_run") as mock_run:
+            mock_run.return_value = (
+                128,
+                "",
+                "fatal: not a git repository (or any of the parent directories): .git\n",
+            )
+            snapshot = hb.git_snapshot()
+        # The whole point of the fix: once `git status` already proves
+        # there's no repository, `git diff --stat` must never run at all
+        # -- not just have its output discarded after the fact.
+        self.assertEqual(mock_run.call_count, 1)
+        self.assertIn("not a git repository", snapshot)
+        self.assertIn("(not a git repository)", snapshot)
+
+    def test_diff_failure_inside_a_real_repo_does_not_leak_raw_stderr(self):
+        with mock.patch("handoff_bridge.short_run") as mock_run:
+            mock_run.side_effect = [(0, "", ""), (1, "", "some unexpected git internal error")]
+            snapshot = hb.git_snapshot()
+        self.assertIn("(unavailable)", snapshot)
+        self.assertNotIn("unexpected git internal error", snapshot)
+
+    def test_real_git_binary_outside_a_repo_stays_short(self):
+        # No mocking -- exercises the actual documented bug against a real
+        # installed git, in a real non-git directory (the same condition
+        # every auto-created workspace starts in), not just the mocked
+        # shape assumed above.
+        with tempfile.TemporaryDirectory() as tmp:
+            orig_cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                snapshot = hb.git_snapshot()
+            finally:
+                os.chdir(orig_cwd)
+        self.assertNotIn("usage: git diff", snapshot)
+        self.assertLess(len(snapshot), 500, msg=snapshot)
 
 
 class ProviderCommandGeminiTests(unittest.TestCase):
