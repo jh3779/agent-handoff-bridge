@@ -24,6 +24,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import validate_handoff as vh  # noqa: E402
+import handoff_bridge as hb  # noqa: E402
+
+
+class InstallFilesCoverEveryRequiredFileTests(unittest.TestCase):
+    """Regression (real-world reproduction, 2026-09-04): REQUIRED_FILES has
+    listed a top-level `.gitignore` since before this file existed, but
+    `handoff_bridge.py`'s INSTALL_FILES (what `install`/`init` actually
+    copies into a workspace) never included one -- so `handoff_bridge.py
+    check` failed immediately and deterministically in *every* freshly
+    installed/initialized workspace, including every workspace the webui
+    auto-creates. `scripts/package_platforms.py`'s COMMON_FILES already
+    had it; only INSTALL_FILES was missing it -- the two file lists this
+    project ships from had quietly drifted apart. This test compares
+    REQUIRED_FILES/JSON_FILES/PYTHON_FILES against INSTALL_FILES directly
+    so any *future* file added to one list but not the other fails CI
+    immediately, instead of only surfacing when a real agent stumbles into
+    a freshly created workspace and "fixes" it by hand."""
+
+    def test_every_validator_required_file_is_actually_installed(self):
+        installed_targets = {target for _source, target in hb.INSTALL_FILES}
+        # .handoff/current.md is a deliberate exception: install_standard_files()
+        # generates it dynamically (a starter template written only if it
+        # doesn't already exist) rather than copying a static file, so it
+        # has no INSTALL_FILES entry by design -- not the drift this test
+        # otherwise guards against.
+        required = (set(vh.REQUIRED_FILES) | set(vh.JSON_FILES) | set(vh.PYTHON_FILES)) - {".handoff/current.md"}
+        missing = required - installed_targets
+        self.assertEqual(
+            missing,
+            set(),
+            msg=f"validate_handoff.py requires these files but INSTALL_FILES never installs them: {missing}",
+        )
 
 
 class CheckSecretsCommandTests(unittest.TestCase):

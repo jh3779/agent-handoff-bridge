@@ -103,6 +103,13 @@ PROVIDERS = ("codex", "claude", "gemini")
 INSTRUCTION_TYPES = ("new-task", "continue", "handoff", "review", "verify")
 
 INSTALL_FILES = [
+    # scripts/validate_handoff.py's REQUIRED_FILES has required a top-level
+    # `.gitignore` since before this list existed, but this list never
+    # copied one -- so `handoff_bridge.py check` failed immediately and
+    # deterministically in *every* freshly install()ed/init()ed workspace,
+    # including every workspace the webui auto-creates. Found via a real
+    # end-to-end reproduction (2026-09-04), not by re-reading the list.
+    (".gitignore", ".gitignore"),
     ("handoff_bridge.py", "handoff_bridge.py"),
     ("handoff_control.py", "handoff_control.py"),
     ("handoff_desktop.py", "handoff_desktop.py"),
