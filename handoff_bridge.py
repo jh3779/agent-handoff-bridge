@@ -800,13 +800,22 @@ configured; do not invoke those for this task."""
 # forbidding investigation a *real* task genuinely needs (reading files,
 # running the relevant tests, checking git status) -- it only tells the
 # model not to go looking for extra work uninvited.
+#
+# A further real re-run against the first version of this notice showed
+# partial but incomplete effect: the model stopped chasing unrelated global
+# skills, but still fixed a real bug (the missing .gitignore above) it
+# happened to hit while merely trying to verify its own no-op turn -- its
+# own reasoning treated "the blocker in front of me" as in-scope even
+# though nothing about it was actually asked for. The explicit
+# "report it, don't fix it" clause below targets that exact loophole.
 SCOPE_DISCIPLINE_NOTICE = """Scope discipline: do what "User Prompt For This Turn" below actually asks --
 no more, no less. If completing it genuinely requires investigation (reading files, running the
-relevant tests or commands, checking git status), that is expected. But do not proactively audit
-for unrelated bugs, do not run the full project test suite or a broad review unless the prompt
-itself asks for that, and do not invoke a skill, subagent, or larger workflow beyond what this
-specific turn needs. If you notice something else worth mentioning, say so briefly in your summary
-instead of acting on it unprompted."""
+relevant tests or commands, checking git status), that is expected. But unless the prompt itself
+asks you to find or fix something, do not proactively audit for unrelated bugs, do not run the
+full project test suite or a broad review, and do not invoke a skill, subagent, or larger workflow
+beyond what this specific turn needs. This includes a blocker you happen to run into while merely
+investigating or verifying (a failing check, a missing file, an unrelated bug) -- report it briefly
+in your summary and stop there; do not fix it unprompted, even if fixing it looks small."""
 
 
 def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason: str | None = None) -> str:
