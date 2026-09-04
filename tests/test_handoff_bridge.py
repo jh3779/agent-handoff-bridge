@@ -518,6 +518,81 @@ class BuildPromptCurrentFileCapTests(unittest.TestCase):
         self.assertIn("OLDEST_ENTRY_MARKER", hb.CURRENT_FILE.read_text(encoding="utf-8"))
 
 
+class BuildPromptContinuationTests(unittest.TestCase):
+    """A provider with a live `--resume`d session (`state["sessions"]`)
+    already has the static protocol docs and prior handoff history from
+    its own session's first turn -- re-sending all of that in full on
+    every subsequent turn is pure repeated overhead. A continuation turn
+    (no `reason`, i.e. not a fresh handoff) sends only what's new."""
+
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
+        hb.HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+
+    def test_first_turn_with_no_session_gets_the_full_context(self):
+        state = {"task": "do the thing", "sessions": {}}
+        prompt = hb.build_prompt("codex", state, "hello")
+        self.assertIn("## Agent Targeting Protocol", prompt)
+        self.assertIn("## Shared Agent Contract", prompt)
+        self.assertIn("## Verification Playbook", prompt)
+
+    def test_continuation_turn_omits_the_static_protocol_docs(self):
+        state = {"task": "do the thing", "sessions": {"codex": "existing-session-id"}}
+        prompt = hb.build_prompt("codex", state, "hello")
+        self.assertNotIn("## Agent Targeting Protocol", prompt)
+        self.assertNotIn("## Shared Agent Contract", prompt)
+        self.assertNotIn("## Verification Playbook", prompt)
+        self.assertIn("hello", prompt)
+
+    def test_a_handoff_reason_forces_full_context_even_with_an_existing_session(self):
+        # A handoff (rate_limit/quota/etc., or an explicit provider switch)
+        # is a cold start for this provider's *task understanding* even if
+        # it happens to already have a lingering session id from earlier,
+        # unrelated use -- it must not be treated as a plain continuation.
+        state = {"task": "do the thing", "sessions": {"claude": "old-session-id"}}
+        prompt = hb.build_prompt("claude", state, "hello", reason="rate_limit: codex hit a limit")
+        self.assertIn("## Shared Agent Contract", prompt)
+        self.assertIn("## Handoff Reason", prompt)
+
+    def test_continuation_only_includes_log_entries_added_since_this_providers_last_turn(self):
+        hb.CURRENT_FILE.write_text("OLD_ENTRY_ALREADY_SEEN\n", encoding="utf-8")
+        state = {"task": "do the thing", "sessions": {"codex": "s1"}}
+        # First continuation call records the offset as of this point.
+        hb.build_prompt("codex", state, "first message")
+        hb.CURRENT_FILE.write_text(
+            hb.CURRENT_FILE.read_text(encoding="utf-8") + "NEW_ENTRY_SINCE_LAST_TURN\n", encoding="utf-8"
+        )
+        prompt = hb.build_prompt("codex", state, "second message")
+        self.assertIn("NEW_ENTRY_SINCE_LAST_TURN", prompt)
+        self.assertNotIn("OLD_ENTRY_ALREADY_SEEN", prompt)
+
+    def test_no_new_log_entries_since_last_turn_adds_no_empty_section(self):
+        hb.CURRENT_FILE.write_text("SOME_ENTRY\n", encoding="utf-8")
+        state = {"task": "do the thing", "sessions": {"codex": "s1"}}
+        hb.build_prompt("codex", state, "first message")
+        prompt = hb.build_prompt("codex", state, "second message, nothing new logged")
+        self.assertNotIn("## New Handoff Log Entries Since Your Last Turn", prompt)
+
+    def test_offsets_are_tracked_independently_per_provider(self):
+        hb.CURRENT_FILE.write_text("ENTRY_BEFORE_EITHER_PROVIDER_RAN\n", encoding="utf-8")
+        state = {"task": "do the thing", "sessions": {"codex": "s1", "claude": "s2"}}
+        # codex's first continuation call advances *only* codex's offset.
+        hb.build_prompt("codex", state, "codex turn")
+        hb.CURRENT_FILE.write_text(
+            hb.CURRENT_FILE.read_text(encoding="utf-8") + "ENTRY_AFTER_CODEX_TURN\n", encoding="utf-8"
+        )
+        # claude has never had a turn yet -- its own first continuation
+        # call must still see everything logged so far, not just what
+        # was appended after codex's turn.
+        claude_prompt = hb.build_prompt("claude", state, "claude turn")
+        self.assertIn("ENTRY_BEFORE_EITHER_PROVIDER_RAN", claude_prompt)
+        self.assertIn("ENTRY_AFTER_CODEX_TURN", claude_prompt)
+
+
 class VersionTests(unittest.TestCase):
     def test_cli_version_flag_reports_bridge_version(self):
         result = subprocess.run(

@@ -771,15 +771,39 @@ def git_snapshot() -> str:
 
 
 def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason: str | None = None) -> str:
+    """`reason` is set only for a genuine handoff (this provider is being
+    invoked *because* another one just hit quota/rate-limit/etc., or this
+    is otherwise a cold start for it) -- in that case it needs the full
+    picture below, same as ever.
+
+    Otherwise, if `provider` already has a live `--resume`d session
+    (`state["sessions"][provider]`, set by provider_command()/run_provider()
+    once a session id comes back), the provider's own CLI-side session
+    already retains everything sent in that session's first turn -- the
+    protocol docs, the task, and whatever slice of `.handoff/current.md`
+    existed then. Re-sending all of that in full on every subsequent turn
+    is pure repeated overhead for no new information (confirmed real case:
+    this alone was most of a ~70,000-token prompt for a one-word message
+    on an actively-used project, see MAX_CURRENT_FILE_PROMPT_CHARS). A
+    continuation turn instead sends only the new user message, a live
+    git snapshot (this can genuinely change turn to turn), and whatever
+    was appended to `.handoff/current.md` since this provider's own last
+    turn (tracked per-provider in `state["prompt_context_offsets"]`, since
+    a *different* provider's turn in between would otherwise be silently
+    skipped from what this one sees).
+
+    Known tradeoff, accepted deliberately rather than solved here: if a
+    provider's CLI-side session has itself expired or been cleared
+    independently of this bridge's own `state.json` still pointing at it,
+    a continuation turn would under-inform a provider that (despite
+    `--resume` being passed) no longer actually has that history. This is
+    no worse than the pre-existing `--resume`-with-a-stale-id risk that
+    already existed regardless of prompt content.
+    """
     task = state.get("task") or user_prompt or "Continue the current handoff task."
     active_model = state.get("active_model") or "app-selected default"
     instruction_type = state.get("instruction_type") or "continue"
-    targeting = read_workspace_or_bridge("docs/agent-targeting-protocol.md", "(no docs/agent-targeting-protocol.md yet)")
-    contract = read_workspace_or_bridge(str(CONTRACT_FILE), "(no docs/shared-agent-contract.md yet)")
-    verification = read_workspace_or_bridge(str(VERIFICATION_FILE), "(no docs/verification-playbook.md yet)")
-    current = tail_for_prompt(
-        read_text(CURRENT_FILE, "(no .handoff/current.md yet)"), MAX_CURRENT_FILE_PROMPT_CHARS
-    )
+    full_current = read_text(CURRENT_FILE, "(no .handoff/current.md yet)")
     reason_block = f"\n## Handoff Reason\n\n{reason}\n" if reason else ""
     # Free-form, user-authored, per-workspace -- absent entirely (not an
     # empty/placeholder section) when the file doesn't exist or is
@@ -787,6 +811,43 @@ def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason:
     # dead weight in every prompt.
     shared_context = read_text(SHARED_CONTEXT_FILE, "").strip()
     shared_context_block = f"\n## Project Context\n\n{shared_context}\n" if shared_context else ""
+
+    resumed_session_id = (state.get("sessions") or {}).get(provider)
+    prior_offset = (state.get("prompt_context_offsets") or {}).get(provider, 0)
+    # Recorded unconditionally (both branches below), so whichever branch
+    # runs this turn, the *next* continuation turn's delta starts from
+    # here -- not just from whenever a continuation turn last happened to
+    # run.
+    state.setdefault("prompt_context_offsets", {})[provider] = len(full_current)
+
+    if resumed_session_id and reason is None:
+        new_entries = tail_for_prompt(full_current[prior_offset:].strip(), MAX_CURRENT_FILE_PROMPT_CHARS)
+        new_entries_block = (
+            f"\n## New Handoff Log Entries Since Your Last Turn\n\n{new_entries}\n" if new_entries else ""
+        )
+        return f"""Continuing your existing {provider} session (resumed) on this shared CLI handoff task --
+you already have the task, the shared protocol docs, and the handoff history from earlier in this
+same session; only what's new is included below.
+
+## User Prompt For This Turn
+
+{user_prompt or "Continue from the shared handoff packet and current workspace."}
+{reason_block}{shared_context_block}{new_entries_block}
+## Active Work Target
+
+- Provider: {provider}
+- Model: {active_model}
+- Instruction type: {instruction_type}
+
+## Workspace Snapshot
+
+{git_snapshot()}
+"""
+
+    targeting = read_workspace_or_bridge("docs/agent-targeting-protocol.md", "(no docs/agent-targeting-protocol.md yet)")
+    contract = read_workspace_or_bridge(str(CONTRACT_FILE), "(no docs/shared-agent-contract.md yet)")
+    verification = read_workspace_or_bridge(str(VERIFICATION_FILE), "(no docs/verification-playbook.md yet)")
+    current = tail_for_prompt(full_current, MAX_CURRENT_FILE_PROMPT_CHARS)
     return f"""You are {provider} continuing a shared CLI handoff task.
 
 ## Task
