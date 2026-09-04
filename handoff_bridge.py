@@ -36,6 +36,19 @@ HANDOFF_DIR = Path(".handoff")
 RUNS_DIR = HANDOFF_DIR / "runs"
 STATE_FILE = HANDOFF_DIR / "state.json"
 CURRENT_FILE = HANDOFF_DIR / "current.md"
+# `.handoff/current.md` is append-only (append_current() never trims it) and
+# gets folded into *every* build_prompt() call in full -- on a long-lived,
+# actively-used project this file only grows, so every turn's prompt (and
+# its latency/cost) grows right along with it, even for a trivial message
+# with no need for the older history (real, verified case: this project's
+# own current.md alone was ~270KB / roughly 65,000 tokens by v0.4.10,
+# before this cap existed). Only the tail actually matters for continuing
+# the next turn -- the full log is still preserved on disk untouched for
+# anyone who wants to read the whole thing. Matches webui/app.js's
+# MAX_PREVIEW_CHARS (20000) -- not derived from it, just the same
+# already-established "how much raw text is reasonable to hand a model at
+# once" magnitude elsewhere in this project.
+MAX_CURRENT_FILE_PROMPT_CHARS = 20_000
 NEXT_PROMPT_FILE = HANDOFF_DIR / "next-prompt.md"
 # User-editable, workspace-local project context that should reach every
 # provider regardless of how it's invoked -- CLI mode via build_prompt()
@@ -231,6 +244,25 @@ def read_text(path: Path, default: str = "") -> str:
     if not path.exists():
         return default
     return path.read_text(encoding="utf-8")
+
+
+def tail_for_prompt(text: str, max_chars: int) -> str:
+    """Bound how much of an ever-growing file gets folded into a prompt --
+    see MAX_CURRENT_FILE_PROMPT_CHARS. Cuts at the next newline after the
+    truncation point rather than mid-line, so the excerpt still reads as
+    clean markdown starting from a section/line boundary instead of a
+    fragment of whatever heading or sentence the raw character cut landed
+    inside."""
+    if len(text) <= max_chars:
+        return text
+    tail = text[-max_chars:]
+    newline_index = tail.find("\n")
+    if newline_index != -1:
+        tail = tail[newline_index + 1 :]
+    return (
+        "...[earlier history omitted -- see `.handoff/current.md` on disk "
+        f"for the full log]\n\n{tail}"
+    )
 
 
 def read_workspace_or_bridge(rel_path: str, default: str = "") -> str:
@@ -710,13 +742,31 @@ def next_available_provider(current: str, tried: "set[str] | frozenset[str]" = f
 
 
 def git_snapshot() -> str:
-    status = short_run(["git", "status", "--short"])
-    diff_stat = short_run(["git", "diff", "--stat"])
-    parts = []
-    parts.append("### git status --short")
-    parts.append(status[1] or status[2] or "(clean)")
+    """Folded into every build_prompt() call, so keep this cheap and short
+    -- it's pure overhead added to every single turn, not itself something
+    the user asked for.
+
+    Outside a git repo (the default for every workspace this bridge
+    auto-creates -- see provider_command()'s `--skip-git-repo-check`),
+    `git status --short` fails with a short, single-line "fatal: not a
+    git repository" message, but `git diff --stat` fails very differently:
+    with no repo to diff against, git falls back to treating this as a
+    `--no-index` two-path comparison, finds no paths were given, and dumps
+    its own ~7KB `--no-index` usage/help text to stderr instead (real,
+    confirmed exit code 129) -- previously included here verbatim on every
+    single prompt in every non-git workspace, pure noise with no signal
+    value. Once `git status` has already confirmed there's no repo, skip
+    running `git diff` at all rather than trying to keep discovering (and
+    special-casing) more of git's own inconsistent non-repo failure shapes.
+    """
+    status_exit, status_out, status_err = short_run(["git", "status", "--short"])
+    parts = ["### git status --short", status_out or status_err or "(clean)"]
     parts.append("### git diff --stat")
-    parts.append(diff_stat[1] or diff_stat[2] or "(no diff)")
+    if status_exit != 0:
+        parts.append("(not a git repository)")
+        return "\n".join(parts)
+    diff_exit, diff_out, _diff_err = short_run(["git", "diff", "--stat"])
+    parts.append((diff_out or "(no diff)") if diff_exit == 0 else "(unavailable)")
     return "\n".join(parts)
 
 
@@ -727,7 +777,9 @@ def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason:
     targeting = read_workspace_or_bridge("docs/agent-targeting-protocol.md", "(no docs/agent-targeting-protocol.md yet)")
     contract = read_workspace_or_bridge(str(CONTRACT_FILE), "(no docs/shared-agent-contract.md yet)")
     verification = read_workspace_or_bridge(str(VERIFICATION_FILE), "(no docs/verification-playbook.md yet)")
-    current = read_text(CURRENT_FILE, "(no .handoff/current.md yet)")
+    current = tail_for_prompt(
+        read_text(CURRENT_FILE, "(no .handoff/current.md yet)"), MAX_CURRENT_FILE_PROMPT_CHARS
+    )
     reason_block = f"\n## Handoff Reason\n\n{reason}\n" if reason else ""
     # Free-form, user-authored, per-workspace -- absent entirely (not an
     # empty/placeholder section) when the file doesn't exist or is
