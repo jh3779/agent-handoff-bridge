@@ -4,6 +4,43 @@
 
 ## Unreleased
 
+## v0.4.11 — 2026-09-04
+
+- **New: view a workspace file's content without attaching it.** The file
+  tree's rows previously only supported click-to-attach. A new "👁" button
+  per file row opens a read-only preview instead -- no change to the
+  existing click-to-attach behavior.
+- **Perf: cut a real, measured source of slow/expensive replies -- prompt
+  bloat.** Every message previously re-sent the full protocol docs, the
+  entire (ever-growing) `.handoff/current.md` log, and could leak ~7KB of
+  git's own usage text in a non-git workspace (the default for every
+  auto-created one). Measured on this project's own repo: a trivial "hi"
+  message dropped from ~280,000 characters (~70,000 tokens) to ~31,000
+  characters on a first turn, and to ~500 characters on a turn continuing
+  an existing provider session (which no longer needs the static docs
+  re-sent at all -- it already has them from earlier in the same session).
+- **Fix: reduced runaway/out-of-scope agent behavior on a plain message.**
+  Root-caused via a real reproduction: a provider was re-reading content
+  already included in its own prompt, and this project's own "handoff"
+  terminology was colliding with unrelated, user-configured global CLI
+  skills of similar names -- together turning a one-word message into a
+  multi-minute session that reran the full test suite repeatedly and
+  edited unrelated files. The prompt now states it is self-contained (no
+  need to re-fetch what's already included), disambiguates this tool's
+  own `.handoff/` state from any similarly-named personal skill, and
+  explicitly asks the model to report a blocker it stumbles into instead
+  of fixing it unprompted. A best-effort, in-prompt mitigation -- not a
+  guarantee, especially against broadly-scoped personal skills outside
+  this project's control.
+- **Fix: `handoff_bridge.py check` failed immediately in every freshly
+  created workspace** (including every workspace the webui auto-creates),
+  on a missing top-level `.gitignore` -- required by
+  `scripts/validate_handoff.py` since before that file existed, but never
+  actually installed by `install`/`init`. Also added a regression test
+  comparing the validator's required-file lists against the installer's
+  file list directly, so this class of drift fails CI immediately instead
+  of only surfacing when someone hits it in a real workspace.
+
 ## v0.4.10 — 2026-09-03
 
 - **Fix: a successful codex/claude reply could be wrongly discarded as
