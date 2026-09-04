@@ -770,6 +770,20 @@ def git_snapshot() -> str:
     return "\n".join(parts)
 
 
+# See build_prompt()'s docstring for the real, observed failure mode this
+# addresses: a provider re-reading content already inlined in its own
+# prompt, and/or matching this project's "handoff" terminology against an
+# unrelated, user-configured global skill (a same-named but functionally
+# different session-continuity or self-evaluation skill).
+SELF_CONTAINED_NOTICE = """This prompt is self-contained for this turn -- the protocol docs, workspace
+state, and git status referenced below are already included in full (or were already given to you
+earlier in this same resumed session). Do not spend time re-opening those files or re-running the
+same git commands unless you have a concrete, stated reason to think they changed since this prompt
+was generated. This tool (agent-handoff-bridge) manages its own state under `.handoff/` -- unrelated
+to any other project-continuation, checkpoint, or self-evaluation skill you may separately have
+configured; do not invoke those for this task."""
+
+
 def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason: str | None = None) -> str:
     """`reason` is set only for a genuine handoff (this provider is being
     invoked *because* another one just hit quota/rate-limit/etc., or this
@@ -799,6 +813,21 @@ def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason:
     `--resume` being passed) no longer actually has that history. This is
     no worse than the pre-existing `--resume`-with-a-stale-id risk that
     already existed regardless of prompt content.
+
+    SELF_CONTAINED_NOTICE below exists because of a real, observed failure
+    mode (2026-09-04): asked to run a real first-turn prompt end-to-end,
+    codex re-opened every doc already inlined below via `sed` (redundant
+    tool-call round trips, each one real added latency on top of prompt
+    size) *and* separately matched this project's own "handoff"
+    terminology against an unrelated, user-machine-global codex skill
+    (also named "handoff", covering a totally different `.agent/`
+    PROJECT_CONTEXT/HANDOFF/DECISIONS scheme) plus a generic
+    self-evaluation skill -- ballooning a one-word message into a
+    multi-minute session that ran this project's own full test suite
+    repeatedly and edited unrelated files. Nothing in this bridge's own
+    code can prevent a differently-scoped, user-configured global skill
+    from existing; the notice is a best-effort, in-prompt mitigation, not
+    a guarantee.
     """
     task = state.get("task") or user_prompt or "Continue the current handoff task."
     active_model = state.get("active_model") or "app-selected default"
@@ -825,9 +854,11 @@ def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason:
         new_entries_block = (
             f"\n## New Handoff Log Entries Since Your Last Turn\n\n{new_entries}\n" if new_entries else ""
         )
-        return f"""Continuing your existing {provider} session (resumed) on this shared CLI handoff task --
-you already have the task, the shared protocol docs, and the handoff history from earlier in this
-same session; only what's new is included below.
+        return f"""Continuing your existing {provider} session (resumed) via the agent-handoff-bridge CLI tool --
+you already have the task, the shared protocol docs, and the prior state from earlier in this same
+session; only what's new is included below.
+
+{SELF_CONTAINED_NOTICE}
 
 ## User Prompt For This Turn
 
@@ -848,7 +879,9 @@ same session; only what's new is included below.
     contract = read_workspace_or_bridge(str(CONTRACT_FILE), "(no docs/shared-agent-contract.md yet)")
     verification = read_workspace_or_bridge(str(VERIFICATION_FILE), "(no docs/verification-playbook.md yet)")
     current = tail_for_prompt(full_current, MAX_CURRENT_FILE_PROMPT_CHARS)
-    return f"""You are {provider} continuing a shared CLI handoff task.
+    return f"""You are {provider}, working via the agent-handoff-bridge CLI tool on a task in this workspace.
+
+{SELF_CONTAINED_NOTICE}
 
 ## Task
 
@@ -864,11 +897,14 @@ same session; only what's new is included below.
   the user's latest instruction says otherwise.
 - If the active model is unknown or app-selected, record the visible model if
   this surface exposes it.
-- Follow `docs/agent-targeting-protocol.md` when task scope or provider changes.
-- Follow `docs/shared-agent-contract.md`.
-- Use `docs/verification-playbook.md` for checks and reporting.
-- Read and respect `.handoff/current.md`.
-- Inspect the current workspace and git status before editing.
+- The full text of `docs/agent-targeting-protocol.md`, `docs/shared-agent-contract.md`, and
+  `docs/verification-playbook.md` is included below -- follow them, but there is no need to
+  open these files again.
+- `.handoff/current.md`'s relevant content is included below -- respect it without re-reading
+  the file.
+- The current git status is included below (see Workspace Snapshot) -- only re-run `git status`/
+  `git diff` yourself if you have concrete reason to think something changed after this prompt
+  was generated.
 - Continue from the files on disk rather than assuming the prior transcript is complete.
 - Keep changes narrowly scoped to the task.
 - Before stopping, update `.handoff/current.md` with changed files, checks run,
@@ -894,7 +930,7 @@ same session; only what's new is included below.
 
 {verification}
 
-## Shared Handoff Packet
+## Bridge State Log (`.handoff/current.md`)
 
 {current}
 

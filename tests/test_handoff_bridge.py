@@ -593,6 +593,48 @@ class BuildPromptContinuationTests(unittest.TestCase):
         self.assertIn("ENTRY_AFTER_CODEX_TURN", claude_prompt)
 
 
+class BuildPromptSelfContainedNoticeTests(unittest.TestCase):
+    """Regression (real-world reproduction, 2026-09-04): asked to run a
+    real first-turn prompt end-to-end, codex re-opened every doc already
+    inlined in its own prompt via `sed`, and separately matched this
+    project's "handoff" terminology against an unrelated, user-machine-
+    global codex skill of the same name (a different `.agent/`
+    PROJECT_CONTEXT/HANDOFF/DECISIONS scheme) plus a generic self-
+    evaluation skill -- ballooning a one-word message into a multi-minute
+    session that reran this project's own full test suite repeatedly and
+    edited unrelated files. SELF_CONTAINED_NOTICE is a best-effort, in-
+    prompt mitigation for both failure modes; these tests only guard that
+    it's actually present, not that a model necessarily obeys it."""
+
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
+        hb.HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+
+    def test_first_turn_includes_the_self_contained_notice(self):
+        prompt = hb.build_prompt("codex", {"task": "do the thing", "sessions": {}}, "hello")
+        self.assertIn(hb.SELF_CONTAINED_NOTICE, prompt)
+
+    def test_continuation_turn_includes_the_self_contained_notice(self):
+        state = {"task": "do the thing", "sessions": {"codex": "existing-session-id"}}
+        prompt = hb.build_prompt("codex", state, "hello")
+        self.assertIn(hb.SELF_CONTAINED_NOTICE, prompt)
+
+    def test_notice_disambiguates_from_an_unrelated_global_skill_of_the_same_name(self):
+        prompt = hb.build_prompt("codex", {"task": "do the thing", "sessions": {}}, "hello")
+        self.assertIn("unrelated", prompt)
+        self.assertIn("project-continuation, checkpoint, or self-evaluation skill", prompt)
+
+    def test_required_behavior_tells_the_model_not_to_reopen_already_included_docs(self):
+        prompt = hb.build_prompt("codex", {"task": "do the thing", "sessions": {}}, "hello")
+        self.assertIn("no need to", prompt)
+        self.assertIn("open these files again", prompt)
+        self.assertIn("respect it without re-reading", prompt)
+
+
 class VersionTests(unittest.TestCase):
     def test_cli_version_flag_reports_bridge_version(self):
         result = subprocess.run(
