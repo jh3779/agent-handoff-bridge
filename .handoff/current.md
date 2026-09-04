@@ -4172,3 +4172,124 @@ tag" rule by construction rather than by discipline.
   v0.2.0) -- pre-existing drift, not touched by this release, flagged
   again here only so it isn't mistaken for an oversight of this pass
   specifically.
+
+## Provider: claude / Model: claude-sonnet-5 — 2026-09-04 (v0.4.11 released: file preview + prompt-bloat/scope-creep mitigations + .gitignore install fix)
+
+- **Task**: continued directly from the v0.4.10 entry above. User asked
+  "궁금한데 이걸 좀 더 줄일 수 있지 않나" (can prompt overhead be reduced
+  further) -- investigated by measuring `build_prompt()`'s real output on
+  a fresh workspace (11,587 chars first turn) and proposed a per-provider
+  continuation-turn optimization, which the user confirmed. Then the user
+  asked to check whether a real end-to-end call was slow, which surfaced
+  two much larger, previously-hidden root causes via direct reproduction
+  (real `codex exec` calls, not assumption): (1) `git_snapshot()` leaking
+  ~7KB of git's own `--no-index` usage text in non-git workspaces, and
+  (2) the model redundantly re-reading content already inlined in its own
+  prompt *and* separately matching this project's "handoff" terminology
+  against unrelated, user-machine-global codex skills of similar names
+  (`~/.codex/skills/handoff/`, `~/.codex/skills/agent-self-evaluation/`,
+  later also `~/.codex/skills/tdd-workflow/`), ballooning a one-word
+  message into multi-minute sessions that reran the full test suite
+  repeatedly and edited unrelated files. Each fix was verified with a
+  real follow-up `codex` call, not assumed -- this iterative
+  fix-then-reproduce cycle is the bulk of this entry.
+- **Changed** (8 PRs, all merged to `main` before this release):
+  - PR #71 `feature/file-tree-preview`: file tree rows get a new "👁"
+    button opening a read-only preview via the existing `/api/file`
+    endpoint (no backend change) -- click-to-attach on the row itself is
+    unchanged.
+  - PR #72 `fix/prompt-overhead-reduction`: `git_snapshot()` no longer
+    runs `git diff --stat` at all once `git status` already proves
+    there's no repository (the actual source of the ~7KB leak -- outside
+    a repo, `git diff --stat` falls back to `--no-index` two-path-compare
+    mode and dumps its own usage text, confirmed against a real git
+    binary). New `MAX_CURRENT_FILE_PROMPT_CHARS`/`tail_for_prompt()` caps
+    `.handoff/current.md`'s contribution to any single prompt to ~20,000
+    characters (the file on disk is untouched -- only what's sent is
+    capped). This repo's own "hi" prompt: ~280,000 chars -> ~31,000 chars.
+  - PR #74 `fix/skip-static-context-on-continuation` (recreated from #73,
+    which used a `perf/` branch prefix -- not an allowed
+    `docs/quality-gates.md` type): a continuation turn for a provider
+    that already has a live `--resume`d session (tracked in
+    `state["sessions"]`) and isn't itself a handoff (`reason is None`) no
+    longer re-sends the 3 static protocol docs or the full
+    `.handoff/current.md` -- only the new user message, a live git
+    snapshot, and whatever was appended to `current.md` since *this
+    provider's own* last turn (tracked per-provider in the new
+    `state["prompt_context_offsets"]`, so a different provider's
+    interleaved turn is never silently skipped). Measured: 11,611 chars
+    (first turn) -> 525 chars (continuation).
+  - PR #75 `fix/prompt-self-contained-notice`: new `SELF_CONTAINED_NOTICE`
+    in both `build_prompt()` branches -- states the docs/state/git status
+    are already included and don't need re-fetching, and explicitly
+    disambiguates this tool's `.handoff/` state from any other
+    same-named skill. Reworded "Required Behavior" bullets and renamed
+    "## Shared Handoff Packet" -> "## Bridge State Log
+    (`.handoff/current.md`)" to reduce bare "handoff" repetition. Real
+    re-verification (same reproduction): redundant doc/git re-reads gone,
+    the "handoff"/self-evaluation skill collisions gone (150+ -> 109
+    tool-call events) -- but a *different* unrelated global skill
+    (`tdd-workflow`) got pulled in instead once the model found real bugs,
+    and wall-clock time actually went up (~9 min) chasing that new skill's
+    workflow.
+  - PR #76 `fix/prompt-scope-discipline`: new `SCOPE_DISCIPLINE_NOTICE` --
+    permits investigation a *real* task genuinely needs, but tells the
+    model not to proactively audit for unrelated bugs, not to run the
+    full test suite or a broad review unless asked, and not to invoke a
+    skill/subagent/larger workflow beyond the turn's actual needs. Real
+    re-verification: no unrelated skill invoked this time (109 -> 60
+    tool-call events, ~9 min -> ~3m15s) -- but the model *still* fixed a
+    real bug (the missing `.gitignore`, see PR #77) it stumbled into
+    while merely trying to verify its own no-op turn.
+  - PR #77 `fix/install-files-missing-gitignore`: the actual bug found
+    above -- `scripts/validate_handoff.py`'s `REQUIRED_FILES` has
+    required a top-level `.gitignore` since before that file existed, but
+    `INSTALL_FILES` never included one, so `handoff_bridge.py check`
+    failed immediately and deterministically in *every* freshly
+    installed/initialized workspace (`scripts/package_platforms.py`'s
+    `COMMON_FILES` already had it correctly -- only `INSTALL_FILES` had
+    drifted). New `InstallFilesCoverEveryRequiredFileTests` compares
+    `REQUIRED_FILES`/`JSON_FILES`/`PYTHON_FILES` against `INSTALL_FILES`
+    directly (excluding `.handoff/current.md`, a deliberate exception --
+    generated dynamically, not copied), so this class of drift fails CI
+    immediately in the future instead of only surfacing when someone hits
+    it in a real workspace. **Noticed but not fixed**: a fresh `init`
+    still fails `check` on a separate, same-shaped gap --
+    `README.ko.md` is in `package_platforms.py`'s `COMMON_FILES` but still
+    missing from `INSTALL_FILES`. Out of scope for that PR, flagged here
+    instead of silently expanding it.
+  - PR #78 `fix/scope-discipline-report-blockers-not-fix`: closed the
+    exact loophole PR #77 exposed -- `SCOPE_DISCIPLINE_NOTICE` now
+    explicitly says a blocker hit while investigating (a failing check, a
+    missing file, an unrelated bug) should be reported in the summary and
+    left alone unless the user's prompt itself asked for a fix, "even if
+    fixing it looks small."
+  - PR #79 `release/v0-4-11`: version bumped 0.4.10 -> 0.4.11 in all 3
+    tracked spots + `Cargo.lock`; `docs/release-notes.md` `## Unreleased`
+    moved to a dated `## v0.4.11` heading covering all of the above.
+- **Verified**: `python3 handoff_bridge.py check` -- 674/674 pass after
+  every PR in the sequence. Three separate real end-to-end `codex`
+  reproductions (not mocks) directly measuring tool-call counts and
+  wall-clock time before/after each prompt-wording change -- this is the
+  main evidence base for this entry's "Changed" section, not assumption.
+  Source zip sanity-checked standalone (`--version` reports `0.4.11`,
+  `check` passes with no git repo present). All 8 release asset URLs +
+  `releases/latest/download/latest.json` independently curl'd -- all
+  `200`, `latest.json` resolves to the `0.4.11` manifest. All 3 updated
+  README asset URLs independently curl'd -- `200`.
+- **Remaining**: the `README.ko.md`-missing-from-`INSTALL_FILES` gap
+  noted under PR #77 above is real but was deliberately left unfixed
+  (out of the scope the user asked for in that turn) -- worth a future
+  pass, likely alongside a broader audit of `INSTALL_FILES` vs
+  `package_platforms.py`'s `COMMON_FILES` for any other silent drift.
+  The prompt-wording mitigations (PRs #75/#76/#78) are explicitly
+  documented as best-effort, not guarantees -- a user's own
+  broadly-scoped personal global skills can still collide or cause
+  scope creep in ways no in-prompt wording can fully rule out.
+- **Blocked**: none. **Next**: nothing specifically queued. Still-open
+  items carried over from earlier in this session, untouched by this
+  release: the parked in-app-OAuth-login design question, M4
+  (split-pane layout), and the task-based auto-model-switching +
+  cross-model review pipeline design interview (still fully undesigned).
+  `docs/release-notes.ko.md` remains behind (last entry v0.2.0) --
+  pre-existing drift, not touched by this release.
