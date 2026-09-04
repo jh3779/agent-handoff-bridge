@@ -634,6 +634,30 @@ class BuildPromptSelfContainedNoticeTests(unittest.TestCase):
         self.assertIn("open these files again", prompt)
         self.assertIn("respect it without re-reading", prompt)
 
+    def test_first_turn_includes_the_scope_discipline_notice(self):
+        prompt = hb.build_prompt("codex", {"task": "do the thing", "sessions": {}}, "hello")
+        self.assertIn(hb.SCOPE_DISCIPLINE_NOTICE, prompt)
+
+    def test_continuation_turn_includes_the_scope_discipline_notice(self):
+        state = {"task": "do the thing", "sessions": {"codex": "existing-session-id"}}
+        prompt = hb.build_prompt("codex", state, "hello")
+        self.assertIn(hb.SCOPE_DISCIPLINE_NOTICE, prompt)
+
+    def test_scope_discipline_notice_tells_the_model_not_to_go_looking_for_extra_work(self):
+        # Regression (real-world reproduction, 2026-09-04, second finding):
+        # even after SELF_CONTAINED_NOTICE stopped the redundant re-reads
+        # and the "handoff"-named skill collision, a follow-up real run
+        # still ballooned a trivial message into a multi-minute session --
+        # this time by finding unrelated real bugs (a missing .gitignore,
+        # a stale run lock) and pulling in yet another global skill (a
+        # generic TDD workflow) to fix them, none of which the turn's
+        # actual prompt asked for.
+        prompt = hb.build_prompt("codex", {"task": "do the thing", "sessions": {}}, "hello")
+        self.assertIn("do not proactively audit", prompt)
+        self.assertIn("unrelated bugs", prompt)
+        self.assertIn("full project test suite", prompt)
+        self.assertIn("do not invoke a skill, subagent, or larger workflow", prompt)
+
 
 class VersionTests(unittest.TestCase):
     def test_cli_version_flag_reports_bridge_version(self):

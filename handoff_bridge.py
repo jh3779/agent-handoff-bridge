@@ -783,6 +783,24 @@ was generated. This tool (agent-handoff-bridge) manages its own state under `.ha
 to any other project-continuation, checkpoint, or self-evaluation skill you may separately have
 configured; do not invoke those for this task."""
 
+# Same real reproduction as SELF_CONTAINED_NOTICE, a second angle on it: even
+# after that notice stopped the redundant re-reads and the unrelated-skill
+# collision it targeted, a follow-up real run still ballooned a trivial
+# message into a multi-minute session -- this time by finding genuine,
+# unrelated bugs (a missing .gitignore, a stale run lock) and pulling in yet
+# another global skill (a generic TDD workflow) to fix them, none of which
+# the turn's actual prompt asked for. This notice narrows scope without
+# forbidding investigation a *real* task genuinely needs (reading files,
+# running the relevant tests, checking git status) -- it only tells the
+# model not to go looking for extra work uninvited.
+SCOPE_DISCIPLINE_NOTICE = """Scope discipline: do what "User Prompt For This Turn" below actually asks --
+no more, no less. If completing it genuinely requires investigation (reading files, running the
+relevant tests or commands, checking git status), that is expected. But do not proactively audit
+for unrelated bugs, do not run the full project test suite or a broad review unless the prompt
+itself asks for that, and do not invoke a skill, subagent, or larger workflow beyond what this
+specific turn needs. If you notice something else worth mentioning, say so briefly in your summary
+instead of acting on it unprompted."""
+
 
 def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason: str | None = None) -> str:
     """`reason` is set only for a genuine handoff (this provider is being
@@ -860,6 +878,8 @@ session; only what's new is included below.
 
 {SELF_CONTAINED_NOTICE}
 
+{SCOPE_DISCIPLINE_NOTICE}
+
 ## User Prompt For This Turn
 
 {user_prompt or "Continue from the shared handoff packet and current workspace."}
@@ -882,6 +902,8 @@ session; only what's new is included below.
     return f"""You are {provider}, working via the agent-handoff-bridge CLI tool on a task in this workspace.
 
 {SELF_CONTAINED_NOTICE}
+
+{SCOPE_DISCIPLINE_NOTICE}
 
 ## Task
 
