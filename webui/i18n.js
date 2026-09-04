@@ -134,6 +134,11 @@ var AHB_I18N = (function () {
       "tree.empty": "(비어 있음)",
       "tree.clickToAttach": "클릭하면 첨부됩니다",
       "tree.attachedWithoutPreview": "미리보기 없이 첨부됨: {msg}",
+      "tree.view.title": "내용 보기",
+      "filePreview.close.title": "닫기",
+      "filePreview.loading": "불러오는 중…",
+      "filePreview.truncatedNote": "파일이 커서 일부만 표시됩니다.",
+      "filePreview.loadError": "불러올 수 없음: {msg}",
 
       "msg.you": "나",
       "msg.system": "시스템",
@@ -272,6 +277,11 @@ var AHB_I18N = (function () {
       "tree.empty": "(empty)",
       "tree.clickToAttach": "Click to attach",
       "tree.attachedWithoutPreview": "Attached without a preview: {msg}",
+      "tree.view.title": "View content",
+      "filePreview.close.title": "Close",
+      "filePreview.loading": "Loading…",
+      "filePreview.truncatedNote": "File is large -- only part of it is shown.",
+      "filePreview.loadError": "Couldn't load: {msg}",
 
       "msg.you": "You",
       "msg.system": "System",

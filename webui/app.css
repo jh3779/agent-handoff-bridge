@@ -188,6 +188,26 @@ body {
   padding: 6px 14px; font-size: 12px; cursor: pointer; font-family: var(--font);
 }
 .folder-prompt button.primary { background: var(--primary); color: var(--on-primary); border-color: transparent; }
+.file-preview {
+  width: min(720px, 90vw); max-height: 80vh;
+  display: flex; flex-direction: column;
+}
+.file-preview-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 8px;
+}
+.file-preview-name { font-family: var(--mono); font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-preview-header button {
+  border: none; background: none; cursor: pointer; font-size: 13px; color: var(--muted); padding: 2px 6px;
+}
+.file-preview-header button:hover { color: var(--on-bg); }
+.file-preview-note { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+.file-preview-content {
+  margin: 0; overflow: auto; flex: 1; min-height: 0;
+  background: var(--bg); border: 1px solid var(--outline); border-radius: 8px;
+  padding: 10px 12px; font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; color: var(--on-bg);
+}
 .provider-select {
   font-family: var(--mono);
   font-size: 11px;
@@ -253,6 +273,12 @@ body {
 .tree-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tree-children { margin-left: 16px; }
 .tree-empty, .tree-error { padding: 8px 10px; font-size: 11.5px; color: var(--muted); }
+.tree-view-btn {
+  flex: none; opacity: 0; border: none; background: none; cursor: pointer;
+  font-size: 12px; padding: 2px 4px; border-radius: 6px; color: var(--muted);
+}
+.tree-row:hover .tree-view-btn { opacity: 1; }
+.tree-view-btn:hover { background: var(--surface); color: var(--on-bg); }
 .sidebar-footer {
   border-top: 1px solid var(--outline);
   padding: 8px 10px;

@@ -51,6 +51,11 @@
   const settingsBtn = document.getElementById("settings-btn");
   const settingsPanelOverlay = document.getElementById("settings-panel-overlay");
   const settingsPanelClose = document.getElementById("settings-panel-close");
+  const filePreviewOverlay = document.getElementById("file-preview-overlay");
+  const filePreviewName = document.getElementById("file-preview-name");
+  const filePreviewNote = document.getElementById("file-preview-note");
+  const filePreviewContent = document.getElementById("file-preview-content");
+  const filePreviewClose = document.getElementById("file-preview-close");
   const providerPanelList = document.getElementById("provider-panel-list");
   const customProviderPanelList = document.getElementById("custom-provider-panel-list");
   const customProviderAddForm = document.getElementById("custom-provider-add-form");
@@ -941,6 +946,15 @@
     } else {
       row.addEventListener("click", () => attachWorkspaceFile(entry));
       row.title = t("tree.clickToAttach");
+      // Separate from the row's own click-to-attach (kept as-is, already
+      // relied on) -- a dedicated button so a user can read a file without
+      // also adding it to the next message's context.
+      const viewBtn = el("button", { type: "button", class: "tree-view-btn", text: "👁", "data-i18n-title": "tree.view.title", title: t("tree.view.title") }, []);
+      viewBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openFilePreview(entry);
+      });
+      row.appendChild(viewBtn);
     }
     return row;
   }
@@ -960,6 +974,36 @@
       showToast(t("tree.attachedWithoutPreview", { msg: err.message }));
     }
   }
+
+  // ---------- file preview (read-only, no attach) ----------
+
+  async function openFilePreview(entry) {
+    filePreviewName.textContent = entry.name;
+    filePreviewNote.hidden = true;
+    filePreviewContent.textContent = t("filePreview.loading");
+    filePreviewOverlay.classList.add("show");
+    try {
+      const preview = await fetchJSON(`/api/file?path=${encodeURIComponent(entry.path)}`);
+      filePreviewContent.textContent = preview.content;
+      if (preview.truncated) {
+        filePreviewNote.hidden = false;
+        filePreviewNote.textContent = t("filePreview.truncatedNote");
+      }
+    } catch (err) {
+      filePreviewContent.textContent = "";
+      filePreviewNote.hidden = false;
+      filePreviewNote.textContent = t("filePreview.loadError", { msg: err.message });
+    }
+  }
+
+  function closeFilePreview() {
+    filePreviewOverlay.classList.remove("show");
+  }
+
+  filePreviewClose.addEventListener("click", closeFilePreview);
+  filePreviewOverlay.addEventListener("click", (event) => {
+    if (event.target === filePreviewOverlay) closeFilePreview();
+  });
 
   // ---------- attachments ----------
 
