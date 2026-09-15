@@ -63,7 +63,31 @@ jobs:
   rust-build:
     # Same workflow_dispatch exclusion as validate above, same reason.
     if: github.event_name != 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    # CI OS-coverage audit (2026-09-15): this job used to be ubuntu-latest
+    # only, so a Windows- or macOS-specific compile error in src-tauri/
+    # (conditional compilation, a windows-crate/objc2 API only one platform
+    # has, etc.) would go undetected by every push/PR and surface only at
+    # installer-build's manual, release-time run -- unlike sidecar-build
+    # right below, which already matrixes all three OSes on every push/PR.
+    # Same matrix/expected-runner-os/arch guard pattern as sidecar-build
+    # for the same reason (see that job's comment on PR #13).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target-triple: aarch64-apple-darwin
+            expected-runner-os: macOS
+            expected-runner-arch: ARM64
+          - os: windows-latest
+            target-triple: x86_64-pc-windows-msvc
+            expected-runner-os: Windows
+            expected-runner-arch: X64
+          - os: ubuntu-latest
+            target-triple: x86_64-unknown-linux-gnu
+            expected-runner-os: Linux
+            expected-runner-arch: X64
+    runs-on: ${{ matrix.os }}
     # This job's very first real CI run hung indefinitely (13+ minutes,
     # never even reaching `cargo build`) on the apt-get step below --
     # ubuntu-latest images ship `needrestart`, which prompts interactively
@@ -71,11 +95,29 @@ jobs:
     # unless told not to, and that prompt just hangs forever with no
     # terminal attached to answer it. A hard ceiling here means any repeat
     # of this (or a genuinely new hang) fails loudly in ~10 minutes instead
-    # of silently burning CI time.
+    # of silently burning CI time. Same ceiling on all three legs --
+    # macOS/Windows never hit the apt-get hang, but a genuinely new hang on
+    # either should still fail loudly.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      # Same guard as sidecar-build, same reason -- see that job's comment.
+      - name: Verify runner OS/arch matches this leg's assumed target triple
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" != "${{ matrix.expected-runner-os }}" ] || [ "${{ runner.arch }}" != "${{ matrix.expected-runner-arch }}" ]; then
+            echo "runner.os/runner.arch is ${{ runner.os }}/${{ runner.arch }}, but ${{ matrix.target-triple }} assumes ${{ matrix.expected-runner-os }}/${{ matrix.expected-runner-arch }}."
+            echo "GitHub changed what '${{ matrix.os }}' maps to -- update this matrix leg's target-triple (and expected-runner-os/arch) to match."
+            exit 1
+          fi
+      # Only the Linux leg needs system packages -- Windows ships the MSVC
+      # toolchain via dtolnay/rust-toolchain below and WebView2 is
+      # preinstalled on windows-latest; macOS ships Xcode Command Line
+      # Tools preinstalled on macos-latest. Neither sidecar-build (PyInstaller
+      # only) nor this job (compile-only, no real bundling) has ever needed
+      # anything beyond what those runners already carry for those two OSes.
       - name: Install Tauri's Linux build prerequisites
+        if: matrix.os == 'ubuntu-latest'
         env:
           DEBIAN_FRONTEND: noninteractive
           NEEDRESTART_MODE: a
@@ -86,12 +128,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      # Placeholder name must carry this leg's own target-triple (and a
+      # .exe suffix on Windows) -- tauri-build's build script checks
+      # tauri.conf.json's `bundle.externalBin` path per the triple it's
+      # actually compiling for, not always the Linux one the original
+      # single-OS version of this job hardcoded.
       - name: Create placeholder sidecar binaries
+        shell: bash
         run: |
+          suffix=""
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then suffix=".exe"; fi
           mkdir -p src-tauri/binaries
           for name in agent-handoff-bridge-server agent-handoff-bridge-cli agent-handoff-bridge-validate agent-handoff-bridge-scan; do
-            touch "src-tauri/binaries/${name}-x86_64-unknown-linux-gnu"
-            chmod +x "src-tauri/binaries/${name}-x86_64-unknown-linux-gnu"
+            touch "src-tauri/binaries/${name}-${{ matrix.target-triple }}${suffix}"
+            chmod +x "src-tauri/binaries/${name}-${{ matrix.target-triple }}${suffix}"
           done
       - name: cargo build (src-tauri)
         run: cargo build --manifest-path src-tauri/Cargo.toml
