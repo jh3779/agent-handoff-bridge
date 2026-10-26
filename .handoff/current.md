@@ -4293,3 +4293,41 @@ tag" rule by construction rather than by discipline.
   cross-model review pipeline design interview (still fully undesigned).
   `docs/release-notes.ko.md` remains behind (last entry v0.2.0) --
   pre-existing drift, not touched by this release.
+
+### 2026-10-26 — Remove API-key mode and custom providers (DEC-29)
+
+- **Target**: Claude Code CLI, Web UI backend/frontend + docs, branch
+  `refactor/remove-api-key-mode` (not committed, no PR yet).
+- **Why**: the user pointed out the bridge exists to hand work between
+  subscription CLIs on quota/context limits; a pay-as-you-go API has no such
+  limit, so API-key mode never served that purpose, and its `run_shell` tool
+  loop was the largest risk surface (Production Audit F1). User chose
+  "remove the code" over "drop from roadmap only" / "shrink to chat-only".
+- **Changed**: deleted `webui_api_key_mode.py`; `webui_credentials.py` now only
+  holds CLI `--model` overrides (`cli_models`) + `cli_available`;
+  `webui_bridge_run.py` lost its API-key/custom-provider dispatch (a missing CLI
+  now fails through the normal subprocess path, exit 127); `handoff_webui.py`
+  dropped `/api/provider-key` + `/api/custom-provider` and trimmed
+  `GET /api/providers` to `{providers:[{provider,cli_detected,cli_model,
+  known_models}]}`; frontend (`app.js`/`index.html`/`i18n.js`/`app.css`) lost
+  the key form and custom-provider form; removed the module from
+  `INSTALL_FILES`, `package_platforms.py`, `validate_handoff.py`. Docs updated
+  (README x2, architecture, security-model, cli-reference, webui-chat-storage,
+  provider-extensibility, index, SKILL.md); `research-api-key-mode.md` marked
+  historical; DEC-29 added to `flutter-mapping.html`; roadmap Phase 4 marked
+  removed; `release-notes.md` Unreleased entry added.
+- **Verified**: `python3 handoff_bridge.py check` -- 514 tests OK, contract
+  files consistent. `scripts/scan_secrets.py` clean. Branch name passes
+  `check_branch_name.py`. `node --check webui/app.js` OK. Tests: ~21 API-key
+  test classes/methods deleted; added `NoCliAvailableTests`, a legacy-entries-
+  preserved test, and live-server tests (providers response shape, removed
+  routes return 405, `/api/run` rejects `custom:*`).
+- **Remaining / decisions for the user**: (1) legacy plaintext API keys in a
+  user's `~/Documents/Agent Handoff Bridge/credentials.json` are neither read
+  nor deleted (documented; a save preserves them) -- decide whether to add an
+  explicit cleanup. (2) Not done: `docs/release-notes.ko.md` (already behind
+  since v0.2.0), historical snapshots (`codebase-review.md`,
+  `production-audit-2026-09-02.md`) and `components.html` were left as-is.
+  (3) Version bump / release not done -- needs its own `release/` PR.
+  (4) Not exercised in a real browser/Tauri build; only unit/HTTP tests.
+- **Blocked**: none. **Next**: review the diff, then commit/PR if approved.

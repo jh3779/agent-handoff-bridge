@@ -43,7 +43,7 @@ context.
 - [Web UI Chat Storage](webui-chat-storage.md): the on-disk data model for
   local chat history — schema, atomicity, archiving, git visibility.
 - [Provider Extensibility](provider-extensibility.md): what it actually
-  takes to add a new AI provider (CLI-based or API-key-based) beyond Codex
+  takes to add a new AI provider (CLI-based) beyond Codex
   and Claude Code.
 
 ## Remote And Mobile
@@ -52,9 +52,9 @@ context.
   Codex and Claude Code control paths.
 - [Research Notes](research.md): source-backed research and implementation
   rationale.
-- [Research: API-Key Mode](research-api-key-mode.md): Phase 4's
+- [Research: API-Key Mode](research-api-key-mode.md): *historical* — Phase 4's
   pre-implementation research into Anthropic/OpenAI direct-API capabilities
-  and credential storage options.
+  and credential storage options. The mode it informed was later removed.
 - [Research: Gemini CLI](research-gemini-cli.md): Phase 5's
   pre-implementation research into Gemini CLI's non-interactive mode,
   JSON output, session resume, auth, and hooks.

@@ -10,8 +10,7 @@ quota/rate/context failures, then hand the task to another CLI with the
 current workspace state. Gemini CLI was added as a third provider in Phase 5
 — see [docs/research-gemini-cli.md](docs/research-gemini-cli.md) for the
 practical differences from Codex/Claude (no session resume by real ID, no
-free auth-status check — the web UI's API-key mode supports Gemini too as
-of v0.3.0).
+free auth-status check).
 
 ## Download
 

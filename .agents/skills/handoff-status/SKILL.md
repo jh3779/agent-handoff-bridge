@@ -1,6 +1,6 @@
 ---
 name: handoff-status
-description: Check this project's shared cross-agent handoff state (.handoff/current.md, provider CLI availability, saved API keys) before starting or continuing work, or when asked to check/diagnose provider or handoff status. Use when the user asks to continue a task, check what another agent already did, or troubleshoot which providers are available.
+description: Check this project's shared cross-agent handoff state (.handoff/current.md, provider CLI availability) before starting or continuing work, or when asked to check/diagnose provider or handoff status. Use when the user asks to continue a task, check what another agent already did, or troubleshoot which providers are available.
 ---
 
 # Handoff Status
@@ -24,7 +24,7 @@ already did or miss a blocker it left behind.
 
    Reports the last run's provider, exit code, and whether a handoff was
    needed.
-3. If provider availability or API-key configuration is in question, run:
+3. If provider availability is in question, run:
 
    ```bash
    python3 handoff_bridge.py diagnose

@@ -413,9 +413,8 @@ class LoadStateTests(unittest.TestCase):
 
 class BuildPromptSharedContextTests(unittest.TestCase):
     """`.handoff/shared-context.md` -- free-form, user-authored, per-
-    workspace project context folded into every CLI-mode prompt
-    regardless of provider. API-key mode reads the same file directly
-    (webui_api_key_mode.py), not through this module."""
+    workspace project context folded into every prompt regardless of
+    provider."""
 
     def setUp(self):
         self._orig_cwd = os.getcwd()

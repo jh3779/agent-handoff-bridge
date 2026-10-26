@@ -214,10 +214,9 @@ python3 handoff_webui.py --workspace /path/to/project
 Chat redesign from [`docs/design-system/`](design-system/README.md) — as of
 Phase 1, this actually calls Codex/Claude; as of Phase 2, `--workspace` is
 optional; as of Phase 3, a history drawer shows recent activity across
-every project you've opened, not just the current one; as of Phase 4, a
-provider with no local CLI can be connected via API key instead (full
-agentic parity with CLI mode as of the CFL-17 follow-up below, chat-only
-before that); as of Phase 5, Gemini CLI is a third selectable provider; as
+every project you've opened, not just the current one; (Phase 4's API-key
+mode, which let a provider with no local CLI be reached by API key, was
+removed after v0.4.11); as of Phase 5, Gemini CLI is a third selectable provider; as
 of Phase 6, a titlebar badge checks for a newer release. A local stdlib
 HTTP server. What it does:
 
@@ -332,31 +331,15 @@ HTTP server. What it does:
   Settings panel, as of 2026-09-02 -- previously its own standalone
   titlebar button before the Settings panel consolidated it alongside
   Context, an auto-fallback toggle, and a theme switch) opens a connection
-  panel listing each provider's CLI-detection status. A provider with **no local CLI detected**
-  can be connected instead by pasting an API key (and optionally a model) —
-  this calls the provider's HTTP API directly instead of a local subprocess.
-  Full agentic parity with CLI mode
-  ([CFL-17](design-system/flutter-mapping.html#s1c), resolved as DEC-21):
-  the model can read, write, and edit files under the workspace and run
-  shell commands in it via a bridge-built tool loop, the same as CLI mode
-  can — DEC-02 (confirm only the first send per session) covers every tool
-  call this makes too, so nothing beyond that first confirmation gates a
-  file write or a shell command once a session is underway. A provider
-  whose CLI *is* detected always uses the CLI path, even if a key is also
-  saved for it. Keys are stored in
-  `~/Documents/Agent Handoff Bridge/credentials.json` (`0600`
-  permissions), never inside a workspace. A saved key is never echoed back
-  into the panel, so **"저장" with an empty key field is a no-op**, not a
-  delete — a separate **"연결 해제"** button (shown only once a key is
-  configured) is the only way to actually remove one, so reopening the
-  panel just to change a provider's model doesn't accidentally wipe its
-  key. There is currently **no way to change only the model** without
-  re-pasting the key — "저장" always sends both together and does nothing
-  at all if the key field is empty, so updating a provider's model means
-  re-entering its key alongside the new model value. A model-only update
-  path is a possible future addition, not something this phase supports.
-  Full schema, dispatch priority, and security posture:
-  [Web UI Chat Storage § Credentials & API-Key Mode](webui-chat-storage.md#credentials--api-key-mode-phase-4).
+  panel listing each provider's CLI-detection status. A provider whose CLI
+  **is detected** can be given a default `--model` override (suggestions come
+  from `known_cli_models()`), sent as `--model` on every run and overridable
+  per message from the titlebar's model field; the value is stored in
+  `~/Documents/Agent Handoff Bridge/credentials.json` (`0600`) under
+  `cli_models`. A provider with no local CLI is shown as "CLI 없음" and cannot
+  be run from here — there is no API-key fallback (removed after v0.4.11);
+  install its CLI instead. Full schema:
+  [Web UI Chat Storage § Provider Settings](webui-chat-storage.md#provider-settings-cli-model-overrides).
 - **Update check** (titlebar button, always visible) runs once in the
   background at startup (`handoff_bridge.check_for_update()`, shelling
   out to the local `gh` CLI — written while this repo was still private,
@@ -478,8 +461,8 @@ fake `codex`/`claude` scripts on `PATH` (deterministic, no tokens spent, no
 network). See [Provider Extensibility](provider-extensibility.md) and the
 Conflict List in
 [design-system/flutter-mapping.html](design-system/flutter-mapping.html#s2)
-for what's intentionally still missing (API-key auth, Gemini, update
-checks — cross-project history browsing shipped in Phase 3).
+for the roadmap history of what was once missing (Gemini, update checks,
+and cross-project history browsing have all since shipped).
 
 ## Platform Packages
 
