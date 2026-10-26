@@ -278,10 +278,11 @@ largest risk surface in the app
 ([Production Audit F1](production-audit-2026-09-02.md)). The file name
 `credentials.json` is kept only so saved model overrides carry over. Key
 entries an older install wrote into the same file (`"claude": {"key": ...}`,
-`"custom_providers": {...}`) are no longer read or used, but are **not
-deleted** — a save only rewrites the `cli_models` key and preserves the
-rest — so a user who wants them gone must remove them from that file by
-hand. A run for a provider whose CLI is absent now fails through the normal
+`"custom_providers": {...}`) are no longer used for authentication or
+any call, but are **not deleted**: a save parses the whole file, changes
+only the `cli_models` key, and writes everything else back unchanged (so
+the old keys are still parsed and re-serialized on that save). A user who
+wants them gone must remove them from that file by hand. A run for a provider whose CLI is absent now fails through the normal
 bridge subprocess path (`exit_code` 127, a `tool_failure` record).
 
 ### Shared Project Context (DEC-27)

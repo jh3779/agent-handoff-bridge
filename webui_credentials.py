@@ -7,8 +7,9 @@ provider API keys and custom OpenAI/Anthropic-compatible endpoints here;
 only the "cli_models" key is read or written now, so this module never
 stores a secret. The name is kept so users' saved model overrides carry
 over without a migration. Legacy key entries an older install left in the
-file are preserved untouched by the read-modify-write below (nothing here
-reads them), so a user who wants them gone must delete them by hand.
+file are never used, but the read-modify-write below still parses and
+rewrites them unchanged, so a user who wants them gone must delete them
+by hand.
 """
 
 from __future__ import annotations

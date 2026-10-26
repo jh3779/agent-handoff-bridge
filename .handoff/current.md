@@ -4297,7 +4297,8 @@ tag" rule by construction rather than by discipline.
 ### 2026-10-26 — Remove API-key mode and custom providers (DEC-29)
 
 - **Target**: Claude Code CLI, Web UI backend/frontend + docs, branch
-  `refactor/remove-api-key-mode` (not committed, no PR yet).
+  `refactor/remove-api-key-mode`, PR #83
+  (https://github.com/jh3779/agent-handoff-bridge/pull/83), open, merge-ready pending review.
 - **Why**: the user pointed out the bridge exists to hand work between
   subscription CLIs on quota/context limits; a pay-as-you-go API has no such
   limit, so API-key mode never served that purpose, and its `run_shell` tool
@@ -4330,4 +4331,18 @@ tag" rule by construction rather than by discipline.
   `production-audit-2026-09-02.md`) and `components.html` were left as-is.
   (3) Version bump / release not done -- needs its own `release/` PR.
   (4) Not exercised in a real browser/Tauri build; only unit/HTTP tests.
-- **Blocked**: none. **Next**: review the diff, then commit/PR if approved.
+- **Review-bot follow-up (commit after 69923aee)**: the bot (Codex) found
+  `run_provider()` re-ran the same provider when `next_available_provider()`
+  returned `current` (no other CLI installed -- also hit with only one CLI
+  installed). Fixed in `handoff_bridge.py` (no recursion when
+  `fallback == provider`); 4 tests fail without the fix, pass with it. Also:
+  security-model/webui-chat-storage/credentials docstring now say legacy keys
+  are still parsed+rewritten on a model save (not "never read"); release notes
+  tell users to delete a leftover `webui_api_key_mode.py` after updating over
+  an old install (`install_standard_files()` only copies, never deletes);
+  `components.html` §14 and `wireframes.html` SCR-06 carry a DEC-29 "deprecated"
+  banner. Deliberately NOT done: auto-deleting legacy keys (irreversible, bot
+  agrees), a stale-file cleanup in `install`, and the version bump (belongs in
+  a `release/` PR as v0.5.0).
+- **Blocked**: none. **Next**: user approves/merges PR #83; then a `release/`
+  PR for v0.5.0.

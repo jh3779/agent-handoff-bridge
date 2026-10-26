@@ -2937,6 +2937,9 @@ class NoCliAvailableTests(FakeProviderPathMixin, unittest.TestCase):
         # FileNotFoundError -> exit_code 127 handling is what is exercised.
         with mock.patch.dict(os.environ, {"PATH": str(self.fake_bin)}):
             records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "claude", "hello", None, "continue")
+        # auto-fallback is on by default, but with no other CLI installed
+        # the bridge must stop at the first failure, not retry the same one.
+        self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["exit_code"], 127)
         self.assertTrue(records[0]["reason"].startswith("tool_failure"))
 
@@ -2945,13 +2948,12 @@ class NoCliAvailableTests(FakeProviderPathMixin, unittest.TestCase):
         # chat log, so the literal string "auto" must never reach it.
         with mock.patch.dict(os.environ, {"PATH": str(self.fake_bin)}):
             records = webui_bridge_run.run_provider_via_bridge(threading.Lock(), self.workspace, "auto", "hello", None, "continue")
-        # auto-fallback (on by default) may chain into a second provider,
-        # so assert on every record rather than assuming exactly one.
-        self.assertGreaterEqual(len(records), 1)
-        for record in records:
-            self.assertTrue(record["handoff_needed"])
-            self.assertNotEqual(record["provider"], "auto")
-            self.assertIn(record["provider"], webui.PROVIDERS)
+        # No CLI at all: auto-fallback has nothing to switch to, so exactly
+        # one failure record -- not the same provider twice.
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]["handoff_needed"])
+        self.assertNotEqual(records[0]["provider"], "auto")
+        self.assertIn(records[0]["provider"], webui.PROVIDERS)
 
 
 class CliProviderModelLiveServerTests(unittest.TestCase):

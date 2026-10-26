@@ -451,7 +451,8 @@
 
   <!-- ============ S8: Provider 온보딩 · API 키 연결 ============ -->
   <section id="s8" class="sec">
-    <div class="sec-h"><span class="sec-num">SCR-06</span><span class="sec-t">Provider 온보딩 — CLI 미설치 사용자를 위한 질문</span><span class="tag">Diagnose 결과 CLI 없음 → API 키 연결 경로 제시 · Gemini CLI 인식 추가</span></div>
+    <div class="sec-h"><span class="sec-num">SCR-06</span><span class="sec-t">Provider 온보딩 — CLI 미설치 사용자를 위한 질문</span><span class="tag">Diagnose 결과 CLI 없음 → API 키 연결 경로 제시 · Gemini CLI 인식 추가 · API 키 경로 폐기됨</span></div>
+    <div class="note" style="margin-top:10px;border-left:3px solid var(--ds-st-fail-fg);padding-left:10px"><b>⚠ 폐기됨 (<a href="flutter-mapping.html#s1c">DEC-29</a>)</b>: 이 절이 그리는 <b>API 키 입력 필드·API 키 연결 경로는 v0.4.11 이후 제거됐다</b>. 이하는 Phase 4~5 시점의 <i>역사적 설계</i>이며 현재 동작이 아니다. 현재 화면은 CLI 감지 배지(감지됨/없음)와, 감지된 CLI의 기본 모델(<code>--model</code>) 지정만 제공한다. 이 설계를 근거로 <code>/api/provider-key</code> 등을 다시 구현하지 말 것.</div>
     <div class="frame">
       <div class="tag">"Diagnose" 클릭 또는 최초 실행 시 자동 표시</div>
       <div class="appshell" style="height:auto;min-height:380px">

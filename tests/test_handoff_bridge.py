@@ -1831,6 +1831,72 @@ class GeminiIntegrationTests(unittest.TestCase):
             self.assertEqual(state["history"][1]["final_text"], "gemini picked up the handoff")
             self.assertFalse(state["history"][1]["handoff_needed"])
 
+    def _run_codex_with_auto_fallback(self, workspace: Path, fake_bin: Path):
+        prompt_path = workspace / "prompt.txt"
+        prompt_path.write_text("hello", encoding="utf-8")
+        # Minimal system baseline + fake_bin, not the inherited PATH, so a
+        # real claude/gemini CLI on this machine can't answer for a
+        # provider this test needs to be absent (see the skip-uninstalled
+        # test above for why a fully-empty PATH doesn't work).
+        env = dict(os.environ)
+        env["PATH"] = f"{fake_bin}{os.pathsep}/usr/bin:/bin"
+        bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
+        return subprocess.run(
+            [
+                sys.executable,
+                str(bridge_script),
+                "--workspace",
+                str(workspace),
+                "run",
+                "codex",
+                "--execute",
+                "--auto-fallback",
+                "--prompt-file",
+                str(prompt_path),
+            ],
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+            timeout=30,
+        )
+
+    def test_auto_fallback_does_not_rerun_the_same_provider_when_it_is_the_only_one_installed(self):
+        # next_available_provider() returns `current` itself when no other
+        # CLI is installed; run_provider() used to recurse into it anyway,
+        # re-running the same provider and appending a duplicate failure
+        # record (found in review of the API-key-mode removal, where a
+        # user with no CLIs at all hit this on every send).
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()
+            fake_codex = fake_bin / "codex"
+            fake_codex.write_text(
+                "#!/bin/sh\ncat >/dev/null\necho 'Error: rate limit exceeded (429)'\nexit 1\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(0o755)
+
+            result = self._run_codex_with_auto_fallback(workspace, fake_bin)
+            self.assertEqual(result.returncode, 1, msg=result.stderr)
+            self.assertIn("not retrying codex", result.stdout)
+            state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(state["history"]), 1)
+            self.assertEqual(state["history"][0]["provider"], "codex")
+
+    def test_auto_fallback_with_no_cli_installed_records_exactly_one_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            fake_bin = workspace / "fake-bin"
+            fake_bin.mkdir()  # deliberately empty: no codex/claude/gemini
+
+            result = self._run_codex_with_auto_fallback(workspace, fake_bin)
+            self.assertEqual(result.returncode, 127, msg=result.stderr)
+            state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(state["history"]), 1)
+            self.assertEqual(state["history"][0]["exit_code"], 127)
+
 
 class ParseVersionTupleTests(unittest.TestCase):
     def test_v_prefix_is_stripped(self):

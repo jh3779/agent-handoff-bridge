@@ -1478,7 +1478,13 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
 
     if handoff_needed:
         fallback = next_available_provider(provider)
-        if args.auto_fallback:
+        if args.auto_fallback and fallback == provider:
+            # next_available_provider() hands back `provider` itself when
+            # nothing else is installed (only one CLI present, or none at
+            # all). Recursing would just re-run the same provider and
+            # append a duplicate failure record, so stop at the first one.
+            print(f"Auto-fallback enabled, but no other installed provider to switch to; not retrying {provider}.")
+        elif args.auto_fallback:
             # Don't build/write the fallback prompt here: the recursive
             # run_provider() call below builds it again from scratch right
             # after state["instruction_type"] is set to "handoff", so a

@@ -45,8 +45,11 @@ a provider whose CLI wasn't installed) was removed after v0.4.11 — see
 `~/Documents/Agent Handoff Bridge/credentials.json` now holds only per-provider
 default `--model` overrides, but stays on the never-commit list above: an
 install that predates the removal may still have plaintext API-key entries in
-it (`0600`, never inside a git-tracked workspace). Nothing reads them any
-more and nothing deletes them automatically — delete them by hand if present.
+it (`0600`, never inside a git-tracked workspace). Nothing uses them for
+authentication or API calls any more, and nothing deletes them automatically.
+But saving a model override still parses the whole file and writes it back
+(read-modify-write), so legacy keys do pass through the process's memory on
+that save — delete them by hand if present.
 
 ## Mobile Remote Boundaries
 

@@ -23,7 +23,7 @@
 
   <header class="pagehead">
     <div class="t">컴포넌트 라이브러리</div>
-    <div class="s">§1–5는 v0.1 폼 기반 GUI(<code>handoff_desktop.py</code> 실제 구현) 레거시 참고용. §6 터미널은 <code>handoff_control.py</code>로 이번 재설계와 무관. §8–15는 <a href="wireframes.html#s2">v0.2 채팅형 재설계</a>의 신규 컴포넌트 — Phase 0~6 완료로 <b>§3(상태 배지)·§8(사이드바 트리)·§9(메시지 버블, 코드블록 렌더링 포함)·§10(입력창/Open Folder/Provider 선택)·§11(히스토리 항목)·§13(히스토리 그룹 헤더)·§14(Provider 연결·API 키, 전체 에이전트 기능 패리티 포함)·§15(업데이트 배지·팝오버)까지 전부 <code>handoff_webui.py</code>에 실제 구현됨</b>. 남은 건 Phase 7(DEC-01 프레임워크 전환)뿐 — <a href="roadmap.md">roadmap.md</a>가 정본.</div>
+    <div class="s">§1–5는 v0.1 폼 기반 GUI(<code>handoff_desktop.py</code> 실제 구현) 레거시 참고용. §6 터미널은 <code>handoff_control.py</code>로 이번 재설계와 무관. §8–15는 <a href="wireframes.html#s2">v0.2 채팅형 재설계</a>의 신규 컴포넌트 — Phase 0~6 완료로 <b>§3(상태 배지)·§8(사이드바 트리)·§9(메시지 버블, 코드블록 렌더링 포함)·§10(입력창/Open Folder/Provider 선택)·§11(히스토리 항목)·§13(히스토리 그룹 헤더)·§14(Provider 연결 — API 키 부분은 DEC-29로 폐기)·§15(업데이트 배지·팝오버)까지 전부 <code>handoff_webui.py</code>에 실제 구현됨</b>. 남은 건 Phase 7(DEC-01 프레임워크 전환)뿐 — <a href="roadmap.md">roadmap.md</a>가 정본.</div>
     <div class="toc">
       <a href="#s1">버튼(legacy)</a><a href="#s2">입력 필드(legacy)</a><a href="#s3">상태 배지</a>
       <a href="#s4">로그 콘솔(legacy)</a><a href="#s5">다이얼로그(legacy)</a><a href="#s6">터미널 메뉴</a>
@@ -220,7 +220,8 @@ handoff needed: True (tool_failure: provider command not found)</div>
   </section>
 
   <section id="s14" class="sec">
-    <div class="sec-h"><span class="sec-num">14</span><span class="sec-t">Provider 연결 상태 · API 키 입력 <b class="tag" style="color:var(--ds-primary)">NEW</b></span><span class="tag">CLI 미사용자(토큰 기반 API 사용자) 대응</span></div>
+    <div class="sec-h"><span class="sec-num">14</span><span class="sec-t">Provider 연결 상태 · API 키 입력 <b class="tag" style="color:var(--ds-primary)">NEW</b></span><span class="tag">CLI 미사용자(토큰 기반 API 사용자) 대응 · 폐기됨</span></div>
+    <div class="note" style="margin-top:10px;border-left:3px solid var(--ds-st-fail-fg);padding-left:10px"><b>⚠ 폐기됨 (<a href="flutter-mapping.html#s1c">DEC-29</a>)</b>: 이 절이 그리는 <b>API 키 입력 필드·API 키 연결 경로는 v0.4.11 이후 제거됐다</b>. 이하는 Phase 4~5 시점의 <i>역사적 설계</i>이며 현재 동작이 아니다. 현재 화면은 CLI 감지 배지(감지됨/없음)와, 감지된 CLI의 기본 모델(<code>--model</code>) 지정만 제공한다. 이 설계를 근거로 <code>/api/provider-key</code> 등을 다시 구현하지 말 것.</div>
     <div class="card pad" style="max-width:420px">
       <div class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--ds-outline-variant)">
         <span style="display:flex;align-items:center;gap:8px"><span class="msym" style="font-size:18px">terminal</span>Codex</span>

@@ -20,6 +20,14 @@
   yourself (keep the `cli_models` key). `GET /api/providers` also dropped its
   `api_key_mode_supported`/`api_key_configured`/`model` fields and the
   `custom_providers` key.
+- **Updating an existing install:** `handoff_bridge.py install --force` only
+  copies files that are still in the install list; it does not delete files
+  that were dropped from it. If you updated over an old install directory,
+  delete the leftover `webui_api_key_mode.py` by hand -- nothing imports it any
+  more, but the old shell-exec implementation would otherwise stay on disk.
+- **Fix:** with `--auto-fallback` and no other installed CLI to switch to (for
+  example only one CLI installed, or none), the bridge no longer re-runs the
+  same provider a second time and no longer records a duplicate failure.
 
 ## v0.4.11 — 2026-09-04
 
