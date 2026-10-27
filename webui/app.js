@@ -57,8 +57,6 @@
   const filePreviewContent = document.getElementById("file-preview-content");
   const filePreviewClose = document.getElementById("file-preview-close");
   const providerPanelList = document.getElementById("provider-panel-list");
-  const customProviderPanelList = document.getElementById("custom-provider-panel-list");
-  const customProviderAddForm = document.getElementById("custom-provider-add-form");
   const contextTextarea = document.getElementById("context-textarea");
   const contextPanelSave = document.getElementById("context-panel-save");
   const autoFallbackToggle = document.getElementById("auto-fallback-toggle");
@@ -411,9 +409,6 @@
 
   // ---------- provider connection panel (Phase 4, SCR-06/components.html §14) ----------
 
-  // "Gemini", not "Gemini CLI" (its label before DEC-25): it can now
-  // also be reached via API-key mode, so a CLI-specific label would read
-  // oddly in the connection panel's save/delete toasts.
   const PROVIDER_LABEL = { codex: "Codex", claude: "Claude Code", gemini: "Gemini" };
 
   // Fills a <datalist> with a provider's known models (see
@@ -440,9 +435,8 @@
       ])
     );
     if (info.cli_detected) {
-      // SCR-06: API 키 입력은 "CLI 없음" 상태에서만 노출되지만, CLI가
-      // 감지된 provider도 기본 모델(--model 오버라이드)은 지정할 수
-      // 있다 -- 키가 필요 없으므로(CLI가 자체적으로 인증을 처리) 검증
+      // CLI가 감지된 provider는 기본 모델(--model 오버라이드)을 지정할
+      // 수 있다 -- 키가 필요 없으므로(CLI가 자체적으로 인증을 처리) 검증
       // 호출 없이 바로 저장한다. 여기 저장한 값이 titlebar의
       // model-override-input 프리필 기본값이 되고, 매 전송 시 그 입력을
       // 비워두면 이 기본값이, 채워두면 그 값이 우선 적용된다.
@@ -475,159 +469,18 @@
       row.appendChild(el("div", { class: "pp-key-row" }, [cliModelInput, cliModelSaveBtn, cliModelDatalist]));
       return row;
     }
-    if (!info.api_key_mode_supported) {
-      // 현재는 codex/claude/gemini 전부 API 키 모드를 지원하므로(DEC-25)
-      // 이 분기는 실제로는 도달하지 않지만, 미래에 새 provider가
-      // PROVIDERS에는 추가되고 API_KEY_MODE_PROVIDERS에는 아직
-      // 추가되지 않은 과도기(같은 패턴이 DEC-15 당시 Gemini에서
-      // 실제로 있었음)를 위해 그대로 남겨둔다.
-      row.appendChild(
-        el("div", { class: "pp-note", text: t("provider.noCliNoApiKeySupport") }, [])
-      );
-      return row;
-    }
-    if (info.api_key_configured) {
-      row.appendChild(
-        el(
-          "div",
-          { class: "pp-note", text: t("provider.connectedViaApiKey", { model: info.model || t("provider.modelRequired") }) },
-          []
-        )
-      );
-    } else {
-      row.appendChild(
-        el("div", { class: "pp-note", text: t("provider.noCliConnectWithKey") }, [])
-      );
-    }
-    const keyInput = el("input", { type: "password", placeholder: t("provider.apiKeyPlaceholder"), "data-field": "key" }, []);
-    const modelInput = el("input", {
-      type: "text",
-      placeholder: t("provider.modelPlaceholder"),
-      "data-field": "model",
-      value: info.model || "",
-    }, []);
-    const saveBtn = el("button", { type: "button", class: "primary", text: t("provider.save") }, []);
-    saveBtn.addEventListener("click", async () => {
-      const key = keyInput.value.trim();
-      // A saved key is never echoed back into keyInput (POST
-      // /api/provider-key never returns it), so an empty key here always
-      // means "user left the field blank" -- never "user wants to keep
-      // the existing key". POST-ing an empty key deletes it
-      // (save_credential()'s contract), so treating that as a no-op save
-      // (rather than silently disconnecting) avoids a real footgun: e.g.
-      // reopening the panel just to fix the model field (relevant since
-      // codex has no built-in default and must be set explicitly) without
-      // re-pasting the key would otherwise delete it.
-      if (!key) {
-        showToast(t("provider.saveRequiresKey"));
-        return;
-      }
-      const model = modelInput.value.trim();
-      try {
-        const result = await postJSON("/api/provider-key", { provider: info.provider, key, model });
-        // Server now makes a real, minimal call with the key before ever
-        // saving it (result.verified/result.confirmation) -- surface that
-        // actual reply, not just "저장됨", so the user sees real proof the
-        // key works rather than an unconditional success message.
-        const suffix = result.verified ? t("provider.verifiedConfirmation", { text: result.confirmation }) : "";
-        showToast(t("provider.savedAndVerified", { provider: PROVIDER_LABEL[info.provider], suffix }));
-        await refreshProviderPanel();
-      } catch (err) {
-        showToast(t("provider.saveFailed", { msg: err.message }));
-      }
-    });
-    const keyRow = el("div", { class: "pp-key-row" }, [keyInput, modelInput, saveBtn]);
-    row.appendChild(keyRow);
-    if (info.api_key_configured) {
-      const removeBtn = el("button", { type: "button", text: t("provider.disconnect") }, []);
-      removeBtn.addEventListener("click", async () => {
-        try {
-          await postJSON("/api/provider-key", { provider: info.provider, key: "" });
-          showToast(t("provider.disconnected", { provider: PROVIDER_LABEL[info.provider] }));
-          await refreshProviderPanel();
-        } catch (err) {
-          showToast(t("provider.deleteFailed", { msg: err.message }));
-        }
-      });
-      row.appendChild(el("div", { class: "row", style: "justify-content:flex-end;margin-top:4px" }, [removeBtn]));
-    }
+    row.appendChild(el("div", { class: "pp-note", text: t("provider.noCliInstallNote") }, []));
     return row;
-  }
-
-  // 커스텀 provider (DEC-26): CLI 없이 토큰을 직접 구매해 쓰는
-  // OpenAI/Anthropic 호환 endpoint를 사용자가 원하는 이름으로 여러 개
-  // 등록. renderProviderRow()(고정 3개, CLI 감지 여부에 따라 분기)와
-  // 달리 커스텀 provider는 CLI 개념이 아예 없어 항상 API 키 입력 폼을
-  // 보여준다.
-  function renderCustomProviderRow(info) {
-    const row = el("div", { class: "pp-row" }, []);
-    row.appendChild(
-      el("div", { class: "pp-top" }, [
-        el("span", { class: "pp-name", text: info.name }, []),
-        el("span", { class: "status-badge status-success", text: info.api_format === "openai" ? t("customProvider.openaiCompat") : t("customProvider.anthropicCompat") }, []),
-      ])
-    );
-    row.appendChild(el("div", { class: "pp-note", text: `${info.base_url} · model: ${info.model}` }, []));
-    const removeBtn = el("button", { type: "button", text: t("customProvider.delete") }, []);
-    removeBtn.addEventListener("click", async () => {
-      try {
-        await postJSON("/api/custom-provider", { name: info.name, key: "" });
-        showToast(t("customProvider.deleted", { name: info.name }));
-        await refreshProviderPanel();
-      } catch (err) {
-        showToast(t("provider.deleteFailed", { msg: err.message }));
-      }
-    });
-    row.appendChild(el("div", { class: "row", style: "justify-content:flex-end;margin-top:4px" }, [removeBtn]));
-    return row;
-  }
-
-  function renderAddCustomProviderForm() {
-    const nameInput = el("input", { type: "text", placeholder: t("customProvider.namePlaceholder"), "data-field": "name" }, []);
-    const formatSelect = el("select", { "data-field": "api_format" }, [
-      el("option", { value: "openai", text: t("customProvider.openaiCompat") }, []),
-      el("option", { value: "anthropic", text: t("customProvider.anthropicCompat") }, []),
-    ]);
-    const baseUrlInput = el("input", { type: "text", placeholder: t("customProvider.baseUrlPlaceholder"), "data-field": "base_url" }, []);
-    const modelInput = el("input", { type: "text", placeholder: t("provider.modelPlaceholder"), "data-field": "model" }, []);
-    const keyInput = el("input", { type: "password", placeholder: t("provider.apiKeyPlaceholder"), "data-field": "key" }, []);
-    const addBtn = el("button", { type: "button", class: "primary", text: t("customProvider.add") }, []);
-    addBtn.addEventListener("click", async () => {
-      const name = nameInput.value.trim();
-      const key = keyInput.value.trim();
-      const model = modelInput.value.trim();
-      const base_url = baseUrlInput.value.trim();
-      const api_format = formatSelect.value;
-      if (!name || !key || !model || !base_url) {
-        showToast(t("customProvider.fillAllFields"));
-        return;
-      }
-      try {
-        const result = await postJSON("/api/custom-provider", { name, key, model, base_url, api_format });
-        const suffix = result.verified ? t("provider.verifiedConfirmation", { text: result.confirmation }) : "";
-        showToast(t("customProvider.addedAndVerified", { name, suffix }));
-        await refreshProviderPanel();
-      } catch (err) {
-        showToast(t("customProvider.addFailed", { msg: err.message }));
-      }
-    });
-    const row1 = el("div", { class: "pp-key-row wrap" }, [nameInput, formatSelect]);
-    const row2 = el("div", { class: "pp-key-row wrap" }, [baseUrlInput]);
-    const row3 = el("div", { class: "pp-key-row wrap" }, [modelInput, keyInput, addBtn]);
-    return el("div", {}, [row1, row2, row3]);
   }
 
   // provider-select(작성 상자 상단)를 서버가 실제로 아는 provider 목록
-  // (고정 3개 + auto + 커스텀 전부)으로 다시 채운다 -- index.html은
-  // "auto"만 하드코딩해두고 나머지는 항상 이 함수가 채운다. 현재
-  // 선택값은 목록에 남아 있는 한 유지한다.
+  // (고정 3개 + auto)으로 다시 채운다 -- index.html은 "auto"만
+  // 하드코딩해두고 나머지는 항상 이 함수가 채운다.
   //
   // provider별 cli_detected/cli_model을 여기 보관해두고, 옆의
-  // model-override-input을 채우거나 숨기는 데 쓴다 -- "auto"나 API 키
-  // 모드/커스텀 provider는 모델 개념이 다르거나(고정 provider는
-  // /api/provider-key에 저장된 model, 커스텀은 등록 시 필수) 아예
-  // provider 하나로 확정되지 않으므로("auto") 이 입력창은 CLI로 감지된
-  // 고정 provider를 선택했을 때만 노출한다.
+  // model-override-input을 채우거나 숨기는 데 쓴다 -- "auto"는 provider
+  // 하나로 확정되지 않으므로 이 입력창은 CLI로 감지된 고정 provider를
+  // 선택했을 때만 노출한다.
   let providerCliInfoByName = {};
 
   // Repaints providerSelect/modelOverrideInput from the *active* session's
@@ -640,8 +493,8 @@
     if ([...providerSelect.options].some((opt) => opt.value === meta.provider)) {
       providerSelect.value = meta.provider;
     } else {
-      // The remembered choice no longer exists (e.g. a custom provider
-      // was deleted) -- fall back to whatever the <select> defaulted to.
+      // The remembered choice no longer exists -- fall back to whatever
+      // the <select> defaulted to.
       meta.provider = providerSelect.value;
     }
     const info = providerCliInfoByName[providerSelect.value];
@@ -652,16 +505,6 @@
     meta.model = modelOverrideInput.value;
   }
 
-  // provider-select(작성 상자 상단)를 서버가 실제로 아는 provider 목록
-  // (고정 3개 + auto + 커스텀 전부)으로 다시 채운다 -- index.html은
-  // "auto"만 하드코딩해두고 나머지는 항상 이 함수가 채운다.
-  //
-  // provider별 cli_detected/cli_model을 여기 보관해두고, 옆의
-  // model-override-input을 채우거나 숨기는 데 쓴다 -- "auto"나 API 키
-  // 모드/커스텀 provider는 모델 개념이 다르거나(고정 provider는
-  // /api/provider-key에 저장된 model, 커스텀은 등록 시 필수) 아예
-  // provider 하나로 확정되지 않으므로("auto") 이 입력창은 CLI로 감지된
-  // 고정 provider를 선택했을 때만 노출한다.
   function refreshProviderSelect(data) {
     providerSelect.innerHTML = "";
     providerSelect.appendChild(el("option", { value: "auto", text: "auto" }, []));
@@ -669,9 +512,6 @@
     for (const info of data.providers) {
       providerSelect.appendChild(el("option", { value: info.provider, text: info.provider }, []));
       providerCliInfoByName[info.provider] = info;
-    }
-    for (const info of data.custom_providers) {
-      providerSelect.appendChild(el("option", { value: info.provider, text: info.name }, []));
     }
     restoreProviderSelectionForActiveSession();
   }
@@ -709,8 +549,6 @@
     }
     if (requestId !== providerPanelRequestId) return; // superseded by a newer refresh
     providerPanelList.innerHTML = "";
-    customProviderPanelList.innerHTML = "";
-    customProviderAddForm.innerHTML = "";
     if (error) {
       providerPanelList.appendChild(el("div", { class: "hd-empty", text: t("history.loadError", { msg: error.message }) }, []));
       return;
@@ -718,18 +556,13 @@
     for (const info of data.providers) {
       providerPanelList.appendChild(renderProviderRow(info));
     }
-    for (const info of data.custom_providers) {
-      customProviderPanelList.appendChild(renderCustomProviderRow(info));
-    }
-    customProviderAddForm.appendChild(renderAddCustomProviderForm());
     refreshProviderSelect(data);
   }
 
   // ---------- shared context (DEC-27) ----------
   // .handoff/shared-context.md -- free-form, per-workspace text folded
-  // into every provider call regardless of mode (CLI via
-  // handoff_bridge.py's build_prompt(), API-key mode via
-  // run_provider_via_api_key()). No workspace yet: GET returns "" (not
+  // into every provider call (via handoff_bridge.py's build_prompt()).
+  // No workspace yet: GET returns "" (not
   // an error), and the panel is still openable/editable, but saving
   // requires a workspace (same "no workspace selected" 400 every other
   // workspace-scoped POST already returns).
@@ -873,7 +706,7 @@
       showNoWorkspaceState();
     }
     if (settingsPanelOverlay.classList.contains("show")) {
-      // Re-fetches and re-renders provider rows/custom-provider form with
+      // Re-fetches and re-renders the provider rows with
       // the new language's t() calls -- cheap, and the panel being open
       // means the user is looking at exactly this content right now.
       refreshProviderPanel();
@@ -1283,8 +1116,7 @@
     const provider = providerSelect.value;
     // Only meaningful while visible (a CLI-detected fixed provider is
     // selected, see restoreProviderSelectionForActiveSession()) -- hidden
-    // for "auto"/API-key-mode/custom providers, so this is deliberately
-    // null in every other case rather than sending a stale leftover value.
+    // for "auto", so this is deliberately null in every other case rather than sending a stale leftover value.
     const model = (!modelOverrideInput.hidden && modelOverrideInput.value.trim()) || null;
     const userMessage = { role: "user", text, attachments: meta.attachments };
     // Still synchronously the active session at this point (nothing has
@@ -1600,10 +1432,10 @@
     // check already ran in main()'s background thread before this page
     // even loaded, so this fetch is normally near-instant either way.
     checkForUpdate();
-    // Same reasoning, also independent of workspace state (provider/
-    // credential config is app-level, not per-workspace): populates the
+    // Same reasoning, also independent of workspace state (provider
+    // detection is app-level, not per-workspace): populates the
     // composer's provider-select dropdown (index.html only hardcodes
-    // "auto") with the real fixed + custom provider list.
+    // "auto") with the real provider list.
     fetchJSON("/api/providers").then(refreshProviderSelect).catch(() => {});
 
     // M2: restore any extra tabs left open across a restart -- the default

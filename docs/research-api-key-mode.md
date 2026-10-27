@@ -1,5 +1,11 @@
 # Research: API-Key Mode (Phase 4, resolves CFL-12)
 
+> **Historical record.** The API-key mode this research informed (Phase 4,
+> DEC-13~16, and the later DEC-21/25/26 extensions) was removed after v0.4.11:
+> this bridge hands work between subscription CLIs on quota/context limits, and
+> a pay-as-you-go API has no such limit to hand off from. Kept as-is for the
+> reasoning behind the original design; nothing here describes current code.
+
 Date: 2026-08-05
 
 ## Bottom Line

@@ -1,6 +1,6 @@
 # Provider Extensibility
 
-How to add a new AI provider (CLI-based or API-key-based) to this bridge.
+How to add a new AI provider (CLI-based) to this bridge.
 This doc exists because the 2026-08-04 design-review requirements asked for
 Gemini CLI to be *recognized* by the v0.2 chat redesign, and for "any other
 model beyond that" to be documented rather than designed — see
@@ -11,12 +11,12 @@ and its Conflict List entries CFL-12/CFL-13 in
 This started as a documentation-only deliverable (nothing described here
 was implemented yet) so the next real implementation pass wouldn't have
 to rediscover these constraints from scratch. That implementation pass
-happened in Phase 5 for the CLI-based case (Gemini), and again for the
-API-key-based path's full agentic parity (CFL-17, resolved as DEC-21) —
-the sections below now mix the original forward-looking plan (still
-accurate for a hypothetical *fourth* CLI provider) with a record of what
-actually happened for Gemini and for the API-key path specifically. Each
-section says which it is.
+happened in Phase 5 for the CLI-based case (Gemini). An API-key-based
+path was also built (Phase 4, DEC-13~16, DEC-21, DEC-25) and later removed
+— see "API-Key-Based Providers (Removed)" below. The sections below mix
+the original forward-looking plan (still accurate for a hypothetical
+*fourth* CLI provider) with a record of what actually happened for Gemini.
+Each section says which it is.
 
 ## The Current Code Assumed Exactly Two Providers (Resolved In Phase 5)
 
@@ -69,15 +69,6 @@ what had to change, not a forward-looking plan:
   Codex/Claude's more structured signals — documented as a known
   imprecision in [docs/research-gemini-cli.md](research-gemini-cli.md)
   "Practical Limitations," not solved with new bespoke logic.
-- `handoff_webui.py`'s API-key mode (Phase 4) imports the same
-  `PROVIDERS` for CLI-detection purposes, but does **not** automatically
-  extend to a new CLI provider — it has its own, deliberately separate
-  `API_KEY_MODE_PROVIDERS` tuple ([DEC-15](design-system/flutter-mapping.html#s1c)).
-  Adding a CLI provider to `PROVIDERS` never silently changes what
-  API-key mode supports; that stays a distinct decision. Gemini's own
-  API-key-mode decision was made later, separately, as
-  [DEC-25](design-system/flutter-mapping.html#s1c) — see "Adding A New
-  API-Key-Based Provider" below.
 
 ## Adding A New CLI-Based Provider — What Actually Happened For Gemini
 
@@ -115,91 +106,26 @@ sequence, kept as the template for a fourth provider someday:
    following the existing pattern
    (`docs/quality-gates.md` "Core Logic Has Unit Tests").
 
-## Adding An API-Key-Based Provider (No Local CLI)
+## API-Key-Based Providers (Removed)
 
-**Implemented in Phase 4** (`docs/design-system/roadmap.md`), per
-[DEC-13~16](design-system/flutter-mapping.html#s1c) — this section
-originally described the open questions before that work started (as
-CFL-12); kept below for what was actually decided. Started chat-only;
-extended to full agentic parity by the CFL-17 follow-up
-([DEC-21](design-system/flutter-mapping.html#s1c)), see below.
+A Web UI path for reaching a provider over its vendor HTTP API with a
+pasted key (Phase 4, [DEC-13~16](design-system/flutter-mapping.html#s1c);
+tool-use loop [DEC-21](design-system/flutter-mapping.html#s1c); Gemini
+[DEC-25](design-system/flutter-mapping.html#s1c); user-defined OpenAI/
+Anthropic-compatible "custom providers"
+[DEC-26](design-system/flutter-mapping.html#s1c)) existed through v0.4.11
+and was removed afterwards. The reasoning: this bridge hands work between
+*subscription* CLIs when one hits a quota or context limit; a pay-as-you-go
+API has no such limit to hand off from, so the mode never served that
+purpose, and its shell-exec tool loop was the largest risk surface in the
+app ([Production Audit F1](production-audit-2026-09-02.md)).
 
-- `run_provider()`'s CLI subprocess path is completely unchanged.
-  `_run_provider_via_bridge_locked()` (`handoff_webui.py`) only diverts to
-  `run_provider_via_api_key()` when a provider's CLI is genuinely absent
-  (`shutil.which()`) *and* a key is saved for it — every previously-existing
-  code path (CLI available, or CLI absent with no key) behaves exactly as
-  before this phase.
-- Session resume (`codex exec resume <id>`, `claude --resume <id>`) and the
-  hooks-based signals `docs/research.md` relies on (`StopFailure`,
-  `PostCompact`, etc.) genuinely have no equivalent behind a plain API-key
-  call, confirmed by [docs/research-api-key-mode.md](research-api-key-mode.md)
-  before this was built: neither Anthropic's Messages API nor OpenAI's
-  Responses API is session-based. `build_api_message_history()` replays the
-  chat log as alternating turns on every call instead — conversation
-  continuity, not a resumable server-side session.
-- Credential storage: `~/Documents/Agent Handoff Bridge/credentials.json`
-  (`0600` permissions), not an OS keychain or the `keyring` package
-  (DEC-14 — see `docs/webui-chat-storage.md`'s "Credentials & API-Key Mode"
-  section for the full schema and security posture).
-- The v0.2 UI entry point (masked key field, per-provider connection-mode
-  badge) designed in
-  [docs/design-system/components.html §14](design-system/components.html#s14)
-  and [wireframes.html §S8](design-system/wireframes.html#s8) is now real —
-  `webui/index.html`'s ⚙️ Settings panel opens it (the "연결된 AI 모델"
-  section -- Diagnose was its own titlebar button until the 2026-09-02
-  Settings-panel consolidation), backed by
-  `GET /api/providers`/`POST /api/provider-key`.
-- **Full agentic parity, added by the CFL-17 follow-up**
-  ([DEC-21](design-system/flutter-mapping.html#s1c)): this API-key path
-  no longer only exchanges text. `call_anthropic_messages_api()`/
-  `call_openai_responses_api()` run a bridge-built tool-use turn loop
-  (`read_file`/`write_file`/`edit_file`/`run_shell`, one schema list in
-  `_TOOL_SPECS` rendered into each vendor's own shape) so the model can
-  read/edit workspace files and run shell commands the same way CLI mode
-  can. File tools reuse `safe_join()` for workspace confinement;
-  `run_shell` runs with `cwd=workspace` and no further restriction, the
-  same trust level CLI mode's own subprocesses already have. DEC-02
-  (confirm only the first send per session) covers every tool call this
-  loop makes, so nothing beyond that first confirmation gates a shell
-  command once a session is underway — a real, consciously-accepted
-  tradeoff from DEC-21's design interview, not an oversight. Full
-  reasoning: `docs/webui-chat-storage.md`'s "Tool loop" section and
-  [flutter-mapping.html DEC-21](design-system/flutter-mapping.html#s1c).
-- **Keys are verified before they're saved.** `POST /api/provider-key`
-  previously wrote any non-empty key string to `credentials.json`
-  unconditionally, trusting its shape alone. It now calls
-  `validate_provider_api_key()` first -- one real, minimal, tool-free call
-  to the provider's own API asking for a one-word reply -- and only saves
-  on success; a bad key, wrong model name, or network failure returns a
-  400 with nothing written. `model` was already required in practice (no
-  built-in default exists per DEC-13); it's now enforced by the endpoint
-  itself, since there is no default to fall back on for the verification
-  call either. See `docs/webui-chat-storage.md`'s "Credentials & API-Key
-  Mode" section for the full contract.
-- **Gemini added as a third API-key-mode provider**
-  ([DEC-25](design-system/flutter-mapping.html#s1c), resolving DEC-15's
-  originally-left-open "should Gemini get API-key mode too" question).
-  `API_KEY_MODE_PROVIDERS` grew to `("codex", "claude", "gemini")` --
-  still its own tuple, not an alias for `PROVIDERS`, so a future CLI
-  provider still needs its own separate decision the same way this one
-  did. New `call_gemini_api()` matches `call_anthropic_messages_api()`/
-  `call_openai_responses_api()`'s contract and tool-use loop exactly,
-  but Gemini's actual wire format differs enough to need real
-  translation, not a drop-in copy: `Content` objects use `{"role",
-  "parts": [...]}` instead of `{"role", "content": "..."}` (`"model"` is
-  Gemini's assistant-turn role, not `"assistant"`), and its function
-  calling uses `functionCall`/`functionResponse` parts (the response
-  sent back with `role: "user"`, wrapping the tool executor's plain-text
-  result as `{"result": <text>}` since Gemini requires an object there,
-  unlike the other two). Confirmed against
-  [ai.google.dev/api/generate-content](https://ai.google.dev/api/generate-content)
-  and
-  [ai.google.dev/gemini-api/docs/generate-content/function-calling](https://ai.google.dev/gemini-api/docs/generate-content/function-calling)
-  before implementing -- same "don't assume the shape" discipline this
-  project already applied to Anthropic's and OpenAI's APIs. Auth via the
-  `x-goog-api-key` header, not the `?key=` query-string alternative the
-  same docs also describe, so the secret never ends up in a URL.
+So a new provider is a **CLI** provider only: add it to `PROVIDERS` and
+follow the CLI section above. There is no HTTP-API fallback for a provider
+whose CLI is absent — the run fails through the normal bridge subprocess
+path (`exit_code` 127). The original research is kept as a historical
+record in [research-api-key-mode.md](research-api-key-mode.md); the
+decisions above stay in the Decision Log, annotated as superseded.
 
 ## Checklist When A Provider Is Actually Added
 

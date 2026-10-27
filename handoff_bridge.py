@@ -51,10 +51,8 @@ CURRENT_FILE = HANDOFF_DIR / "current.md"
 MAX_CURRENT_FILE_PROMPT_CHARS = 20_000
 NEXT_PROMPT_FILE = HANDOFF_DIR / "next-prompt.md"
 # User-editable, workspace-local project context that should reach every
-# provider regardless of how it's invoked -- CLI mode via build_prompt()
-# below, API-key mode via webui_api_key_mode.py's own read of this same
-# file (never through this module in-process; see handoff_webui.py's
-# state-boundary comment for why). Distinct from CURRENT_FILE (the
+# provider regardless of how it's invoked -- folded into every prompt by
+# build_prompt() below. Distinct from CURRENT_FILE (the
 # handoff *log* -- what changed, what's next) and from the docs/ files
 # folded into every prompt (shared, repo-wide contract/protocol text) --
 # this is free-form, per-workspace context the user writes once
@@ -151,7 +149,6 @@ INSTALL_FILES = [
     ("webui_workspace.py", "webui_workspace.py"),
     ("webui_chat_storage.py", "webui_chat_storage.py"),
     ("webui_credentials.py", "webui_credentials.py"),
-    ("webui_api_key_mode.py", "webui_api_key_mode.py"),
     ("webui_bridge_run.py", "webui_bridge_run.py"),
     ("webui/index.html", "webui/index.html"),
     ("webui/app.css", "webui/app.css"),
@@ -1481,7 +1478,13 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
 
     if handoff_needed:
         fallback = next_available_provider(provider)
-        if args.auto_fallback:
+        if args.auto_fallback and fallback == provider:
+            # next_available_provider() hands back `provider` itself when
+            # nothing else is installed (only one CLI present, or none at
+            # all). Recursing would just re-run the same provider and
+            # append a duplicate failure record, so stop at the first one.
+            print(f"Auto-fallback enabled, but no other installed provider to switch to; not retrying {provider}.")
+        elif args.auto_fallback:
             # Don't build/write the fallback prompt here: the recursive
             # run_provider() call below builds it again from scratch right
             # after state["instruction_type"] is set to "handoff", so a

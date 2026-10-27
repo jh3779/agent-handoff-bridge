@@ -1,10 +1,8 @@
-"""Dispatching a real provider run: CLI mode (shells out to
-handoff_bridge.py -- the same CLI a human would type -- rather than
-importing and calling its functions in-process, since those resolve
-.handoff/state.json relative to the *process* cwd via chdir_workspace(),
-which isn't safe to call in-process from a ThreadingHTTPServer handler)
-with a fallback to webui_api_key_mode.py's API-key mode when a provider's
-CLI isn't installed and a key is saved for it.
+"""Dispatching a real provider run: shells out to handoff_bridge.py -- the
+same CLI a human would type -- rather than importing and calling its
+functions in-process, since those resolve .handoff/state.json relative to
+the *process* cwd via chdir_workspace(), which isn't safe to call
+in-process from a ThreadingHTTPServer handler.
 """
 
 from __future__ import annotations
@@ -15,12 +13,8 @@ import tempfile
 import threading
 from pathlib import Path
 
-from handoff_bridge import PROVIDERS
-
 import webui_common
-from webui_api_key_mode import _api_key_mode_error_record, run_provider_via_api_key
 from webui_common import bridge_command_prefix, _bridge_next_provider, _bridge_resolve_auto_provider
-from webui_credentials import cli_available, custom_provider_name, is_custom_provider, read_credentials, read_custom_providers
 
 PROVIDER_RUN_TIMEOUT_SECONDS = 600
 
@@ -149,85 +143,18 @@ def _run_provider_via_bridge_locked(
     record(s) it appended to .handoff/state.json -- more than one if
     auto-fallback chained into a second provider.
 
-    `auto_fallback` (Settings panel toggle, webui/app.js) only affects the
-    CLI-mode subprocess path below -- `--auto-fallback` is appended to its
-    argv only when true (`handoff_bridge.py run`'s own flag already
-    defaults to off, so omitting it is enough; no `--no-auto-fallback`
-    counterpart needed there). It has no meaning for the `provider ==
-    "auto"`/API-key-mode branches right below, which pick a single
-    provider up front and never chain to a second one.
+    `auto_fallback` (Settings panel toggle, webui/app.js) appends
+    `--auto-fallback` to the subprocess argv only when true
+    (`handoff_bridge.py run`'s own flag already defaults to off, so
+    omitting it is enough; no `--no-auto-fallback` counterpart needed
+    there).
 
     If the subprocess itself fails before handoff_bridge.py ever gets to
     classify_handoff()/save_state() (e.g. the interpreter can't even start),
     no history record exists to read back -- synthesize one so callers
     always get at least one result to show and persist, instead of silently
     returning nothing.
-
-    Phase 4 (DEC-13/16): before shelling out, check whether this call
-    should go over a provider's HTTP API instead -- only when its CLI is
-    genuinely absent and a key is saved for it, so every previously-existing
-    behavior (a CLI-available provider, or a CLI-missing one with no key
-    saved) is completely unchanged by this branch.
-
-    A custom provider (DEC-26, `provider` shaped "custom:<name>") always
-    goes through API-key mode -- it has no CLI/binary of its own, so
-    none of the cli_available()/auto-fallback logic below applies to it
-    at all; this check runs first and returns before any of that.
     """
-    if is_custom_provider(provider):
-        name = custom_provider_name(provider)
-        credential = read_custom_providers().get(name)
-        if credential is None:
-            return [
-                _api_key_mode_error_record(
-                    provider, None, instruction_type, f"custom provider {name!r} is not configured (was it deleted?)"
-                )
-            ]
-        return run_provider_via_api_key(workspace, provider, prompt, credential, instruction_type, model)
-
-    if provider == "auto":
-        if not any(cli_available(p) for p in PROVIDERS):
-            # Only read credentials.json once we already know no CLI is
-            # available -- the common case (some CLI installed) never
-            # touches disk for a value it would just discard unused.
-            credentials = read_credentials()
-            api_key_provider = next((p for p in PROVIDERS if p in credentials), None)
-            if api_key_provider is None:
-                return [
-                    _api_key_mode_error_record(
-                        # PROVIDERS[0], not the literal "auto" -- the /api/run
-                        # handler persists this into the chat log's `provider`
-                        # field verbatim (append_chat_message(provider=record
-                        # ["provider"])), and "auto" must never end up stored
-                        # there (the same invariant the CLI-side synthetic-
-                        # record path already enforces for the same reason;
-                        # see its own comment a few lines below).
-                        PROVIDERS[0],
-                        None,
-                        instruction_type,
-                        "no provider CLI is installed and no API key is configured for any provider -- "
-                        "install codex or claude, or open the connection panel to add an API key",
-                    )
-                ]
-            return run_provider_via_api_key(
-                workspace, api_key_provider, prompt, credentials[api_key_provider], instruction_type, model
-            )
-        # At least one CLI exists -- fall through to the existing subprocess
-        # path, which already does its own choose_auto_provider() and
-        # --auto-fallback among CLI-available providers.
-    elif not cli_available(provider):
-        # Same reasoning as above: only read credentials.json once the CLI
-        # is confirmed unavailable, so the common (CLI installed) case
-        # skips the disk read + JSON parse entirely.
-        credentials = read_credentials()
-        if provider in credentials:
-            return run_provider_via_api_key(
-                workspace, provider, prompt, credentials[provider], instruction_type, model
-            )
-        # else (a specific provider with no CLI and no saved key): fall
-        # through unchanged -- the subprocess call below fails with
-        # FileNotFoundError -> exit_code 127, exactly as it did before this
-        # phase existed.
 
     before = len(read_state_history(workspace))
 

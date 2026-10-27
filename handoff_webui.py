@@ -16,9 +16,9 @@ module. The domain logic now lives in sibling webui_*.py modules --
 webui_common.py (subprocess boundary + shared utilities),
 webui_workspace.py (file tree/preview, workspace validation),
 webui_chat_storage.py (chat history + recent-workspaces registry),
-webui_credentials.py (API-key storage), webui_api_key_mode.py (the
-CLI-less provider HTTP clients + tool loop), webui_bridge_run.py
-(dispatching a real run, CLI or API-key mode). This file keeps the HTTP
+webui_credentials.py (per-provider CLI --model overrides),
+webui_bridge_run.py (dispatching a real run through the CLI). This file
+keeps the HTTP
 routing layer (build_handler), AppState/Api, and the process entry point.
 """
 
@@ -40,7 +40,6 @@ from urllib.parse import parse_qs, urlparse
 
 from handoff_bridge import BRIDGE_VERSION, PROVIDERS, atomic_write_text
 
-from webui_api_key_mode import validate_provider_api_key
 from webui_bridge_run import (
     RunAlreadyInProgressError,
     build_run_prompt,
@@ -69,18 +68,10 @@ from webui_common import (
     write_shared_context,
 )
 from webui_credentials import (
-    API_KEY_MODE_PROVIDERS,
-    CUSTOM_PROVIDER_API_FORMATS,
     cli_available,
-    custom_provider_id,
-    is_custom_provider,
     known_cli_models,
     read_cli_provider_models,
-    read_credentials,
-    read_custom_providers,
     save_cli_provider_model,
-    save_credential,
-    save_custom_provider,
 )
 from webui_workspace import (
     _WORKSPACE_CREATE_LOCK,
@@ -227,49 +218,20 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
             elif parsed.path == "/api/history":
                 self._send_json(200, {"groups": build_history_drawer(workspace, session_id)})
             elif parsed.path == "/api/providers":
-                # Backs SCR-06/components.html §14's connection panel. Never
-                # includes the raw key -- only whether one is configured.
-                # Covers the full (Gemini-included) PROVIDERS for CLI
-                # detection -- Phase 5 finally resolves what SCR-06
-                # originally shipped as a "미확인" placeholder badge for
-                # Gemini into a real one. `api_key_mode_supported` is now
-                # True for Gemini too (DEC-25) -- API_KEY_MODE_PROVIDERS
-                # was extended to include it, so the frontend offers a key
-                # field for it exactly like codex/claude.
-                credentials = read_credentials()
+                # Backs SCR-06/components.html §14's connection panel: which
+                # provider CLIs are detected on this machine, plus each
+                # one's saved default --model override and model suggestions.
                 cli_models = read_cli_provider_models()
-                providers = []
-                for provider in PROVIDERS:
-                    supports_api_key_mode = provider in API_KEY_MODE_PROVIDERS
-                    entry = credentials.get(provider) if supports_api_key_mode else None
-                    providers.append(
-                        {
-                            "provider": provider,
-                            "cli_detected": cli_available(provider),
-                            "api_key_mode_supported": supports_api_key_mode,
-                            "api_key_configured": entry is not None,
-                            "model": (entry or {}).get("model") if entry else None,
-                            "cli_model": cli_models.get(provider),
-                            "known_models": known_cli_models(provider),
-                        }
-                    )
-                # Custom providers (DEC-26) have no CLI concept at all --
-                # cli_detected/api_key_mode_supported are meaningless for
-                # them (always API-key mode), so they get their own
-                # response key rather than forcing those two fields into
-                # every entry of `providers` above.
-                custom_providers = [
+                providers = [
                     {
-                        "provider": custom_provider_id(name),
-                        "name": name,
-                        "api_format": entry["api_format"],
-                        "base_url": entry["base_url"],
-                        "model": entry["model"],
-                        "api_key_configured": True,
+                        "provider": provider,
+                        "cli_detected": cli_available(provider),
+                        "cli_model": cli_models.get(provider),
+                        "known_models": known_cli_models(provider),
                     }
-                    for name, entry in sorted(read_custom_providers().items())
+                    for provider in PROVIDERS
                 ]
-                self._send_json(200, {"providers": providers, "custom_providers": custom_providers})
+                self._send_json(200, {"providers": providers})
             elif parsed.path == "/api/update-check":
                 # Phase 6 (SCR-07): reads the cached result of the
                 # background check main() kicked off at startup -- never
@@ -317,8 +279,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
             elif parsed.path == "/api/shared-context":
                 # DEC-27: `.handoff/shared-context.md`, free-form per-
                 # workspace context folded into every provider call
-                # (CLI mode via handoff_bridge.py's build_prompt(),
-                # API-key mode via run_provider_via_api_key() -- see
+                # (via handoff_bridge.py's build_prompt() -- see
                 # webui_common.read_shared_context()'s own docstring).
                 # No workspace yet: empty, not an error, same posture as
                 # /api/chat's "no workspace selected" branch above.
@@ -360,9 +321,9 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 return
             session_id = self._session_id()
             session = self._resolve_session()
-            if session is None and parsed.path not in ("/api/provider-key", "/api/cli-model", "/api/custom-provider"):
-                # The three excluded endpoints are app-level (provider
-                # credentials, not workspace state) and never needed a
+            if session is None and parsed.path != "/api/cli-model":
+                # The excluded endpoint is app-level (a provider's saved
+                # --model override, not workspace state) and never needed a
                 # session concept even before M1 -- no reason to start
                 # requiring one now just because every other endpoint does.
                 self._send_json(400, {"error": f"unknown session: {session_id}"})
@@ -471,19 +432,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 try:
                     body = self._read_json_body()
                     provider = str(body.get("provider") or "auto")
-                    # Bug found while auditing provider selection
-                    # (2026-09-02): this check didn't special-case
-                    # is_custom_provider() ("custom:<name>", DEC-26), so a
-                    # custom provider selected from the provider-select
-                    # dropdown (webui/app.js's refreshProviderSelect()
-                    # populates it from GET /api/providers'
-                    # custom_providers, whose "provider" field is exactly
-                    # this "custom:<name>" shape) always failed here with
-                    # "invalid provider" before ever reaching
-                    # webui_bridge_run.py's already-correct
-                    # is_custom_provider() dispatch -- the whole feature
-                    # was unreachable through the actual chat UI.
-                    if provider not in ("auto",) + PROVIDERS and not is_custom_provider(provider):
+                    if provider not in ("auto",) + PROVIDERS:
                         raise WorkspaceError(f"invalid provider: {provider}")
                     text = str(body.get("text") or "").strip()
                     attachments = body.get("attachments") or []
@@ -530,74 +479,13 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     self._send_json(409, {"error": str(exc)})
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
-            elif parsed.path == "/api/provider-key":
-                try:
-                    body = self._read_json_body()
-                    provider = str(body.get("provider") or "")
-                    if provider not in API_KEY_MODE_PROVIDERS:
-                        raise WorkspaceError(f"invalid provider: {provider}")
-                    key = str(body.get("key") or "").strip()
-                    model = str(body.get("model") or "").strip() or None
-                    # An empty key removes the credential (save_credential()'s
-                    # contract) -- lets the connection panel's same "저장"
-                    # action double as "disconnect API key mode".
-                    #
-                    # A non-empty key is verified with a real, minimal call
-                    # (validate_provider_api_key()) *before* it is ever
-                    # written to disk -- previously any non-empty string was
-                    # saved unconditionally and only found to be wrong (or
-                    # right) the next time the user actually tried to chat.
-                    # This needs a model to call with, and
-                    # API_KEY_MODE_DEFAULT_MODELS is deliberately empty for
-                    # both providers (no built-in default, DEC-13/15) -- so a
-                    # model is now required in the same request as a
-                    # non-empty key, not merely recommended. Removal (empty
-                    # key) skips validation entirely; there is nothing to
-                    # verify when disconnecting.
-                    confirmation: str | None = None
-                    if key:
-                        if not model:
-                            raise WorkspaceError(
-                                f"a model is required to save and verify a {provider} API key "
-                                "(no built-in default exists for this provider)"
-                            )
-                        result = validate_provider_api_key(provider, key, model)
-                        if not result["ok"]:
-                            raise WorkspaceError(result["message"])
-                        confirmation = result["text"]
-                    # Unlike touch_registry() (best-effort, failure only
-                    # logged -- always called *after* a real state change it
-                    # shouldn't be allowed to desync from), this write IS the
-                    # entire point of the request: the user is actively
-                    # trying to save/remove a key, so a write failure
-                    # (permissions, full disk, base dir exists as a file)
-                    # must reach them as a real error, not disappear.
-                    # save_credential() doesn't wrap OSError itself; do it
-                    # here so it becomes a normal WorkspaceError -> 400 like
-                    # every other failure this endpoint (and this whole
-                    # feature) produces, instead of an uncaught exception
-                    # crashing this request's thread with no JSON response.
-                    try:
-                        save_credential(provider, key, model)
-                    except OSError as exc:
-                        raise WorkspaceError(f"failed to save API key: {exc}") from exc
-                    response = {"provider": provider, "api_key_configured": bool(key), "model": model if key else None}
-                    if confirmation is not None:
-                        response["verified"] = True
-                        response["confirmation"] = confirmation
-                    self._send_json(200, response)
-                except WorkspaceError as exc:
-                    self._send_json(400, {"error": str(exc)})
             elif parsed.path == "/api/cli-model":
                 # Settings panel's "기본 모델" field for a provider whose
-                # CLI is already detected -- distinct from /api/provider-key
-                # above, which is API-key mode only (requires a key, runs a
-                # real verification call). No key, no verification here:
-                # the CLI itself already handles auth, this is purely a
-                # --model override webui_bridge_run.py passes through on
-                # every /api/run call for this provider (empty model clears
-                # the saved override, same "empty removes" contract as
-                # save_credential()).
+                # CLI is already detected. No key, no verification: the CLI
+                # itself already handles auth, this is purely a --model
+                # override webui_bridge_run.py passes through on every
+                # /api/run call for this provider (an empty model clears
+                # the saved override).
                 try:
                     body = self._read_json_body()
                     provider = str(body.get("provider") or "")
@@ -609,54 +497,6 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     except OSError as exc:
                         raise WorkspaceError(f"failed to save model: {exc}") from exc
                     self._send_json(200, {"provider": provider, "model": model})
-                except WorkspaceError as exc:
-                    self._send_json(400, {"error": str(exc)})
-            elif parsed.path == "/api/custom-provider":
-                # DEC-26. Same shape/contract as /api/provider-key above --
-                # empty `key` removes (save_custom_provider()'s own
-                # contract, doubling as "delete this custom provider" so
-                # there's no separate delete endpoint), a non-empty key is
-                # validated with a real minimal call before ever being
-                # written to disk. Name/format/base_url/model validation
-                # (blank name, unknown api_format, missing scheme, missing
-                # model) lives in save_custom_provider()/
-                # validate_custom_provider_name() -- both raise a plain
-                # ValueError with a client-facing message, caught here the
-                # same way WorkspaceError is caught everywhere else.
-                try:
-                    body = self._read_json_body()
-                    name = str(body.get("name") or "")
-                    key = str(body.get("key") or "").strip()
-                    model = str(body.get("model") or "").strip() or None
-                    base_url = str(body.get("base_url") or "").strip()
-                    api_format = str(body.get("api_format") or "")
-                    confirmation: str | None = None
-                    if key:
-                        if api_format not in CUSTOM_PROVIDER_API_FORMATS:
-                            raise WorkspaceError(f"api_format must be one of: {', '.join(CUSTOM_PROVIDER_API_FORMATS)}")
-                        if not base_url.startswith(("http://", "https://")):
-                            raise WorkspaceError("base_url must start with http:// or https://")
-                        if not model:
-                            raise WorkspaceError("a model is required to save and verify a custom provider")
-                        result = validate_provider_api_key(name, key, model, api_format=api_format, base_url=base_url)
-                        if not result["ok"]:
-                            raise WorkspaceError(result["message"])
-                        confirmation = result["text"]
-                    try:
-                        save_custom_provider(name, key, model, base_url, api_format)
-                    except OSError as exc:
-                        raise WorkspaceError(f"failed to save custom provider: {exc}") from exc
-                    except ValueError as exc:
-                        raise WorkspaceError(str(exc)) from exc
-                    response = {
-                        "provider": custom_provider_id(name.strip()),
-                        "api_key_configured": bool(key),
-                        "model": model if key else None,
-                    }
-                    if confirmation is not None:
-                        response["verified"] = True
-                        response["confirmation"] = confirmation
-                    self._send_json(200, response)
                 except WorkspaceError as exc:
                     self._send_json(400, {"error": str(exc)})
             elif parsed.path == "/api/shared-context":
@@ -734,7 +574,7 @@ def read_persisted_sessions() -> list[dict]:
     """M2: the extra (non-default) sessions to restore on boot -- written
     by write_persisted_sessions() whenever one is created, closed, or has
     its workspace switched. Never raises, same posture as
-    read_registry()/read_credentials(). The default session is never in
+    read_registry(). The default session is never in
     here -- it's always freshly resolved from --workspace/discovery at
     every startup, exactly as it was in every version of this file before
     M1 existed."""

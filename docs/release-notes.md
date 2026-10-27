@@ -4,6 +4,31 @@
 
 ## Unreleased
 
+- **Removed: API-key mode and custom providers.** The Settings panel no
+  longer offers an API-key field or the "custom provider" form, and
+  `POST /api/provider-key` / `POST /api/custom-provider` are gone
+  (`webui_api_key_mode.py` deleted). This bridge hands work between
+  subscription CLIs when one hits a quota or context limit; a pay-as-you-go
+  API has no such limit to hand off from, and the mode's shell-exec tool loop
+  was the app's largest risk surface (decision DEC-29). **What this means for
+  you:** a provider whose CLI isn't installed can no longer be run from the
+  Web UI — install its CLI. Default `--model` overrides for detected CLIs are
+  unchanged and carry over. **Action if you used API-key mode:** any API keys
+  you saved are still in plaintext in
+  `~/Documents/Agent Handoff Bridge/credentials.json` (mode `0600`); nothing
+  reads or deletes them now, so remove the old provider entries from that file
+  yourself (keep the `cli_models` key). `GET /api/providers` also dropped its
+  `api_key_mode_supported`/`api_key_configured`/`model` fields and the
+  `custom_providers` key.
+- **Updating an existing install:** `handoff_bridge.py install --force` only
+  copies files that are still in the install list; it does not delete files
+  that were dropped from it. If you updated over an old install directory,
+  delete the leftover `webui_api_key_mode.py` by hand -- nothing imports it any
+  more, but the old shell-exec implementation would otherwise stay on disk.
+- **Fix:** with `--auto-fallback` and no other installed CLI to switch to (for
+  example only one CLI installed, or none), the bridge no longer re-runs the
+  same provider a second time and no longer records a duplicate failure.
+
 ## v0.4.11 — 2026-09-04
 
 - **New: view a workspace file's content without attaching it.** The file

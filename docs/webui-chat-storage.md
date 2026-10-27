@@ -242,149 +242,52 @@ feature that's a convenience index, not the operation itself. Verified in
 unreadable file, write failure) and `HistoryDrawerLiveServerTests::
 test_open_folder_still_succeeds_even_if_the_registry_write_fails`.
 
-## Credentials & API-Key Mode (Phase 4)
+## Provider Settings (CLI Model Overrides)
 
 Also app-level, not per-workspace, same reasoning as the registry above —
-one set of saved keys applies regardless of which workspace is open:
+one set of saved settings applies regardless of which workspace is open:
 
 ```
 ~/Documents/Agent Handoff Bridge/credentials.json
 ```
 
-**Schema** — a JSON object keyed by provider name:
+**Schema** — a JSON object whose only key this app reads or writes is
+`cli_models`, a provider → default `--model` override map:
 
 ```json
-{"claude": {"key": "sk-ant-...", "model": "claude-sonnet-5"}, "codex": {"key": "sk-...", "model": "gpt-5.1-codex"}}
+{"cli_models": {"codex": "gpt-5-codex", "claude": "opus"}}
 ```
 
-| Field | Type | Notes |
-|---|---|---|
-| `key` | string | the raw API key, as pasted into the connection panel (SCR-06/`components.html` §14) |
-| `model` | string \| null | **required**, enforced by `POST /api/provider-key` itself (not just "in practice" as before) — `API_KEY_MODE_DEFAULT_MODELS` (`webui_api_key_mode.py`) is deliberately empty for every provider (a hardcoded Claude default existed briefly but was removed: no externally-citable, dated source could back a specific model ID, and a wrong one would silently break every CLI-less user), and `validate_provider_api_key()` (below) has no model to make its verification call with. Without a saved `model`, `run_provider_via_api_key()` returns a clear "model not configured" chat-log error instead of guessing (see [DEC-13](design-system/flutter-mapping.html#s1c)) |
+`read_cli_provider_models()`/`save_cli_provider_model()`
+(`webui_credentials.py`) are the only readers/writers. An empty or
+whitespace-only model removes the entry. File mode is restricted to `0600`
+on write, and writes go through `atomic_write_text()` under a lock like the
+registry's. `POST /api/cli-model` saves one entry (no key, no verification
+call — the CLI itself handles auth); `GET /api/providers` returns, per
+provider, `cli_detected` (`shutil.which()`-based), `cli_model` (the saved
+override), and `known_models` (suggestions for the model `<datalist>`).
 
-**Saved keys are verified, not just accepted.** `POST /api/provider-key`
-previously wrote any non-empty `key` string to disk unconditionally — a
-typo or revoked key was only ever discovered the next time the user
-actually tried to chat. It now calls `validate_provider_api_key(provider,
-key, model)` first: one real, minimal, tool-free HTTP call to the
-provider's own API (Anthropic Messages / OpenAI Responses / Gemini
-generateContent, no `tools` in the request body at all — no workspace, so
-no tool access is granted just to check a key) asking for a one-word
-reply. Only on a real `200` does `save_credential()` ever run; a failure
-(bad key, wrong model name, network error) is returned as a `400` and
-nothing is written. On success the response carries `verified: true` and
-`confirmation: "<the actual reply text>"`, which the connection panel now
-shows in its success toast instead of an unconditional "저장되었습니다."
-A key removal (empty `key`) skips validation entirely — there is nothing
-to verify when disconnecting.
-
-**Gemini joined API-key mode as of DEC-25**
-(`docs/design-system/flutter-mapping.html#s1c`), resolving DEC-15's
-originally-left-open question. `API_KEY_MODE_PROVIDERS` (`webui_credentials.py`)
-now reads `("codex", "claude", "gemini")` — kept as its own tuple rather
-than an alias for the `PROVIDERS` imported from `handoff_bridge`, so a
-*future* provider added there for CLI dispatch still needs its own
-deliberate API-key-mode decision, not silent inheritance. `call_gemini_api()`
-implements the same `{"ok"/"text"}` / `{"ok"/"message"}` contract and tool-use
-turn loop as the other two, translating the shared `{"role", "content"}`
-message history into Gemini's `{"role", "parts": [{"text": ...}]}` `Content`
-shape (`"model"`, not `"assistant"`, is Gemini's role for a prior turn) and
-its function-calling parts (`functionCall`/`functionResponse`, sent back
-with `role: "user"`) — request/response shapes confirmed against
-[ai.google.dev/api/generate-content](https://ai.google.dev/api/generate-content)
-and
-[ai.google.dev/gemini-api/docs/generate-content/function-calling](https://ai.google.dev/gemini-api/docs/generate-content/function-calling)
-before implementing, not assumed, per this project's existing practice for
-the other two providers. Auth is the `x-goog-api-key` header, not the
-`?key=` query-string form the same docs also mention — keeps the secret
-out of any URL that could end up in a proxy/log line, and matches the
-other two providers' own header-based auth.
-
-**Never in git**: same posture as the chat log, but stronger — this file
-lives entirely outside any workspace, so it is never even reachable by
-`scripts/scan_secrets.py`'s git-diff-based scan (that scan only ever looks
-at files staged/tracked inside a workspace). **File permissions**: written
-via `atomic_write_text()` then `os.chmod(path, 0o600)` (best-effort — a
-`chmod` failure is swallowed, matching `touch_registry()`'s failure-
-isolation posture elsewhere in this file, since a permissions failure here
-must not break the save the user just triggered).
-
-**Never logged or echoed**: the raw key value necessarily flows through
-`save_credential()`/`read_credentials()` and on into
-`validate_provider_api_key()`/`run_provider_via_api_key()`/
-`call_anthropic_messages_api()`/`call_openai_responses_api()`/
-`call_gemini_api()`/`_http_post_json()` to actually send it — but every
-function that builds a user-visible error string
-(`validate_provider_api_key()`, `call_anthropic_messages_api()`,
-`call_openai_responses_api()`, `call_gemini_api()`,
-`_api_key_mode_error_record()`) constructs its message only from the HTTP
-response body or exception text. The key itself is never interpolated into
-anything that could end up in `.handoff/webui/chat/*.jsonl`, the history
-drawer, a `POST /api/provider-key` error response, or a toast.
-
-### Custom Providers (DEC-26)
-
-For users who buy API tokens directly rather than installing a vendor CLI,
-or who want a model none of codex/claude/gemini cover: an arbitrary
-OpenAI-compatible (Chat Completions — OpenRouter, Groq, Together, a local
-Ollama/LM Studio server, etc.) or Anthropic-compatible HTTP endpoint,
-registered under a user-chosen name. Unlike the fixed three, there can be
-any number of these.
-
-Stored in the *same* `credentials.json` (one file, one lock), under a
-`custom_providers` key sibling to the fixed-provider entries:
-
-```json
-{
-  "claude": {"key": "sk-ant-...", "model": "claude-sonnet-5"},
-  "custom_providers": {
-    "openrouter": {
-      "key": "sk-or-...",
-      "model": "meta-llama/llama-3",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_format": "openai"
-    }
-  }
-}
-```
-
-| Field | Type | Notes |
-|---|---|---|
-| `api_format` | `"openai"` \| `"anthropic"` | picked per entry, not fixed globally — chosen by the user when registering |
-| `base_url` | string | **meaning differs by format**, matching each format's own existing caller function's parameter rather than inventing a third convention: for `"openai"`, the root that `/chat/completions` is appended to (the same "OpenAI SDK `base_url`" convention OpenRouter/Groq/Ollama/LM Studio all document); for `"anthropic"`, the *complete* messages-endpoint URL (`call_anthropic_messages_api()`'s `base_url` param is already a full POST target for the real Anthropic case — a custom entry stays consistent with that instead of a base+append pattern) |
-| `key`, `model` | string | same meaning as the fixed providers' fields; `model` is required (no default exists for an arbitrary endpoint) |
-
-A custom provider's `provider` value everywhere else in this codebase
-(chat records, `POST /api/run`'s `provider` field, `webui_bridge_run.py`'s
-dispatch) is `custom:<name>` (`webui_credentials.CUSTOM_PROVIDER_PREFIX`) —
-unambiguous against the fixed strings without threading a second "kind"
-field through every function that takes `provider: str`. It has no CLI
-concept at all: `_run_provider_via_bridge_locked()` checks
-`is_custom_provider()` first, before any `cli_available()` call, and
-always dispatches straight to `run_provider_via_api_key()`.
-
-`POST /api/custom-provider` mirrors `POST /api/provider-key`'s contract
-exactly (validate-then-save on a non-empty key, empty key removes,
-`400`/no-write on a failed validation) — see `validate_custom_provider_name()`
-for the name rules (1-40 chars, `[A-Za-z0-9_-]`, can't collide with a
-fixed provider name).
-
-`call_openai_compatible_chat_api()` (Chat Completions, *not* the Responses
-API `call_openai_responses_api()` targets — most third-party/self-hosted
-servers only implement the former) and `call_anthropic_messages_api()`
-(reused with a custom `base_url`, not duplicated) are the two callers;
-which one runs is picked by `api_format` in `run_provider_via_api_key()`.
-Same tool-use turn loop, same `{"ok"/"text"}` contract as the fixed three.
-Not every custom endpoint will actually support tool calls — one that
-ignores `tools` in the request and just replies with plain text is
-already handled the same as "no tool calls in the response" (the loop's
-existing first-iteration return), no separate code path needed.
+**API-key mode was removed** (the release after v0.4.11). It let a provider
+with no local CLI be reached over its vendor HTTP API with a pasted key,
+and registered arbitrary OpenAI/Anthropic-compatible endpoints as "custom
+providers" (DEC-13~16, DEC-21, DEC-25, DEC-26). This bridge exists to move
+work between *subscription* CLIs when one runs out of quota or context; a
+pay-as-you-go API has no such limit to hand off from, so the mode never
+served the project's purpose, and its shell-exec tool loop carried the
+largest risk surface in the app
+([Production Audit F1](production-audit-2026-09-02.md)). The file name
+`credentials.json` is kept only so saved model overrides carry over. Key
+entries an older install wrote into the same file (`"claude": {"key": ...}`,
+`"custom_providers": {...}`) are no longer used for authentication or
+any call, but are **not deleted**: a save parses the whole file, changes
+only the `cli_models` key, and writes everything else back unchanged (so
+the old keys are still parsed and re-serialized on that save). A user who
+wants them gone must remove them from that file by hand. A run for a provider whose CLI is absent now fails through the normal
+bridge subprocess path (`exit_code` 127, a `tool_failure` record).
 
 ### Shared Project Context (DEC-27)
 
-Free-form, per-*workspace* text that reaches every provider call
-regardless of mode — CLI (codex/claude/gemini binaries) or API-key mode
-(fixed or custom). Lives at:
+Free-form, per-*workspace* text that reaches every provider call. Lives at:
 
 ```
 <workspace>/.handoff/shared-context.md
@@ -397,120 +300,17 @@ never auto-generated. Tracked in git like `current.md` (not gitignored) —
 meant to travel with the project and be visible to teammates/other
 agents, the same reasoning `current.md` already uses.
 
-Two independent read paths reach the same file, because CLI mode and
-API-key mode assemble their prompts in fundamentally different ways and
-neither reuses the other's machinery:
-
-- **CLI mode**: `handoff_bridge.py`'s `build_prompt()` reads it via
-  `read_text(SHARED_CONTEXT_FILE, "")`; if non-empty (after stripping),
-  it's folded in as a `## Project Context` section. Absent entirely — not
-  an empty placeholder section — when the file doesn't exist or is
-  whitespace-only.
-- **API-key mode**: `webui_common.read_shared_context(workspace)` reads
-  the same file directly and `run_provider_via_api_key()` passes it as
-  `system=` to whichever `call_X_api()` runs. Each caller puts it in its
-  own vendor-specific system-prompt field/shape — Anthropic's top-level
-  `system` string, the Responses API's `instructions` field, Gemini's
-  `systemInstruction`, Chat Completions' `{"role": "system", ...}`
-  message (its only equivalent, since Chat Completions has no top-level
-  system parameter of its own).
+`handoff_bridge.py`'s `build_prompt()` reads it via
+`read_text(SHARED_CONTEXT_FILE, "")`; if non-empty (after stripping),
+it's folded in as a `## Project Context` section. Absent entirely — not
+an empty placeholder section — when the file doesn't exist or is
+whitespace-only. The Web UI's settings panel reads and writes the same
+file through `webui_common.read_shared_context()`/`write_shared_context()`.
 
 `GET`/`POST /api/shared-context` are the panel's read/write endpoints —
 `GET` with no workspace open returns `{"text": ""}` (not an error, same
 posture as `/api/chat`'s empty-state); `POST` with no workspace returns
 `400` (there is nowhere to write it).
-
-One exception text is deliberately **not** forwarded: `http.client` raises
-a bare `ValueError` (not `HTTPError`/`URLError`) if a header value
-contains characters it rejects — e.g. a saved key with an embedded CR/LF
-reaching the `x-api-key`/`Authorization` header unescaped — and that
-exception's own message embeds the offending header *value* verbatim,
-which here is the key itself. `_http_post_json()` catches this case
-specifically and returns a fixed, generic message instead of `str(exc)`,
-unlike every other exception type it handles.
-
-**Dispatch**: `_run_provider_via_bridge_locked()` only reaches the
-API-key-mode path (`run_provider_via_api_key()`) when a provider's CLI is
-genuinely absent (`cli_available()` is `shutil.which()`-based) *and* a key
-is saved for it — a CLI-available provider always uses the existing
-subprocess path unchanged, even if a key also happens to be saved for it.
-For `provider="auto"`, API-key mode is only considered when **no** provider
-CLI is available at all; otherwise `auto` keeps its existing CLI-only
-`choose_auto_provider()`/`--auto-fallback` behavior untouched.
-
-**Chat-log record shape**: `run_provider_via_api_key()` returns the same
-record shape the subprocess path does (see `agent` role fields above), so
-it flows into `classify_run_status()`/`append_chat_message()` unchanged,
-with two fields always fixed: `session_id: null` (no provider-managed
-session exists in this mode) and `run_dir: null` (no local run directory is
-created). It also deliberately **never writes to
-`.handoff/state.json`/`current.md`** — those remain the CLI-handoff-
-specific durable state files (`docs/architecture.md`'s "State Boundaries");
-API-key mode started chat-only (DEC-13) and, as of the CFL-17 follow-up
-below, now also runs a tool loop, but it still has no CLI session or
-cross-provider auto-fallback concept for either of those files to record.
-
-**Conversation continuity**: since neither vendor's direct HTTP API is
-session-based (`docs/research-api-key-mode.md`), `build_api_message_history()`
-replays the chat log as alternating user/assistant turns on every call,
-standing in for what `codex exec resume`/`claude --resume` do for the CLI
-path. Two details a naive "just read this month's file" version got wrong,
-found in a second review round and fixed before merge:
-
-- **Scans months backward** (same pattern `collect_recent_turns()` already
-  established in Phase 3), not just the current month — otherwise the
-  first message(s) of a new UTC month would replay with zero prior
-  context even if the same conversation has weeks of history in the
-  previous month's file. Capped to the most recent
-  `API_KEY_MODE_MAX_HISTORY_MESSAGES` raw messages once enough are
-  collected, so a long-lived project doesn't need every month read.
-- **Merges consecutive same-role entries** instead of mapping the log
-  1:1 to alternating turns. Anthropic's Messages API requires strict
-  user/assistant alternation, but a single CLI turn can leave two
-  consecutive `agent` chat-log entries when `--auto-fallback` chains
-  providers (codex fails, claude succeeds) — replaying those as two
-  separate `assistant` messages would violate alternation and fail every
-  subsequent API-key-mode call in that workspace with a 400. The merge is
-  applied generically (including against the final `prompt`), so it also
-  covers the more obscure case of two consecutive bare `user` entries
-  with no reply in between.
-
-**Tool loop (CFL-17, resolved as
-[DEC-21](design-system/flutter-mapping.html#s1c); extended to Gemini by
-[DEC-25](design-system/flutter-mapping.html#s1c))**:
-`call_anthropic_messages_api()`/`call_openai_responses_api()`/
-`call_gemini_api()` all run a full tool-use turn loop instead of a single
-stateless call -- `read_file`/`write_file`/`edit_file`/`run_shell`,
-declared once in `_TOOL_SPECS` and rendered into each vendor's own schema
-shape (`anthropic_tool_definitions()`/`openai_tool_definitions()`/
-`gemini_tool_definitions()`) so the three can't drift apart. A response
-with no tool-call block returns on the first iteration, so a plain chat
-turn is unaffected -- this loop is a strict superset of the earlier
-chat-only behavior, not a separate mode.
-`execute_tool_call()` never raises (a bad tool name or a malformed
-argument from the model degrades to an error string, not a crash), file
-tools reuse `safe_join()` for workspace confinement, and `run_shell` runs
-with `cwd=workspace` (its starting directory, not a sandbox -- an
-absolute path or `..` reaches anywhere the OS user account can, same as
-a real terminal or CLI mode's own `codex`/`claude` subprocess) and no
-other restriction -- DEC-21's interview chose this over a narrower/
-more-restricted first pass, treating it as the same trust level CLI
-mode already has, not a new tier. `TOOL_EXEC_TIMEOUT_SECONDS` kills the
-*whole* process group a command spawned on timeout (`_kill_process_tree()`
--- POSIX via `os.killpg()`, using the child's own PID directly as the
-process group id since it was started with `start_new_session=True`
-rather than a separate, empirically-flaky `os.getpgid()` re-lookup after
-the shell itself may have already exited; Windows via `taskkill /T`),
-not just the immediate shell process -- fixed 2026-09-02 (a production
-audit found the previous "immediate subprocess only" behavior left a
-backgrounded/forked descendant running past the timeout); still not a
-sandbox in any other sense. `MAX_TOOL_ITERATIONS = 15` bounds a single turn so a
-confused model can't loop indefinitely. Tool-call activity (what ran,
-with what arguments, what it returned) is folded into `final_text` as a
-fenced code block -- DEC-03's existing code-block rendering, not a new
-message schema -- so it's visible in the persisted chat log even though
-DEC-02's single confirm-on-first-send gate means no per-call confirmation
-interrupts the turn.
 
 ## Known Open Questions
 

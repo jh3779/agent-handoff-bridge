@@ -39,46 +39,17 @@ command to check (`docs/research-gemini-cli.md`), so `diagnose()`
 deliberately does not probe it — see
 [CLI Reference § Diagnose](cli-reference.md#diagnose).
 
-**Exception, deliberate**: the Web UI's Phase 4 API-key mode
-(`handoff_webui.py`, [CLI Reference § Web UI](cli-reference.md#web-ui-mvp))
-is the one place this project stores a provider credential itself, for a
-provider whose CLI isn't installed. It's a real, documented departure from
-"each provider manages its own auth," not an oversight:
-
-- stored at `~/Documents/Agent Handoff Bridge/credentials.json`
-  (`0600` permissions), never inside a git-tracked workspace, so it's
-  outside `scripts/scan_secrets.py`'s scan scope by construction, not
-  because it's exempted from it;
-- **plaintext at rest** — not OS-keychain-encrypted; a deliberate
-  build-vs-buy tradeoff (see
-  [Research: API-Key Mode](research-api-key-mode.md) "Credential
-  Storage") to avoid three separate per-OS code paths and a new
-  third-party dependency (`keyring`), which this project has
-  consistently avoided;
-- never appears in any chat-log entry, error message, or toast — every
-  API-key-mode failure path builds its message only from the HTTP
-  response body or exception text, verified by tests
-  (`tests/test_handoff_webui.py`'s `CallProviderApiTests`/
-  `HttpPostJsonTests`);
-- a permissions/write failure while saving is surfaced as a normal `400`
-  to that one request, not silently swallowed the way best-effort state
-  like the registry is — saving a credential is a user-initiated action
-  with an immediate result to react to, unlike `touch_registry()`'s
-  after-the-fact bookkeeping.
-
-Full schema, dispatch priority (a detected CLI always wins over a saved
-key), and removal semantics:
-[Web UI Chat Storage § Credentials & API-Key Mode](webui-chat-storage.md#credentials--api-key-mode-phase-4).
-
-**Custom providers (DEC-26)** extend this same file/exception with a
-user-supplied `base_url` per entry — a deliberate trust boundary, not an
-oversight: the user who registers a custom provider is the same person
-who chooses what `base_url` and API key to pair it with (this is a local,
-single-user app, not a hosted service accepting untrusted input), so
-there is no separate validation of the URL beyond requiring an
-`http://`/`https://` scheme. The key is still sent only to whatever host
-the user configured, over that connection, the same as the fixed three.
-See [Web UI Chat Storage § Custom Providers](webui-chat-storage.md#custom-providers-dec-26).
+The Web UI stores no provider credential. Its API-key mode (which did, for
+a provider whose CLI wasn't installed) was removed after v0.4.11 — see
+[Web UI Chat Storage § Provider Settings](webui-chat-storage.md#provider-settings-cli-model-overrides).
+`~/Documents/Agent Handoff Bridge/credentials.json` now holds only per-provider
+default `--model` overrides, but stays on the never-commit list above: an
+install that predates the removal may still have plaintext API-key entries in
+it (`0600`, never inside a git-tracked workspace). Nothing uses them for
+authentication or API calls any more, and nothing deletes them automatically.
+But saving a model override still parses the whole file and writes it back
+(read-modify-write), so legacy keys do pass through the process's memory on
+that save — delete them by hand if present.
 
 ## Mobile Remote Boundaries
 
@@ -117,9 +88,8 @@ The Tauri shell (`src-tauri/`) does not change any trust boundary this
 document already establishes -- it wraps the existing Python backend
 (PyInstaller sidecar) rather than replacing it, so the backend's own
 already-documented posture applies unchanged: loopback-only HTTP with no
-authentication, and (per DEC-21, `docs/design-system/flutter-mapping.html`)
-a consciously-accepted unrestricted shell-exec tool in API-key mode. This
-section covers only what's new because a native shell now exists.
+authentication. This section covers only what's new because a native shell
+now exists.
 
 - **The main window always loads the sidecar's real
   `http://127.0.0.1:8787/` URL, never Tauri's own bundled/asset-protocol
