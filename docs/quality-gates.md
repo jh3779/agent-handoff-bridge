@@ -15,11 +15,44 @@ Each rule is enforced at up to three layers:
 - **Doc**: written down so a human or agent knows the rule exists.
 - **Local hook**: runs automatically on `git commit` / `git push` once
   `scripts/install_git_hooks.sh` has been run. Opt-in per clone.
-- **CI**: runs on every push to `main` and every pull request. Cannot be
-  skipped by forgetting to install hooks locally.
+- **CI**: ~~runs on every push to `main` and every pull request~~ — **removed**,
+  see "CI Was Removed" below. Wherever a rule below lists a **CI** layer, read
+  it as "no longer enforced automatically."
 
 Run `scripts/install_git_hooks.sh` once per clone to get the local-hook
 layer; see [Platform Setup](platform-setup.md).
+
+## CI Was Removed
+
+The GitHub Actions jobs that ran on every push to `main` and every pull
+request (`branch-name`, `validate`, `rust-build`, `sidecar-build`) were
+removed from `.github/workflows/ci.yml` — Actions minutes ran out, and
+`main`'s branch protection no longer requires status checks. What remains:
+
+- **Branch protection on `main`** is still applied (pull request required,
+  enforced for admins, no force-push or deletion); only the required status
+  checks were dropped.
+- **The review bot** (`review-bot-notify`, `plan-bot-events`) is unaffected —
+  it does not depend on CI.
+- **`installer-build`** stays in `ci.yml` as a manual (`workflow_dispatch`)
+  job, because `docs/release-process.md` triggers it for release installers.
+- **Nothing runs automatically on a PR now**, so run these yourself before
+  opening one and record the results in the PR (the same commands the old
+  jobs ran):
+
+  ```bash
+  python3 scripts/check_branch_name.py        # was: branch-name
+  python3 handoff_bridge.py check             # was: validate (tests, secret scan, contract)
+  cargo build --manifest-path src-tauri/Cargo.toml   # was: rust-build (needs src-tauri/binaries/ files)
+  python scripts/build_sidecars.py --target-triple <triple>  # was: sidecar-build, per OS
+  ```
+
+  `scripts/install_git_hooks.sh` (opt-in per clone) still enforces the secret
+  scan and branch naming locally. The Linux/Windows `sidecar-build` legs can
+  only be reproduced on those OSes (or a container for Linux).
+
+Other docs (`release-process*.md`, `release-notes*.md`) still describe CI in
+past or release terms; only this document and `ci.yml` were updated.
 
 ## Rule: Branch Naming
 
