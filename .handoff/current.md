@@ -4298,7 +4298,8 @@ tag" rule by construction rather than by discipline.
 
 - **Target**: Claude Code CLI, Web UI backend/frontend + docs, branch
   `refactor/remove-api-key-mode`, PR #83
-  (https://github.com/jh3779/agent-handoff-bridge/pull/83), open, merge-ready pending review.
+  (https://github.com/jh3779/agent-handoff-bridge/pull/83), **merged** 2026-10-27
+  (squash `30a1e6c`).
 - **Why**: the user pointed out the bridge exists to hand work between
   subscription CLIs on quota/context limits; a pay-as-you-go API has no such
   limit, so API-key mode never served that purpose, and its `run_shell` tool
@@ -4324,9 +4325,10 @@ tag" rule by construction rather than by discipline.
   preserved test, and live-server tests (providers response shape, removed
   routes return 405, `/api/run` rejects `custom:*`).
 - **Remaining / decisions for the user**: (1) legacy plaintext API keys in a
-  user's `~/Documents/Agent Handoff Bridge/credentials.json` are neither read
-  nor deleted (documented; a save preserves them) -- decide whether to add an
-  explicit cleanup. (2) Not done: `docs/release-notes.ko.md` (already behind
+  user's `~/Documents/Agent Handoff Bridge/credentials.json` are never used for
+  auth or calls and not deleted, but a model save still parses and rewrites the
+  whole file, keys included (documented) -- decide whether to add an explicit
+  cleanup. (2) Not done: `docs/release-notes.ko.md` (already behind
   since v0.2.0), historical snapshots (`codebase-review.md`,
   `production-audit-2026-09-02.md`) and `components.html` were left as-is.
   (3) Version bump / release not done -- needs its own `release/` PR.
@@ -4344,5 +4346,37 @@ tag" rule by construction rather than by discipline.
   banner. Deliberately NOT done: auto-deleting legacy keys (irreversible, bot
   agrees), a stale-file cleanup in `install`, and the version bump (belongs in
   a `release/` PR as v0.5.0).
-- **Blocked**: none. **Next**: user approves/merges PR #83; then a `release/`
-  PR for v0.5.0.
+- **Blocked**: none. **Next**: see the 2026-10-27 entry below.
+
+### 2026-10-27 — PR #83 merged, CI removed, follow-ups
+
+- **Target**: Claude Code CLI, repo-level (branches/PRs/protection/docs).
+- **Changed**: GitHub Actions minutes ran out, so (1) `main` branch protection
+  lost its *required status checks* only -- PR required (0 approvals),
+  `enforce_admins`, no force-push/deletion are unchanged (pre-change JSON was
+  kept locally); (2) PR #85 (`dd4948c`) removed the automatic CI jobs
+  (`branch-name`, `validate`, `rust-build`, `sidecar-build`) and the
+  `push`/`pull_request` triggers from `.github/workflows/ci.yml`, **keeping the
+  manual `installer-build` job** because `docs/release-process.md` triggers it
+  via `gh workflow run ci.yml --ref vX.Y.Z`; `docs/quality-gates.md` gained a
+  "CI Was Removed" section listing the local commands to run before a PR;
+  (3) PR #83 merged (`30a1e6c`). Merged local+remote branches cleaned up
+  (remote ones were auto-deleted by GitHub). This PR fixes the three places that
+  said legacy keys were "not read" (release notes, DEC-29, this file) -- the
+  review bot's only remaining (optional) finding.
+- **Verified**: because CI cannot run, the required checks were reproduced
+  locally on PR #83's head `d39a776`: macOS (validate on Python 3.11, cargo
+  build, sidecar build + smoke), Linux amd64 in Docker (validate + sidecar
+  build + smoke), Windows 11 on a Remote Control session (sidecar build + 8
+  `.exe` + smoke, Python 3.12 not 3.11). Merged `main` was re-checked:
+  `handoff_bridge.py check` 516 tests OK.
+- **Remaining**: issue #84 (`AugmentPathForGuiLaunchTests` hardcodes POSIX `:`
+  PATH separator -> fails on Windows; pre-existing, unrelated to #83); Linux
+  `rust-build` was not reproduced; `release-process*.md` / `release-notes*.md`
+  still describe CI in past/release terms; `docs/release-notes.ko.md` is behind
+  since v0.2.0; `chore/rust-build-3os` branch exists and is not from this work.
+  A `release/` PR for v0.5.0 is separate (version bump + notes only); tagging
+  and building installers via `installer-build` are NOT done -- they need
+  GitHub Actions, which has no minutes left.
+- **Blocked**: GitHub Actions quota (release installers). **Next**: merge the
+  docs-fix PR and the v0.5.0 release PR when the user says so.
