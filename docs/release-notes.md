@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.5.0 — 2026-10-27
+
 - **Removed: API-key mode and custom providers.** The Settings panel no
   longer offers an API-key field or the "custom provider" form, and
   `POST /api/provider-key` / `POST /api/custom-provider` are gone
@@ -29,6 +31,12 @@
 - **Fix:** with `--auto-fallback` and no other installed CLI to switch to (for
   example only one CLI installed, or none), the bridge no longer re-runs the
   same provider a second time and no longer records a duplicate failure.
+- **Dev: automatic GitHub Actions CI removed.** The push/pull_request checks
+  (`branch-name`, `validate`, `rust-build`, `sidecar-build`) were removed from
+  `.github/workflows/ci.yml` because Actions minutes ran out, and `main`'s
+  required status checks were dropped. Run the checks locally before opening a
+  PR (see `docs/quality-gates.md`, "CI Was Removed"). The manual
+  `installer-build` job is kept; `docs/release-process.md` still triggers it.
 
 ## v0.4.11 — 2026-09-04
 
