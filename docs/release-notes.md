@@ -16,8 +16,9 @@
   unchanged and carry over. **Action if you used API-key mode:** any API keys
   you saved are still in plaintext in
   `~/Documents/Agent Handoff Bridge/credentials.json` (mode `0600`); nothing
-  reads or deletes them now, so remove the old provider entries from that file
-  yourself (keep the `cli_models` key). `GET /api/providers` also dropped its
+  uses or deletes them now (saving a default model still parses the whole file
+  and writes it back unchanged, keys included), so remove the old provider
+  entries from that file yourself (keep the `cli_models` key). `GET /api/providers` also dropped its
   `api_key_mode_supported`/`api_key_configured`/`model` fields and the
   `custom_providers` key.
 - **Updating an existing install:** `handoff_bridge.py install --force` only
