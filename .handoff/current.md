@@ -4380,3 +4380,26 @@ tag" rule by construction rather than by discipline.
   GitHub Actions, which has no minutes left.
 - **Blocked**: GitHub Actions quota (release installers). **Next**: merge the
   docs-fix PR and the v0.5.0 release PR when the user says so.
+
+### 2026-10-27 — v0.5.0 released (source zips only)
+
+- **Target**: Claude Code CLI, repo-level (PRs/tag/release).
+- **Changed**: PR #86 (`6edba84`, wording fix + handoff) and PR #87 (`fbd7bee`,
+  `Release v0.5.0`) squash-merged; PR #82 (`rust-build` 3-OS matrix) closed
+  because #85 removed the job it modified (branch `chore/rust-build-3os` left
+  in place). Tag `v0.5.0` pushed at `fbd7bee`; GitHub Release `v0.5.0` published
+  with `agent-handoff-bridge-macos.zip` and `agent-handoff-bridge-windows.zip`
+  only. The release body says installers and `latest.json` are not attached yet.
+- **Verified**: on merged `main`, `handoff_bridge.py check` 516 tests OK; both
+  zips extracted outside the repo report `--version` 0.5.0, macOS zip `check` OK.
+- **Remaining**: (1) release assets are incomplete -- no `.dmg`/`.exe`/
+  `.AppImage` and no signed `latest.json`. v0.5.0 is now the GitHub "Latest"
+  release, so `releases/latest/download/latest.json` 404s and installed desktop
+  apps silently see no update until it is added. When Actions minutes are back:
+  `gh workflow run ci.yml --ref v0.5.0`, then `scripts/build_updater_manifest.py`
+  and `gh release upload v0.5.0 ...` per `docs/release-process.md` steps 6-7.
+  (2) README download-link PR (like #80) only after the installers exist.
+  (3) issue #84 (Windows `check` failure), Linux `rust-build` not reproduced,
+  `release-process*.md` / `release-notes*.md` still describe CI in past terms.
+- **Blocked**: GitHub Actions quota. **Next**: complete the release assets when
+  Actions is available.
