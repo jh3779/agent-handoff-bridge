@@ -994,6 +994,40 @@ class UsageTokenCountsTests(unittest.TestCase):
         self.assertEqual(hb.estimate_tokens(5), 2)
 
 
+class ParseCliArgsTests(unittest.TestCase):
+    """The docs write `run codex --execute "text"`; Python 3.11's argparse
+    rejected it (optional positional after an option), so main() goes through
+    parse_cli_args(). Run on 3.11 and a newer Python to see both paths."""
+
+    def _parse(self, *argv):
+        return hb.parse_cli_args(hb.build_parser(), list(argv))
+
+    def test_prompt_after_an_option(self):
+        args = self._parse("run", "codex", "--execute", "hello world")
+        self.assertEqual((args.provider, args.execute, args.prompt), ("codex", True, "hello world"))
+
+    def test_prompt_before_an_option_still_works(self):
+        args = self._parse("run", "codex", "hello", "--execute")
+        self.assertEqual((args.prompt, args.execute), ("hello", True))
+
+    def test_run_without_a_prompt_keeps_the_empty_default(self):
+        self.assertEqual(self._parse("run", "codex", "--execute").prompt, "")
+
+    def test_chat_provider_after_an_option(self):
+        self.assertEqual(self._parse("chat", "--full-prompt", "claude").provider, "claude")
+
+    def test_an_unknown_extra_argument_is_still_an_error(self):
+        for argv in (
+            ("run", "codex", "--execute", "a", "b"),
+            ("run", "codex", "--bogus"),
+            ("chat", "--full-prompt", "not-a-provider"),
+        ):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    self._parse(*argv)
+                self.assertEqual(raised.exception.code, 2)
+
+
 class ChatReplTests(unittest.TestCase):
     """`chat`: a line-oriented front end over run_command(), so everything
     below drives it with scripted input and a faked provider subprocess."""

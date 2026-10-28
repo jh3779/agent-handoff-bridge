@@ -2517,8 +2517,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_cli_args(parser: argparse.ArgumentParser, argv: list[str] | None) -> argparse.Namespace:
+    """`parser.parse_args`, plus the optional-positional ordering fix that
+    Python 3.11 needs. Before 3.12, argparse matches an `nargs="?"` positional
+    (run's prompt, chat's provider) as empty as soon as an option follows the
+    required positionals, so `run codex --execute "text"` -- the form the docs
+    use -- failed with "unrecognized arguments: text". Python 3.12+ parses it
+    correctly and never reaches the fallback below."""
+    args, extras = parser.parse_known_args(argv)
+    if len(extras) == 1 and not extras[0].startswith("-"):
+        value = extras[0]
+        if args.command == "run" and not args.prompt:
+            args.prompt = value
+            return args
+        if args.command == "chat" and value in ("auto",) + PROVIDERS:
+            args.provider = value
+            return args
+    if extras:
+        parser.error("unrecognized arguments: " + " ".join(extras))
+    return args
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = parse_cli_args(build_parser(), argv)
     if getattr(args, "agy_allow_writes", False):
         # Through the environment so the nested auto-fallback call and any
         # subprocess started from here see it exactly like a user-set variable.
