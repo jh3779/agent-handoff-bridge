@@ -1391,9 +1391,19 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         print("Add --execute to run it.")
         return 0
 
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{provider}"
-    run_dir = RUNS_DIR / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    run_id_base = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{provider}"
+    run_id = run_id_base
+    attempt = 1
+    while True:
+        run_dir = RUNS_DIR / run_id
+        try:
+            # exist_ok=False: two turns of one provider that start within the
+            # same second must not share (and overwrite) a log directory.
+            run_dir.mkdir(parents=True)
+            break
+        except FileExistsError:
+            attempt += 1
+            run_id = f"{run_id_base}-{attempt}"
     (run_dir / "prompt.md").write_text(prompt, encoding="utf-8")
 
     started_at = utc_now()
@@ -1709,6 +1719,18 @@ class ChatSession:
         return True
 
 
+def read_chat_message(input_fn: "Any") -> str:
+    """Read one message: a line, or several when a line ends with a
+    backslash. EOFError and KeyboardInterrupt propagate with the partially
+    typed text dropped, so a cancelled message is never returned (and so
+    never sent to a provider)."""
+    lines = [input_fn("> ")]
+    while lines[-1].endswith("\\"):
+        lines[-1] = lines[-1][:-1]
+        lines.append(input_fn(". "))
+    return "\n".join(lines).strip()
+
+
 def chat_command(args: argparse.Namespace, input_fn: "Any" = input, out: "Any" = print) -> int:
     session = ChatSession(args.provider, args.auto_fallback, args.full_prompt, args.model, args.timeout_seconds)
     try:
@@ -1720,21 +1742,17 @@ def chat_command(args: argparse.Namespace, input_fn: "Any" = input, out: "Any" =
     out(f"provider: {session.provider} | installed CLIs: {installed} | /help for commands")
     while True:
         try:
-            line = input_fn("> ")
+            text = read_chat_message(input_fn)
         except EOFError:
+            # End of input (Ctrl-D, closed pipe), including in the middle of a
+            # multi-line message: leave without sending anything half-typed.
             out("")
             break
         except KeyboardInterrupt:
+            # Ctrl-C while typing discards the message being typed and
+            # returns to a fresh prompt.
             out("")
             continue
-        lines = [line]
-        while lines[-1].endswith("\\"):
-            try:
-                lines[-1] = lines[-1][:-1]
-                lines.append(input_fn(". "))
-            except (EOFError, KeyboardInterrupt):
-                break
-        text = "\n".join(lines).strip()
         if not text:
             continue
         if text.startswith("/"):
@@ -1744,7 +1762,13 @@ def chat_command(args: argparse.Namespace, input_fn: "Any" = input, out: "Any" =
         try:
             session.run_turn(text, out)
         except KeyboardInterrupt:
-            out("interrupted - the provider call may still be finishing in the background")
+            # subprocess.run() kills the provider CLI it started when it is
+            # interrupted, before any result is recorded, so nothing was
+            # written to state.json or current.md for this turn.
+            out(
+                "interrupted - the provider process was stopped and this turn was not recorded "
+                "(anything it had already started, such as shell commands or edits, may have completed)"
+            )
     out(session.totals_line())
     return 0
 

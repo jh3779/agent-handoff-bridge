@@ -99,8 +99,11 @@ and Claude Code; Gemini's usage shape is not parsed, so only `sent` appears).
 | `/help`, `/exit` | help; leave (Ctrl-D also works) |
 
 A reply is shown when the provider finishes, not streamed — each turn is one
-`--execute` run, so Ctrl-C while waiting returns to the prompt but the provider
-call may still be finishing in the background.
+`--execute` run. Ctrl-C while typing discards the message; Ctrl-C while a
+provider is running stops that provider process and the turn is not recorded
+(anything it had already started, such as edits or shell commands, may have
+completed). Ctrl-D ends the chat, and a half-typed multi-line message is dropped
+rather than sent.
 
 ### Model Labels And Overrides
 

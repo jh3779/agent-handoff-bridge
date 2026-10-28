@@ -669,6 +669,45 @@ class BuildPromptSelfContainedNoticeTests(unittest.TestCase):
         self.assertIn("do not fix it unprompted", prompt)
 
 
+class UniqueRunDirectoryTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
+
+    def test_two_turns_in_the_same_second_get_separate_log_directories(self):
+        fixed = hb.datetime(2026, 1, 1, 12, 0, 0, tzinfo=hb.timezone.utc)
+
+        def fake_run(command, **kwargs):
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+            marker = command[0]
+            return subprocess.CompletedProcess(
+                command,
+                returncode=0,
+                stdout='{"type": "result", "session_id": "s", "result": "reply from ' + marker + '", "is_error": false}\n',
+                stderr="",
+            )
+
+        args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                     timeout_seconds=0, model=None, instruction_type="continue")
+        state = {"task": "t", "primary_provider": "claude", "status": "ready"}
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+            hb.subprocess, "run", side_effect=fake_run
+        ), mock.patch.object(hb, "datetime") as fake_datetime:
+            fake_datetime.now.return_value = fixed
+            hb.run_provider("claude", args, state)
+            first_stdout = (Path(state["history"][0]["run_dir"]) / "stdout.jsonl").read_text(encoding="utf-8")
+            args.prompt = "second"
+            hb.run_provider("claude", args, state)
+        dirs = [record["run_dir"] for record in state["history"]]
+        self.assertEqual(len(set(dirs)), 2)
+        self.assertEqual((Path(dirs[0]) / "stdout.jsonl").read_text(encoding="utf-8"), first_stdout)
+        self.assertTrue(dirs[1].endswith("-claude-2"))
+
+
 class UsageTokenCountsTests(unittest.TestCase):
     def test_codex_shape(self):
         usage = {"input_tokens": 1000, "cached_input_tokens": 800, "output_tokens": 50}
@@ -792,6 +831,50 @@ class ChatReplTests(unittest.TestCase):
         self.assertEqual(len(self.provider_inputs), 1)
         sent = self.provider_inputs[0][1]
         self.assertIn("line one \nline two", sent)
+
+    def test_eof_in_the_middle_of_a_multiline_message_sends_nothing_and_ends_the_chat(self):
+        code, output = self._chat(["delete temporary \\"])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.provider_inputs, [])
+        self.assertIn("this session: 0 run(s)", output)
+
+    def test_ctrl_c_while_typing_discards_the_message_and_returns_to_the_prompt(self):
+        args = hb.build_parser().parse_args(["chat", "claude"])
+        script = iter(["delete temporary \\", KeyboardInterrupt, "hello", "/exit"])
+
+        def input_fn(prompt):
+            item = next(script)
+            if item is KeyboardInterrupt:
+                raise KeyboardInterrupt
+            return item
+
+        out = []
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+            hb.subprocess, "run", side_effect=self._fake_run
+        ):
+            hb.chat_command(args, input_fn=input_fn, out=out.append)
+        self.assertEqual(len(self.provider_inputs), 1)
+        sent = self.provider_inputs[0][1]
+        self.assertIn("hello", sent)
+        self.assertNotIn("delete temporary", sent)
+
+    def test_ctrl_c_while_a_provider_runs_reports_the_turn_as_not_recorded_and_keeps_chatting(self):
+        args = hb.build_parser().parse_args(["chat", "claude"])
+        feed = iter(["first", "/exit"])
+        calls = []
+
+        def interrupting_run_command(ns):
+            calls.append(ns.prompt)
+            raise KeyboardInterrupt
+
+        out = []
+        with mock.patch.object(hb, "run_command", side_effect=interrupting_run_command):
+            code = hb.chat_command(args, input_fn=lambda prompt: next(feed), out=out.append)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["first"])
+        joined = "\n".join(out)
+        self.assertIn("this turn was not recorded", joined)
+        self.assertNotIn("background", joined)
 
     def test_unknown_slash_command_does_not_call_a_provider(self):
         _, output = self._chat(["/nope", "/exit"])
