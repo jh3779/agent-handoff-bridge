@@ -1239,21 +1239,136 @@ class StatsTests(unittest.TestCase):
         self.assertEqual(claude["runs_timed"], 1)
         self.assertEqual(claude["seconds"], 4.0)
 
-    def test_handoff_hops_count_a_different_provider_after_a_handoff(self):
+    def test_unmeasured_ok_runs_do_not_dilute_the_per_ok_run_figures(self):
+        # Found in review: an old ok record with no duration plus a new ok run
+        # of 4s used to print "2.0s per ok run" -- a number with no
+        # measurement behind it. The figure now uses only measured runs, and
+        # is flagged partial.
+        history = [
+            self._record("claude", False, usage=None),
+            self._record("claude", False, usage={"input_tokens": 100, "output_tokens": 20}, duration=4.0),
+        ]
+        claude = hb.compute_stats(history)["providers"]["claude"]
+        self.assertEqual(claude["seconds_per_ok_run"], 4.0)
+        self.assertEqual(claude["tokens_per_ok_run"], 120)
+        self.assertFalse(claude["seconds_complete"])
+        self.assertFalse(claude["tokens_complete"])
+        text = hb.format_stats(hb.compute_stats(history))
+        self.assertIn("(partial: 1/2 runs)", text)
+
+    def test_complete_data_is_not_marked_partial(self):
+        history = [self._record("codex", False, usage={"input_tokens": 10, "output_tokens": 5}, duration=2.0)]
+        codex = hb.compute_stats(history)["providers"]["codex"]
+        self.assertTrue(codex["tokens_complete"])
+        self.assertTrue(codex["seconds_complete"])
+        self.assertNotIn("(partial:", hb.format_stats(hb.compute_stats(history)))
+
+    def test_a_failed_run_with_no_usage_makes_the_token_figure_partial_not_exact(self):
+        history = [
+            self._record("codex", True, usage=None, duration=30.0),
+            self._record("codex", False, usage={"input_tokens": 80, "output_tokens": 20}, duration=10.0),
+        ]
+        codex = hb.compute_stats(history)["providers"]["codex"]
+        self.assertEqual(codex["tokens_per_ok_run"], 100)
+        self.assertFalse(codex["tokens_complete"])
+        self.assertTrue(codex["seconds_complete"])
+        self.assertEqual(codex["seconds_per_ok_run"], 40.0)
+
+    def test_only_records_linked_by_handoff_from_count_as_hops(self):
+        linked_ok = dict(self._record("claude", False), handoff_from="run-1")
+        linked_failed = dict(self._record("agy", True), handoff_from="run-2")
         history = [
             self._record("codex", True),
-            self._record("claude", False),   # hop that ended ok
+            linked_ok,
             self._record("claude", True),
-            self._record("agy", True),       # hop that failed again
-            self._record("codex", False),    # hop that ended ok
+            linked_failed,
+            # Adjacent and on a different provider, but never linked: an
+            # unrelated later request, not a takeover.
+            self._record("codex", False),
         ]
         stats = hb.compute_stats(history)
-        self.assertEqual(stats["handoff_hops"], 3)
-        self.assertEqual(stats["handoff_hops_ok"], 2)
+        self.assertEqual(stats["handoff_hops"], 2)
+        self.assertEqual(stats["handoff_hops_ok"], 1)
 
-    def test_a_retry_by_the_same_provider_is_not_a_hop(self):
-        stats = hb.compute_stats([self._record("codex", True), self._record("codex", False)])
+    def test_records_from_before_handoff_from_existed_are_not_counted_as_hops(self):
+        stats = hb.compute_stats([self._record("codex", True), self._record("claude", False)])
         self.assertEqual(stats["handoff_hops"], 0)
+        self.assertIn("no linked hops", hb.format_stats(stats))
+
+    def _run_claude(self, state):
+        def fake_run(command, **kwargs):
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                command, returncode=0, stderr="",
+                stdout='{"type": "result", "session_id": "s", "result": "ok", "is_error": false}\n',
+            )
+        args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                     timeout_seconds=0, model=None, instruction_type="continue")
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+            hb.subprocess, "run", side_effect=fake_run
+        ), contextlib.redirect_stdout(io.StringIO()):
+            hb.run_provider("claude", args, state)
+
+    def test_run_provider_links_a_takeover_to_the_run_whose_handoff_it_resolves(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                state = {"task": "t", "status": "handoff_needed", "last_provider": "codex",
+                         "history": [{"provider": "codex", "handoff_needed": True, "run_dir": ".handoff/runs/codex-1"}]}
+                self._run_claude(state)
+                self.assertEqual(state["history"][-1]["handoff_from"], ".handoff/runs/codex-1")
+            finally:
+                os.chdir(orig)
+
+    def test_run_provider_does_not_link_a_retry_by_the_same_provider_or_a_fresh_start(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                retry = {"task": "t", "status": "handoff_needed", "last_provider": "claude",
+                         "history": [{"provider": "claude", "handoff_needed": True, "run_dir": "r"}]}
+                self._run_claude(retry)
+                self.assertNotIn("handoff_from", retry["history"][-1])
+                fresh = {"task": "t", "status": "ready", "last_provider": "codex",
+                         "history": [{"provider": "codex", "handoff_needed": False, "run_dir": "r"}]}
+                self._run_claude(fresh)
+                self.assertNotIn("handoff_from", fresh["history"][-1])
+                empty = {"task": "t", "status": "ready"}
+                self._run_claude(empty)
+                self.assertNotIn("handoff_from", empty["history"][-1])
+            finally:
+                os.chdir(orig)
+
+    def test_auto_fallback_records_the_link_on_the_second_hop(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                def fake_run(command, **kwargs):
+                    if command[0] == "git":
+                        return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+                    if command[0] == "codex":
+                        return subprocess.CompletedProcess(command, returncode=1, stdout="", stderr="Error: 429 too many requests")
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stderr="",
+                        stdout='{"type": "result", "session_id": "s", "result": "ok", "is_error": false}\n',
+                    )
+                args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=True,
+                                             timeout_seconds=0, model=None, instruction_type="continue")
+                state = {"task": "t", "primary_provider": "codex", "status": "ready"}
+                with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+                    hb.subprocess, "run", side_effect=fake_run
+                ), contextlib.redirect_stdout(io.StringIO()):
+                    hb.run_provider("codex", args, state)
+                first, second = state["history"]
+                self.assertNotIn("handoff_from", first)
+                self.assertEqual(second["handoff_from"], first["run_dir"])
+                stats = hb.compute_stats(state["history"])
+                self.assertEqual((stats["handoff_hops"], stats["handoff_hops_ok"]), (1, 1))
+            finally:
+                os.chdir(orig)
 
     def test_text_output_states_what_ok_means_and_applies_no_price(self):
         text = hb.format_stats(hb.compute_stats([self._record("codex", False, usage={"input_tokens": 10, "output_tokens": 2}, duration=1.0)]))

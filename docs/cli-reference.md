@@ -101,6 +101,7 @@ and Claude Code; `agy` reports its usage too, as `input_tokens`/`output_tokens`/
 | `/fallback [on\|off]` | show or set auto-fallback (default on) |
 | `/full [on\|off]` | show or set full-prompt mode (see `run --full-prompt`) |
 | `/tokens` | token totals for this chat session |
+| `/stats` | runs, handoffs, tokens and time recorded in this workspace (same as `stats`) |
 | `/status` | workspace, bridge status, installed CLIs |
 | `/help`, `/exit` | help; leave (Ctrl-D also works) |
 
@@ -122,10 +123,13 @@ Summarizes `.handoff/state.json`'s run history for this workspace, per provider:
 runs, how many ended without a handoff signal ("ok") versus with one (and which
 reason labels), the tokens each CLI reported (in/out/cached), and wall time
 (`duration_seconds`, recorded on every run since v0.5.1). The two figures worth
-comparing are **tokens and seconds per ok run**: the spend of *all* of a
-provider's runs, failed ones included, divided by its ok runs. It also counts
-handoff hops (a different provider running right after a handoff) and how many of
-them ended without handing off again.
+comparing are **tokens and seconds per ok run**: the spend of the *measured*
+runs (failed ones included) divided by the ok runs among those same runs. If some
+of a provider's runs have no figure (older records, a failed run whose CLI printed
+no usage) the line is marked "partial" and is only an estimate. It also counts
+handoff hops — runs the bridge recorded as taking over an unresolved handoff
+(`handoff_from`, written since v0.5.1; older records are not counted) — and how
+many of them ended without handing off again.
 
 What the numbers do and do not mean: "ok" only says no handoff signal was
 detected, not that the work is correct; tokens are summed as each CLI reports
