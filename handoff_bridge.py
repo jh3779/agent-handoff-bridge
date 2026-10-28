@@ -629,6 +629,7 @@ def chdir_workspace(path: str, create: bool = False) -> Path:
 # `.claude/skills/`.
 SHARED_SKILLS_DIR = Path(".agents/skills")
 CLAUDE_SKILLS_DIR = Path(".claude/skills")
+MANAGED_COPY_MARKER = ".handoff-bridge-managed"
 BRIDGE_SKILL_NAMES = tuple(
     sorted({PurePosixPath(target).parts[2] for _, target in INSTALL_FILES if target.startswith(".agents/skills/")})
 )
@@ -640,7 +641,11 @@ def link_claude_skills(force: bool = False) -> list[tuple[str, str]]:
     touches a skill the user owns: an existing real directory (or a symlink
     that points somewhere else, unless `force`) is left as it is. Where
     symlinks cannot be created (Windows without developer mode), the skill is
-    copied instead -- a second copy that `install --force` refreshes."""
+    copied instead and the copy is marked as bridge-managed, so `install
+    --force` can refresh it without ever touching a directory the user made.
+    A plain file holding exactly the link target is what git leaves behind
+    when it checks a symlink out without symlink support; that is replaced
+    on any `install`."""
     results: list[tuple[str, str]] = []
     for name in BRIDGE_SKILL_NAMES:
         source = SHARED_SKILLS_DIR / name
@@ -659,6 +664,13 @@ def link_claude_skills(force: bool = False) -> list[tuple[str, str]]:
                     results.append((label, "skipped"))
                     continue
                 link.unlink()
+            elif link.is_file() and _is_git_symlink_placeholder(link, wanted):
+                link.unlink()
+            elif link.is_dir() and (link / MANAGED_COPY_MARKER).is_file():
+                if not force:
+                    results.append((label, "ok"))
+                    continue
+                shutil.rmtree(link)
             else:
                 results.append((label, "skipped"))
                 continue
@@ -668,8 +680,25 @@ def link_claude_skills(force: bool = False) -> list[tuple[str, str]]:
             results.append((label, "linked"))
         except (OSError, NotImplementedError):
             shutil.copytree(source, link)
+            (link / MANAGED_COPY_MARKER).write_text(
+                f"Copied from {source.as_posix()} by handoff_bridge.py install; "
+                "`install --force` refreshes it. Delete this file to keep your own edits.\n",
+                encoding="utf-8",
+            )
             results.append((label, "copied"))
     return results
+
+
+def _is_git_symlink_placeholder(path: Path, wanted: str) -> bool:
+    """True for the small text file git writes in place of a symlink
+    (core.symlinks=false): its whole content is the link target."""
+    try:
+        if path.stat().st_size > 512:
+            return False
+        content = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return content.replace("\\", "/") == wanted.replace("\\", "/")
 
 
 def install_standard_files(force: bool = False) -> list[tuple[str, str]]:

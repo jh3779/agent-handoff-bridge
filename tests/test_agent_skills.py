@@ -107,6 +107,25 @@ class HandoffStatusSkillManifestConsistencyTests(unittest.TestCase):
 
 
 
+def _symlinks_work() -> bool:
+    """Whether this machine/user may create a directory symlink (Windows
+    needs developer mode or elevation)."""
+    import os
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            os.mkdir(Path(tmp) / "target")
+            os.symlink("target", Path(tmp) / "link", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            return False
+    return True
+
+
+SYMLINKS_WORK = _symlinks_work()
+needs_symlinks = unittest.skipUnless(SYMLINKS_WORK, "this environment cannot create symlinks")
+
+
 class ClaudeSkillsLinkTests(unittest.TestCase):
     """Claude Code does not read .agents/skills/ (verified against a real
     run, 2026-10-28), so every skill the bridge installs is also linked under
@@ -128,14 +147,16 @@ class ClaudeSkillsLinkTests(unittest.TestCase):
 
     def test_this_repo_links_its_own_skill_for_claude_code(self):
         link = ROOT / ".claude" / "skills" / "handoff-status"
-        if not link.is_symlink():
-            self.skipTest("symlinks unavailable in this checkout")
+        if not SYMLINKS_WORK:
+            self.skipTest("this environment cannot create symlinks")
+        self.assertTrue(link.is_symlink(), "run `handoff_bridge.py install` to relink .claude/skills/handoff-status")
         self.assertEqual(link.resolve(), (ROOT / ".agents" / "skills" / "handoff-status").resolve())
         self.assertTrue((link / "SKILL.md").is_file())
 
     def test_bridge_skill_names_come_from_the_install_list(self):
         self.assertEqual(hb.BRIDGE_SKILL_NAMES, ("handoff-status",))
 
+    @needs_symlinks
     def test_install_creates_a_relative_symlink_to_the_single_original(self):
         results = self._install()
         self.assertEqual(results[".claude/skills/handoff-status"], "linked")
@@ -144,6 +165,7 @@ class ClaudeSkillsLinkTests(unittest.TestCase):
         self.assertEqual(self.link.resolve(), Path(".agents/skills/handoff-status").resolve())
         self.assertTrue((self.link / "SKILL.md").is_file())
 
+    @needs_symlinks
     def test_install_is_idempotent(self):
         self._install()
         self.assertEqual(self._install()[".claude/skills/handoff-status"], "ok")
@@ -157,6 +179,7 @@ class ClaudeSkillsLinkTests(unittest.TestCase):
             self.assertFalse(self.link.is_symlink())
             self.assertIn("description: mine", (self.link / "SKILL.md").read_text(encoding="utf-8"))
 
+    @needs_symlinks
     def test_a_symlink_to_somewhere_else_is_kept_unless_forced(self):
         Path("elsewhere/handoff-status").mkdir(parents=True)
         Path("elsewhere/handoff-status/SKILL.md").write_text("x", encoding="utf-8")
@@ -168,6 +191,7 @@ class ClaudeSkillsLinkTests(unittest.TestCase):
         self.assertEqual(self._install(force=True)[".claude/skills/handoff-status"], "linked")
         self.assertEqual(self.link.resolve(), Path(".agents/skills/handoff-status").resolve())
 
+    @needs_symlinks
     def test_a_broken_symlink_is_repaired_with_force_and_otherwise_left_alone(self):
         import os
         self.link.parent.mkdir(parents=True)
@@ -175,13 +199,63 @@ class ClaudeSkillsLinkTests(unittest.TestCase):
         self.assertEqual(self._install()[".claude/skills/handoff-status"], "skipped")
         self.assertEqual(self._install(force=True)[".claude/skills/handoff-status"], "linked")
 
-    def test_falls_back_to_a_copy_where_symlinks_are_unavailable(self):
+    def _install_without_symlinks(self, force=False):
         from unittest import mock
+
         with mock.patch.object(hb.os, "symlink", side_effect=OSError("symlinks not permitted")):
-            results = self._install()
+            return self._install(force=force)
+
+    def test_falls_back_to_a_managed_copy_where_symlinks_are_unavailable(self):
+        results = self._install_without_symlinks()
         self.assertEqual(results[".claude/skills/handoff-status"], "copied")
         self.assertFalse(self.link.is_symlink())
         self.assertTrue((self.link / "SKILL.md").is_file())
+        self.assertTrue((self.link / hb.MANAGED_COPY_MARKER).is_file())
+
+    def test_a_managed_copy_is_left_alone_until_forced_and_then_refreshed(self):
+        self._install_without_symlinks()
+        self.assertEqual(self._install_without_symlinks()[".claude/skills/handoff-status"], "ok")
+        original = Path(".agents/skills/handoff-status/SKILL.md")
+        original.write_text(original.read_text(encoding="utf-8") + "\nNEWER-LINE\n", encoding="utf-8")
+        self._install_without_symlinks()
+        self.assertNotIn("NEWER-LINE", (self.link / "SKILL.md").read_text(encoding="utf-8"))
+        # --force reinstalls the original too, so the refreshed copy must match
+        # whatever is installed under .agents/skills/ afterwards.
+        self.assertEqual(self._install_without_symlinks(force=True)[".claude/skills/handoff-status"], "copied")
+        self.assertEqual(
+            (self.link / "SKILL.md").read_text(encoding="utf-8"),
+            Path(".agents/skills/handoff-status/SKILL.md").read_text(encoding="utf-8"),
+        )
+        self.assertTrue((self.link / hb.MANAGED_COPY_MARKER).is_file())
+
+    def test_a_directory_without_the_marker_is_never_refreshed_even_when_forced(self):
+        self.link.mkdir(parents=True)
+        (self.link / "SKILL.md").write_text("mine", encoding="utf-8")
+        self.assertEqual(self._install_without_symlinks(force=True)[".claude/skills/handoff-status"], "skipped")
+        self.assertEqual((self.link / "SKILL.md").read_text(encoding="utf-8"), "mine")
+
+    def test_a_git_symlink_placeholder_file_is_repaired_by_a_plain_install(self):
+        # git without symlink support checks a link out as a file whose whole
+        # content is the link target.
+        self.link.parent.mkdir(parents=True)
+        self.link.write_text("../../.agents/skills/handoff-status\n", encoding="utf-8")
+        results = self._install_without_symlinks()
+        self.assertEqual(results[".claude/skills/handoff-status"], "copied")
+        self.assertTrue((self.link / "SKILL.md").is_file())
+
+    @needs_symlinks
+    def test_a_git_symlink_placeholder_file_becomes_a_real_link_when_possible(self):
+        self.link.parent.mkdir(parents=True)
+        self.link.write_text("../../.agents/skills/handoff-status", encoding="utf-8")
+        self.assertEqual(self._install()[".claude/skills/handoff-status"], "linked")
+        self.assertTrue(self.link.is_symlink())
+
+    def test_some_other_plain_file_at_that_path_is_not_touched(self):
+        self.link.parent.mkdir(parents=True)
+        self.link.write_text("something the user wrote", encoding="utf-8")
+        for force in (False, True):
+            self.assertEqual(self._install_without_symlinks(force=force)[".claude/skills/handoff-status"], "skipped")
+        self.assertEqual(self.link.read_text(encoding="utf-8"), "something the user wrote")
 
     def test_only_the_bridges_own_skills_are_linked(self):
         other = Path(".agents/skills/my-own-skill")

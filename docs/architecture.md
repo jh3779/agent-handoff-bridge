@@ -187,9 +187,11 @@ The minimal structure that keeps **one original**: the skill lives under
 linked the same way). It only ever links the skills the bridge installs, never
 replaces a directory or a differing symlink the user owns (a differing symlink is
 replaced only with `install --force`), and falls back to a copy where symlinks are
-not permitted (Windows without developer mode) — that copy is refreshed by
-`install --force`. Git clones on Windows without symlink support check a link out
-as a plain text file; re-run `install` there.
+not permitted (Windows without developer mode). That copy carries a
+`.handoff-bridge-managed` marker file, so `install --force` refreshes it, while a
+directory without the marker is never touched. Git without symlink support checks
+the link out as a small text file holding the link target; `install` recognises
+exactly that file and replaces it with a link (or a managed copy).
 
 `install_standard_files()` ships `.agents/skills/handoff-status/SKILL.md`
 (2026-09-02) — a skill that teaches whichever CLI is running to read
