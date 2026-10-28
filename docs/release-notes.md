@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+- **Fixed: `run <provider> --execute "text"` failed on Python 3.11.** Python
+  3.11's argparse rejected an optional positional (the prompt, or `chat`'s
+  provider) after an option with "unrecognized arguments", although the docs use
+  exactly that form; Python 3.12+ was unaffected. The CLI now accepts it on 3.11.
+  Found by the restored CI.
+- **CI: `handoff_bridge.py check` runs on Ubuntu, macOS and Windows again**
+  (`.github/workflows/check.yml`; free now that the repository is public). The
+  earlier "Actions minutes ran out" note applied to the private-repository
+  period. See [Quality Gates](quality-gates.md#ci-history).
 - **New: `handoff_bridge.py stats` (and `/stats` in `chat`).** Every run now
   records its wall time (`duration_seconds`, also shown in `.handoff/current.md`),
   and `stats` summarizes a workspace's history per provider: runs, ok versus
@@ -97,10 +106,13 @@
   same provider a second time and no longer records a duplicate failure.
 - **Dev: automatic GitHub Actions CI removed.** The push/pull_request checks
   (`branch-name`, `validate`, `rust-build`, `sidecar-build`) were removed from
-  `.github/workflows/ci.yml` because Actions minutes ran out, and `main`'s
-  required status checks were dropped. Run the checks locally before opening a
-  PR (see `docs/quality-gates.md`, "CI Was Removed"). The manual
-  `installer-build` job is kept; `docs/release-process.md` still triggers it.
+  `.github/workflows/ci.yml` because Actions minutes ran out (the repository
+  was private then), and `main`'s required status checks were dropped; the
+  checks were to be run locally before opening a PR in the meantime. This was
+  later reversed once the repository became public: `branch-name` and the
+  validation suite run again from `.github/workflows/check.yml` (see
+  [CI History](quality-gates.md#ci-history)). The manual `installer-build` job
+  is kept; `docs/release-process.md` still triggers it.
 
 ## v0.4.11 — 2026-09-04
 

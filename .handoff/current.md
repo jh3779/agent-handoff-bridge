@@ -4436,3 +4436,27 @@ tag" rule by construction rather than by discipline.
   `CLAUDE.md` dedupe, `release-notes.ko.md` behind.
 - **Blocked**: GitHub Actions quota. **Next**: decide on v0.5.1 once Actions is
   available; build the stats baseline from real use before any routing work.
+### 2026-10-28 — Correction: Actions is not out of minutes (repo is public); CI restored
+
+- **Target**: Claude Code CLI (Sonnet 5.5), repo-level (PRs only).
+- **Correction**: the entries above that say "Blocked: GitHub Actions quota" /
+  "no minutes left" describe the period when the repo was private. It is
+  `PUBLIC` now (checked 2026-10-28) and hosted-runner minutes are free; other
+  workflows were already succeeding that day. So v0.5.0's missing installers and
+  `latest.json` are NOT blocked on quota -- they can be built with
+  `gh workflow run ci.yml --ref v0.5.0` (release assets: needs the user's go-ahead).
+- **Changed**: PR #98 adds `.github/workflows/check.yml` (`handoff_bridge.py
+  check` on ubuntu/macOS/Windows, Python 3.11, + `branch-name`); its first run
+  failed everywhere and exposed two real bugs, fixed in the same PR: Python 3.11
+  argparse rejected `run <provider> --execute "text"` (new `parse_cli_args()`),
+  and issue #84's Windows test hardcoded ":" (code is macOS-only; test now pins
+  `os.pathsep`). The follow-up docs PR corrects `docs/quality-gates.md` ("CI
+  History"), `ci.yml`'s header and the release notes.
+- **Verified**: PR #98 run: macos, ubuntu, windows (py3.11) and branch-name all
+  pass; locally `check` passes on Python 3.11.15 and 3.14.7.
+- **Remaining**: merge #96/#98 (+ the docs PR) when the user says so; installers
+  and `latest.json` for v0.5.0, then the README download-link PR; whether to make
+  `check (...)` required status checks on `main`; `rust-build`/`sidecar-build`
+  are still not automatic.
+- **Blocked**: nothing technical. **Next**: ask the user before touching release
+  assets.
