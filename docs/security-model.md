@@ -311,6 +311,46 @@ If a secret is accidentally written:
 5. Inspect `.handoff/runs/` and delete local raw logs if they contain secrets.
 6. Do not push until the history is clean.
 
+## Vendor Terms And Automation (Information, Not Legal Advice)
+
+The bridge calls each vendor's own CLI as a subprocess with the user's own
+login. It does not extract, store or relay credentials or tokens itself (see
+[Credential Boundaries](#credential-boundaries)); the vendor CLI uses its own
+login files and inherits the bridge process's environment, so an API key you
+export is seen by that CLI. It does not modify the binaries. What follows is what the vendors' public pages say as of 2026-10-28,
+so a user can judge the remaining risk; it is not a legal conclusion, and the
+bridge's authors have not asked any vendor to confirm how they read it.
+
+| Vendor | What the page says | What it does not say |
+|---|---|---|
+| Anthropic | The [Claude Code legal page](https://code.claude.com/docs/en/legal-and-compliance) limits subscription OAuth to "ordinary" individual use of Claude Code and Anthropic's own apps, and does not allow third parties to relay requests with subscription auth or offer Claude.ai login; third-party products are told to use API keys. The page does not say whether you may drive the unmodified Claude Code binary, logged in as yourself, from another program. The [consumer terms](https://www.anthropic.com/legal/consumer-terms) (item 3.7; only the Korean text was readable) prohibit automated access outside an API key or explicit permission. The [headless docs](https://code.claude.com/docs/en/headless) present `claude -p` for scripts and CI, and document `CLAUDE_CODE_OAUTH_TOKEN` for subscription use in CI. | What counts as "ordinary" use for a script, and whether item 3.7's "automated access" covers `claude -p` driven by a local tool. The English text of 3.7 was not checked. |
+| OpenAI | The [`codex exec` docs](https://learn.chatgpt.com/docs/non-interactive-mode) recommend an API key for automation and describe ChatGPT-login in CI as an advanced path for trusted runners. | The Terms of Use page could not be read (HTTP 403), so no term was checked. |
+| Google | The [Antigravity terms](https://antigravity.google/terms) (clause 6) call accessing the service through third-party software, tools or services, with Antigravity OAuth as the example, a breach that can lead to account action. The [headless docs](https://antigravity.google/docs/cli/headless) show `agy -p` in CI with cached credentials, and the install page recommends ADC or a Gemini API key for automation. | Whether a tool that launches the official `agy` binary is "third-party software accessing the service" under clause 6. |
+
+How the bridge sits against that, as the authors read it (their reading, not a
+vendor's, and not confirmed by any vendor): it launches the official CLI,
+unmodified, under the user's own login, one request at a time on the user's
+machine. That differs from relaying someone else's requests through a login,
+which is what the pages above describe. Whether such local automation is
+permitted is **not confirmed** for Anthropic (clause 3.7's "automated access"
+and the "ordinary use" limit) or for Google (wording about using the service
+with products it did not provide), and OpenAI's terms were not read. Of the
+clauses quoted above, only Google's names account action for a breach; the
+rest of each vendor's terms (suspension and termination clauses included) was
+not compared, so do not read this as "only Google can suspend an account".
+
+What to do about it:
+
+- Prefer API keys, or for `agy` Google's ADC / API-key path, for unattended or
+  scheduled runs (the remote server, cron jobs); keep subscription logins for
+  interactive use you are watching.
+- Do not run one subscription login for several people or expose the bridge,
+  the Web UI or the remote server as a service to others; that is the relaying
+  the vendors' pages describe.
+- Do not use the bridge to evade quotas or limits: auto-fallback is meant to
+  continue one task on the next CLI when a limit is hit, not to multiply usage.
+- Re-read the vendors' pages before relying on this section; the terms change.
+
 ## agy Write Access (Opt-In)
 
 Off by default. In headless mode `agy` auto-denies any file write or shell
