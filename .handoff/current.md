@@ -4481,9 +4481,17 @@ tag" rule by construction rather than by discipline.
   `releases/latest/download/latest.json` respond (the endpoint returns the same
   manifest); the three README download URLs respond. `.msi`, `.deb`, `.rpm` were
   built but not attached (one installer per OS by design).
-- **Not verified**: no installer was installed or launched (release-process.md
-  asks for one manual install + update-badge + chat round trip); the minisign
-  signatures in `latest.json` were not independently verified.
+- **Smoke-verified (macOS arm64 only, 2026-10-28)**: extracted the released
+  `agent-handoff-bridge.app.tar.gz` into a scratch dir (not installed): bundle
+  version 0.5.0, ad-hoc signed, all 4 sidecars run (`-cli --version` -> 0.5.0,
+  `-validate`/`-scan --help`), and the `-server` sidecar (temp HOME, port 18765)
+  served the Web UI (HTTP 200) and `/api/providers` (codex/claude detected).
+  `python3 handoff_bridge.py check` also passed on the PR branch.
+- **Not verified**: the GUI app was not launched, so the titlebar update badge
+  and a provider chat round trip (release-process.md's manual step) were not
+  checked; the Windows and Linux installers were not run at all; the minisign
+  signatures in `latest.json` were not independently verified. If the real
+  install fails, do not replace the tag's assets -- publish a new patch version.
 - **Remaining**: the manual install check above; v0.5.1 (unreleased: stats, agy
   write opt-in, skills link, argparse/WriteLock fixes) not cut;
   `AGENTS.md`/`CLAUDE.md` dedupe; `release-notes.ko.md` behind; `rust-build`
