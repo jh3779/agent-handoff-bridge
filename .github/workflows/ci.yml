@@ -1,11 +1,11 @@
 name: CI
 
-# The automatic checks that used to run here on every push to main and every
-# pull request (branch-name, validate, rust-build, sidecar-build) were removed:
-# GitHub Actions minutes ran out, and main's branch protection no longer
-# requires them. Run the same checks locally before opening a PR -- see
-# docs/quality-gates.md ("CI Was Removed"). Only the manual installer-build
-# job below remains, because docs/release-process.md triggers it with
+# The automatic checks that used to run here were removed while the repo was
+# private (Actions minutes ran out). branch-name and the validation suite now
+# run from check.yml on all three OSes -- see docs/quality-gates.md
+# ("CI History"). rust-build and sidecar-build are not automatic; run them
+# locally. Only the manual installer-build job below remains in this file,
+# because docs/release-process.md triggers it with
 # `gh workflow run ci.yml --ref vX.Y.Z` to produce release installers.
 on:
   workflow_dispatch:

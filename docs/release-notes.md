@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+- **Fixed: `run <provider> --execute "text"` failed on Python 3.11.** Python
+  3.11's argparse rejected an optional positional (the prompt, or `chat`'s
+  provider) after an option with "unrecognized arguments", although the docs use
+  exactly that form; Python 3.12+ was unaffected. The CLI now accepts it on 3.11.
+  Found by the restored CI.
+- **CI: `handoff_bridge.py check` runs on Ubuntu, macOS and Windows again**
+  (`.github/workflows/check.yml`; free now that the repository is public). The
+  earlier "Actions minutes ran out" note applied to the private-repository
+  period. See [Quality Gates](quality-gates.md#ci-history).
 - **New: `handoff_bridge.py stats` (and `/stats` in `chat`).** Every run now
   records its wall time (`duration_seconds`, also shown in `.handoff/current.md`),
   and `stats` summarizes a workspace's history per provider: runs, ok versus

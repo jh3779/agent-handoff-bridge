@@ -2,7 +2,7 @@ name: Check
 
 # The no-token validation suite (`handoff_bridge.py check`) on all three
 # desktop OSes. The repo is public, so GitHub-hosted runner minutes are free
-# (the earlier CI was removed while it was private and the quota ran out).
+# (the earlier CI was removed while the repo was private and the quota ran out).
 # fail-fast is off on purpose: one OS failing must not hide the others' results.
 # Installer builds stay manual -- see ci.yml.
 on:
