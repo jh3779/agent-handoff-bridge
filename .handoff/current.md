@@ -4462,3 +4462,39 @@ tag" rule by construction rather than by discipline.
   are still not automatic.
 - **Blocked**: nothing technical. **Next**: ask the user before touching release
   assets.
+
+### 2026-10-28 — v0.5.0 installers and latest.json published; README links bumped
+
+- **Target**: Claude Code CLI (Sonnet 5.5), repo-level (release assets + PR).
+- **Changed**: `gh workflow run ci.yml --ref v0.5.0` (run 40660982874) built
+  installers on all 3 OSes (needs no Actions quota; repo is public). Built
+  `latest.json` with `scripts/build_updater_manifest.py` and uploaded to the
+  existing `v0.5.0` release: `.dmg`, `agent-handoff-bridge.app.tar.gz` + `.sig`,
+  nsis `-setup.exe`, `.AppImage`, `latest.json`. The release body's "source zips
+  only / Actions minutes exhausted" paragraph was replaced with a note that the
+  installers are attached and unsigned at the OS level. This PR bumps the README
+  / README.ko download links from v0.4.11 to v0.5.0. Also merged this session:
+  #98 (check.yml on 3 OSes + Python 3.11 argparse fix), #99, #96, #100 (Windows
+  `WriteLock` PermissionError retry); `main` now requires `branch-name` and the
+  three `check (...)` jobs.
+- **Verified**: every `latest.json` URL and the live endpoint
+  `releases/latest/download/latest.json` respond (the endpoint returns the same
+  manifest); the three README download URLs respond. `.msi`, `.deb`, `.rpm` were
+  built but not attached (one installer per OS by design).
+- **Smoke-verified (macOS arm64 only, 2026-10-28)**: extracted the released
+  `agent-handoff-bridge.app.tar.gz` into a scratch dir (not installed): bundle
+  version 0.5.0, ad-hoc signed, all 4 sidecars run (`-cli --version` -> 0.5.0,
+  `-validate`/`-scan --help`), and the `-server` sidecar (temp HOME, port 18765)
+  served the Web UI (HTTP 200) and `/api/providers` (codex/claude detected).
+  `python3 handoff_bridge.py check` also passed on the PR branch.
+- **Not verified**: the GUI app was not launched, so the titlebar update badge
+  and a provider chat round trip (release-process.md's manual step) were not
+  checked; the Windows and Linux installers were not run at all; the minisign
+  signatures in `latest.json` were not independently verified. If the real
+  install fails, do not replace the tag's assets -- publish a new patch version.
+- **Remaining**: the manual install check above; v0.5.1 (unreleased: stats, agy
+  write opt-in, skills link, argparse/WriteLock fixes) not cut;
+  `AGENTS.md`/`CLAUDE.md` dedupe; `release-notes.ko.md` behind; `rust-build`
+  and `sidecar-build` are still not automatic.
+- **Blocked**: nothing. The earlier "GitHub Actions quota" blocker above no
+  longer applies. **Next**: manual installer check, then decide on v0.5.1.
