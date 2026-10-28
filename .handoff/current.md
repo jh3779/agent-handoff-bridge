@@ -4421,7 +4421,9 @@ tag" rule by construction rather than by discipline.
   copy fallback is marked `.handoff-bridge-managed`). This PR adds the vendor
   terms section to `docs/security-model.md`.
 - **Verified**: `handoff_bridge.py check` 629 tests OK on the #95 branch before
-  merge. Review-bot findings on #89-#95 were checked against the code and fixed
+  merge; on this docs PR's branch after merging main (which includes the CI
+  restore and the Python 3.11 argparse fix): 636 tests OK, and the PR's
+  ubuntu/macOS/Windows `check` runs passed. Review-bot findings on #89-#95 were checked against the code and fixed
   (details in each PR's comments).
 - **Not verified**: real `agy --dangerously-skip-permissions` run (blocked by
   the permission classifier; command in `docs/research-antigravity-cli.md`),
