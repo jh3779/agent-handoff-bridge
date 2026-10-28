@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import re
@@ -1534,6 +1536,219 @@ def run_command(args: argparse.Namespace) -> int:
         return 75
 
 
+# --- Interactive terminal chat (`chat`) ---------------------------------
+#
+# A thin REPL over the same path the Web UI and `run --execute` use
+# (run_command -> run_provider), so state.json, session resumption,
+# auto-fallback, and the compact prompt all behave identically; it only adds
+# a line-oriented front end and a per-turn token readout.
+
+CHAT_HELP = """Type a message and press Enter to send it. End a line with \\ to continue on the next line.
+
+  /provider [auto|codex|claude|gemini]   show or set which provider runs the next turn
+  /fallback [on|off]                     show or set auto-fallback to another CLI on a limit
+  /full [on|off]                         show or set full-prompt mode (inline the docs/ files)
+  /tokens                                token totals for this chat session
+  /status                                bridge state and installed CLIs
+  /help                                  this text
+  /exit                                  leave (Ctrl-D also works)
+
+Token numbers: "sent" is an estimate of what the bridge put in the prompt (characters / 4); "reported"
+is whatever usage the provider CLI itself returned, when it returned one."""
+
+ESTIMATED_CHARS_PER_TOKEN = 4
+
+
+def estimate_tokens(char_count: int) -> int:
+    return (char_count + ESTIMATED_CHARS_PER_TOKEN - 1) // ESTIMATED_CHARS_PER_TOKEN
+
+
+def usage_token_counts(usage: Any) -> dict[str, int]:
+    """Best-effort sum of the input/output/cached token fields found anywhere
+    in a provider's `usage` object. Only field names Codex and Claude Code are
+    known to emit are recognised; anything else (including Gemini's `stats`
+    shape) yields {} and the caller shows no reported figure rather than a
+    guessed one."""
+    names = {
+        "inputtokens": "input",
+        "outputtokens": "output",
+        "cachedinputtokens": "cached",
+        "cachereadinputtokens": "cached",
+    }
+    totals: dict[str, int] = {}
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                bucket = names.get(str(key).replace("_", "").lower())
+                if bucket and isinstance(item, (int, float)) and not isinstance(item, bool):
+                    totals[bucket] = totals.get(bucket, 0) + int(item)
+                else:
+                    walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(usage)
+    return totals
+
+
+def format_token_counts(counts: dict[str, int]) -> str:
+    parts = [f"{label} {counts[key]:,}" for key, label in (("input", "in"), ("output", "out"), ("cached", "cached")) if key in counts]
+    return ", ".join(parts)
+
+
+def record_prompt_chars(record: dict[str, Any]) -> int:
+    run_dir = record.get("run_dir")
+    if not run_dir:
+        return 0
+    try:
+        return len((Path(run_dir) / "prompt.md").read_text(encoding="utf-8"))
+    except OSError:
+        return 0
+
+
+class ChatSession:
+    """State for one `chat` run; kept separate from the input loop so tests
+    can drive turns without a terminal."""
+
+    def __init__(self, provider: str, auto_fallback: bool, full_prompt: bool, model: str | None, timeout_seconds: int):
+        self.provider = provider
+        self.auto_fallback = auto_fallback
+        self.full_prompt = full_prompt
+        self.model = model
+        self.timeout_seconds = timeout_seconds
+        self.turns = 0
+        self.sent_tokens = 0
+        self.reported = {"input": 0, "output": 0, "cached": 0}
+
+    def run_turn(self, text: str, out: "Any" = print) -> int:
+        args = argparse.Namespace(
+            provider=self.provider,
+            prompt=text,
+            prompt_file=None,
+            execute=True,
+            auto_fallback=self.auto_fallback,
+            timeout_seconds=self.timeout_seconds,
+            model=self.model,
+            instruction_type="continue",
+            full_prompt=self.full_prompt,
+        )
+        before = len(load_state().get("history", []))
+        out(f"... running {self.provider}")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = run_command(args)
+        records = load_state().get("history", [])[before:]
+        if not records:
+            # Nothing was recorded (e.g. the workspace run lock timed out):
+            # show whatever the run printed so the failure is not silent.
+            out(buffer.getvalue().strip() or f"run exited {code} without recording a result")
+            return code
+        for record in records:
+            self.turns += 1
+            sent = estimate_tokens(record_prompt_chars(record))
+            reported = usage_token_counts(record.get("usage"))
+            self.sent_tokens += sent
+            for key in self.reported:
+                self.reported[key] += reported.get(key, 0)
+            status = "handoff needed" if record.get("handoff_needed") else "ok"
+            out(f"[{record.get('provider')}] exit {record.get('exit_code')} - {status} ({record.get('reason')})")
+            final_text = (record.get("final_text") or "").strip()
+            if final_text:
+                out(final_text)
+            line = f"tokens: sent ~{sent:,}"
+            if reported:
+                line += f" | reported {format_token_counts(reported)}"
+            if record.get("cost_usd") is not None:
+                line += f" | cost ${record['cost_usd']}"
+            out(line)
+        if len(records) > 1:
+            out(f"(auto-fallback ran {len(records)} providers this turn)")
+        return code
+
+    def totals_line(self) -> str:
+        line = f"this session: {self.turns} run(s), sent ~{self.sent_tokens:,}"
+        reported = {k: v for k, v in self.reported.items() if v}
+        if reported:
+            line += f" | reported {format_token_counts(reported)}"
+        return line
+
+    def handle_command(self, line: str, out: "Any" = print) -> bool:
+        """Handle a `/command`; returns False when the chat should end."""
+        name, _, rest = line.strip().partition(" ")
+        rest = rest.strip().lower()
+        if name in ("/exit", "/quit"):
+            return False
+        if name == "/help":
+            out(CHAT_HELP)
+        elif name == "/provider":
+            if rest:
+                if rest not in ("auto",) + PROVIDERS:
+                    out(f"unknown provider '{rest}' (choose auto, {', '.join(PROVIDERS)})")
+                else:
+                    self.provider = rest
+            out(f"provider: {self.provider}")
+        elif name in ("/fallback", "/full"):
+            attribute = "auto_fallback" if name == "/fallback" else "full_prompt"
+            if rest in ("on", "off"):
+                setattr(self, attribute, rest == "on")
+            elif rest:
+                out(f"usage: {name} [on|off]")
+            out(f"{name[1:]}: {'on' if getattr(self, attribute) else 'off'}")
+        elif name == "/tokens":
+            out(self.totals_line())
+        elif name == "/status":
+            state = load_state()
+            installed = ", ".join(f"{p}={'yes' if shutil.which(p) else 'no'}" for p in PROVIDERS)
+            out(f"workspace: {Path.cwd()}")
+            out(f"status: {state.get('status')} | last provider: {state.get('last_provider')} | next 'auto': {choose_auto_provider(state)}")
+            out(f"installed CLIs: {installed}")
+        else:
+            out(f"unknown command {name} (try /help)")
+        return True
+
+
+def chat_command(args: argparse.Namespace, input_fn: "Any" = input, out: "Any" = print) -> int:
+    session = ChatSession(args.provider, args.auto_fallback, args.full_prompt, args.model, args.timeout_seconds)
+    try:
+        import readline  # noqa: F401  (line editing and history; unavailable on Windows)
+    except ImportError:
+        pass
+    installed = ", ".join(p for p in PROVIDERS if shutil.which(p)) or "none found"
+    out(f"agent-handoff-bridge {BRIDGE_VERSION} chat - workspace {Path.cwd()}")
+    out(f"provider: {session.provider} | installed CLIs: {installed} | /help for commands")
+    while True:
+        try:
+            line = input_fn("> ")
+        except EOFError:
+            out("")
+            break
+        except KeyboardInterrupt:
+            out("")
+            continue
+        lines = [line]
+        while lines[-1].endswith("\\"):
+            try:
+                lines[-1] = lines[-1][:-1]
+                lines.append(input_fn(". "))
+            except (EOFError, KeyboardInterrupt):
+                break
+        text = "\n".join(lines).strip()
+        if not text:
+            continue
+        if text.startswith("/"):
+            if not session.handle_command(text, out):
+                break
+            continue
+        try:
+            session.run_turn(text, out)
+        except KeyboardInterrupt:
+            out("interrupted - the provider call may still be finishing in the background")
+    out(session.totals_line())
+    return 0
+
+
 def status(_: argparse.Namespace) -> int:
     state = load_state()
     print(json.dumps(state, indent=2, ensure_ascii=False))
@@ -1634,6 +1849,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--instruction-type", choices=INSTRUCTION_TYPES, default="continue", help="Instruction type for this run."
     )
     p_run.set_defaults(func=run_command)
+
+    p_chat = sub.add_parser("chat", help="Interactive terminal chat that runs providers through the bridge.")
+    p_chat.add_argument("provider", nargs="?", choices=("auto",) + PROVIDERS, default="auto")
+    p_chat.add_argument(
+        "--auto-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Switch to another installed CLI on a quota/rate-limit/context signal (default: on).",
+    )
+    p_chat.add_argument("--full-prompt", action="store_true", help="Inline the full docs/ files in cold-start prompts.")
+    p_chat.add_argument("--timeout-seconds", type=int, default=0, help="Per-provider timeout; 0 means no timeout.")
+    p_chat.add_argument("--model", help="Model label to record; exact model strings are also passed to the provider.")
+    p_chat.set_defaults(func=chat_command)
 
     p_status = sub.add_parser("status", help="Print bridge state.")
     p_status.set_defaults(func=status)

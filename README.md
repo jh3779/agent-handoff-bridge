@@ -173,6 +173,9 @@ detects a likely quota/rate/context/auth failure:
 
 ```bash
 python3 handoff_bridge.py run auto --execute --auto-fallback --instruction-type continue "Continue the task"
+
+# or talk to it interactively in the terminal, with a token readout after each reply
+python3 handoff_bridge.py chat
 ```
 
 Run once through the controller for a selected folder:

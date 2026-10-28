@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- **New: `handoff_bridge.py chat`, an interactive terminal chat.** Type
+  messages at a prompt instead of composing a `run --execute ...` command each
+  time. It runs through the same code as `run`, so session resumption,
+  auto-fallback between installed CLIs, and `.handoff/state.json` behave the
+  same, and it prints a per-turn token line (`sent ~N` estimated from the
+  prompt the bridge built; `reported ...` when the Codex or Claude Code CLI
+  returns usage). Slash commands: `/provider`, `/fallback`, `/full`, `/tokens`,
+  `/status`, `/help`, `/exit`. Replies appear when a turn finishes (no
+  streaming yet). See [CLI Reference](cli-reference.md).
+
 ## v0.5.0 — 2026-10-27
 
 - **Removed: API-key mode and custom providers.** The Settings panel no
