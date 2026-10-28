@@ -15,8 +15,9 @@
   lists. An existing `.handoff/state.json` that names `gemini` is still read —
   it is never run. **Important:** in headless mode `agy` refuses file writes
   and shell commands unless you allow them under `permissions.allow` in its
-  own settings; the bridge records such a run as a `tool_failure` (so
-  auto-fallback moves on) and does not pass `--dangerously-skip-permissions`.
+  own settings; the bridge records any run in which `agy` had a tool call
+  denied as a `tool_failure` (so auto-fallback moves on, with agy's reply kept)
+  and does not pass `--dangerously-skip-permissions`.
   `agy` is asked to put its Changed/Verified/Remaining summary in its reply
   rather than edit `.handoff/current.md` itself (the bridge records the reply).
   See [Research: Antigravity CLI](research-antigravity-cli.md).

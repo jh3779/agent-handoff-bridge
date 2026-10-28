@@ -924,12 +924,44 @@ PROTOCOL_SUMMARY = """- Priority when instructions conflict: the user's latest i
   billing, context_limit, overloaded, tool_failure, unknown.
 - Hand off to another provider when the current one hits a quota, rate-limit, billing, auth,
   context, or max-output failure, when tools are repeatedly blocked, or when the user asks.
-- Before stopping, append a concise entry to `.handoff/current.md` in this shape: Target
-  (provider/model/workspace), Changed, Verified, Remaining, Blocked, Next. If nothing changed, say
-  so. The task is done only when the requested work exists, checks passed or are marked not
-  applicable, and the other provider could continue from files alone.
+- @@FINISH@@ Target (provider/model/workspace), Changed, Verified, Remaining, Blocked, Next. If
+  nothing changed, say so. The task is done only when the requested work exists, checks passed or
+  are marked not applicable, and the other provider could continue from files alone.
 - The full rules live in `docs/shared-agent-contract.md`, `docs/agent-targeting-protocol.md`, and
   `docs/verification-playbook.md`; this summary is complete for ordinary tasks."""
+
+# The one sentence of PROTOCOL_SUMMARY that differs per provider: how the final
+# summary reaches .handoff/current.md. agy cannot write it (see
+# PROVIDER_RUNTIME_NOTES), so it must not be told to.
+_SUMMARY_FINISH_DEFAULT = "Before stopping, append a concise entry to `.handoff/current.md` in this shape:"
+_SUMMARY_FINISH_BY_PROVIDER = {
+    "agy": (
+        "Before stopping, end your reply with a concise entry in this shape (do not edit"
+        " `.handoff/current.md` yourself; the bridge records your reply there):"
+    ),
+}
+
+
+def protocol_summary_for(provider: str) -> str:
+    finish = _SUMMARY_FINISH_BY_PROVIDER.get(provider, _SUMMARY_FINISH_DEFAULT)
+    return PROTOCOL_SUMMARY.replace("@@FINISH@@", finish)
+
+
+# Appended last in a full-mode prompt, after the real docs, because those docs
+# tell every agent to read and update `.handoff/current.md` itself and the last
+# instruction wins: agy would otherwise spend its turn on a denied write.
+PROVIDER_FINAL_OVERRIDES = {
+    "agy": (
+        "Override for this provider: where the protocol documents above tell you to update, append to,\n"
+        "or write `.handoff/current.md`, do not do that -- put the same content at the end of your reply;\n"
+        "the bridge records it. Reading the log (included above) is fine."
+    ),
+}
+
+
+def provider_final_override_block(provider: str, full: bool) -> str:
+    note = PROVIDER_FINAL_OVERRIDES.get(provider)
+    return f"\n## Final Instruction ({provider})\n\n{note}\n" if note and full else ""
 
 
 # Extra, provider-specific instructions folded into the prompt. agy runs
@@ -1150,7 +1182,7 @@ session; only what's new is included below.
         )
         docs_sections = f"""## Working Rules
 
-{PROTOCOL_SUMMARY}
+{protocol_summary_for(provider)}
 """
     return f"""You are {provider}, working via the agent-handoff-bridge CLI tool on a task in this workspace.
 
@@ -1198,7 +1230,7 @@ session; only what's new is included below.
 ## Workspace Snapshot
 
 {git_snapshot()}
-"""
+{provider_final_override_block(provider, full)}"""
 
 
 def provider_command(provider: str, state: dict[str, Any], model: str | None = None) -> list[str]:
@@ -1430,8 +1462,10 @@ def summarize_agy(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[str
       mode, yet the run still exits 0 with `status: "SUCCESS"`. With an empty
       `response` that means the work was not done, so it is reported as a
       `tool_failure` (which classify_handoff() turns into a handoff) with a
-      message telling the user how to grant the permission. A non-empty
-      response with some denials is kept as a normal result.
+      message telling the user how to grant the permission. A denial next to
+      a non-empty response is a failure too: a refused write or command
+      means the changes that reply describes were not applied (agy may only
+      be proposing a diff), so the work is handed on with the reply kept.
     - `stdout` is tried first and `stderr` only when stdout has nothing
       parseable, so a real response is never shadowed by stderr noise.
 
@@ -1472,7 +1506,7 @@ def summarize_agy(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[str
         summary["errors"].append({"type": "agy_status", "status": status, "message": str(data.get("message") or "")})
         hard_error = True
     denied = data.get("denied_actions")
-    if isinstance(denied, list) and denied and not str(summary["final_text"]).strip():
+    if isinstance(denied, list) and denied:
         names = sorted(
             {
                 str(item.get("action") or item.get("display_name") or "?")
@@ -1480,19 +1514,29 @@ def summarize_agy(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[str
                 if isinstance(item, dict)
             }
         )
-        message = (
-            f"agy denied tool action(s) [{', '.join(names) or '?'}]: print mode cannot prompt for "
-            "permission, so nothing was done. Add allow rules under `permissions.allow` in agy's "
-            "settings.json (for example write_file(<path>) or command(<command>))."
-        )
+        listed = ", ".join(names) or "?"
+        if not str(summary["final_text"]).strip():
+            message = (
+                f"agy denied tool action(s) [{listed}]: print mode cannot prompt for "
+                "permission, so nothing was done. Add allow rules under `permissions.allow` in agy's "
+                "settings.json (for example write_file(<path>) or command(<command>))."
+            )
+            summary["final_text"] = message
+        else:
+            # The reply is kept as-is (the next provider can read what agy
+            # proposed), and a denied write/command means the work it
+            # describes was NOT applied -- so this is still a failure, not a
+            # success with a footnote. The note stays out of final_text on
+            # purpose: classify_handoff() cuts final_text out of the stdout
+            # it scans, which only works while final_text is byte-for-byte
+            # what the CLI printed.
+            message = (
+                f"agy denied tool action(s) [{listed}]: print mode cannot prompt for permission, so "
+                "the changes its reply describes were not applied. Allow them under `permissions.allow` "
+                "in agy's settings.json, or let the next provider apply them."
+            )
+            summary["note"] = f"({message})"
         summary["errors"].append({"type": "tool_failure", "message": message})
-        summary["final_text"] = message
-    elif isinstance(denied, list) and denied:
-        names = sorted({str(item.get("action") or "?") for item in denied if isinstance(item, dict)})
-        # Kept out of final_text on purpose: classify_handoff() cuts final_text
-        # out of the stdout it scans for error phrases, which only works while
-        # final_text is byte-for-byte what the CLI printed.
-        summary["note"] = f"(agy denied tool action(s) [{', '.join(names) or '?'}] -- not allowed in its settings.)"
     if not hard_error and exit_code == 0 and data.get("conversation_id"):
         summary["session_id"] = str(data["conversation_id"])
     return summary

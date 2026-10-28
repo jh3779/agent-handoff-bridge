@@ -1988,6 +1988,37 @@ class ProviderCommandAgyTests(unittest.TestCase):
         self.assertIn("do not edit that file yourself", prompt)
         self.assertNotIn("Before stopping, update `.handoff/current.md`", prompt)
 
+    def test_compact_agy_prompt_has_no_instruction_to_write_current_md(self):
+        # Found in review: the Required Behavior bullet said "do not edit"
+        # while the Working Rules summary still said "append a concise entry
+        # to .handoff/current.md" -- a contradiction the model resolved by
+        # trying (and failing) to write.
+        for state in ({"task": "t", "sessions": {}}, {"task": "t", "sessions": {"agy": "c1"}}):
+            prompt = hb.build_prompt("agy", state, "hello", reason="quota: x")
+            for phrase in ("append a concise entry", "Before stopping, update", "update `.handoff/current.md`"):
+                self.assertNotIn(phrase, prompt, msg=phrase)
+
+    def test_full_agy_prompt_ends_with_an_override_after_the_real_docs(self):
+        prompt = hb.build_prompt("agy", {"task": "t", "sessions": {}}, "hello", full=True)
+        docs_at = prompt.index("## Verification Playbook")
+        override_at = prompt.index("## Final Instruction (agy)")
+        self.assertGreater(override_at, docs_at)
+        self.assertIn("do not do that", prompt[override_at:])
+        # It is the last section of the prompt, so it is the last word.
+        self.assertNotIn("\n## ", prompt[override_at + 5 :])
+
+    def test_other_providers_prompts_are_unchanged_by_the_agy_overrides(self):
+        for provider in ("codex", "claude"):
+            compact = hb.build_prompt(provider, {"task": "t", "sessions": {}}, "hello")
+            full = hb.build_prompt(provider, {"task": "t", "sessions": {}}, "hello", full=True)
+            self.assertIn("append a concise entry to `.handoff/current.md`", compact)
+            self.assertNotIn("Final Instruction", compact + full)
+            self.assertNotIn("@@FINISH@@", compact)
+
+    def test_protocol_summary_placeholder_is_always_resolved(self):
+        for provider in hb.PROVIDERS:
+            self.assertNotIn("@@FINISH@@", hb.protocol_summary_for(provider))
+
     def test_codex_and_claude_still_update_current_md_themselves(self):
         for provider in ("codex", "claude"):
             prompt = hb.build_prompt(provider, {"task": "t", "sessions": {}}, "hello")
@@ -2056,13 +2087,23 @@ class SummarizeAgyTests(unittest.TestCase):
         # The conversation itself is fine and may still be resumed.
         self.assertEqual(summary["session_id"], self.ENVELOPE["conversation_id"])
 
-    def test_denied_actions_alongside_a_real_response_are_not_an_error(self):
+    def test_denied_actions_alongside_a_real_response_are_still_a_tool_failure(self):
+        # Found in review: "I could not write the file, here is the diff"
+        # means the file was NOT changed. Treating a non-empty reply as
+        # success would stop auto-fallback with the work undone.
         envelope = dict(self.ENVELOPE, response="I could not write the file, here is the diff instead.",
                         denied_actions=[{"action": "write_file"}])
-        summary = hb.summarize_agy(json.dumps(envelope), exit_code=0)
-        self.assertEqual(summary["errors"], [])
+        stdout = json.dumps(envelope)
+        summary = hb.summarize_agy(stdout, exit_code=0)
+        self.assertEqual([e["type"] for e in summary["errors"]], ["tool_failure"])
+        # The reply is preserved byte-for-byte for the next provider...
         self.assertEqual(summary["final_text"], envelope["response"])
         self.assertIn("write_file", summary["note"])
+        self.assertEqual(summary["session_id"], self.ENVELOPE["conversation_id"])
+        # ...and the run is classified as a handoff.
+        needed, reason = hb.classify_handoff(0, stdout, "", summary)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("tool_failure:"), msg=reason)
 
     def test_malformed_json_does_not_raise(self):
         summary = hb.summarize_agy("not json at all")
@@ -2265,6 +2306,25 @@ class AgyIntegrationTests(unittest.TestCase):
              "--prompt-file", str(prompt_path)],
             text=True, capture_output=True, env=env, check=False, timeout=30,
         )
+
+    def test_agy_denied_write_with_a_proposed_diff_still_hands_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            result = self._run_agy(
+                "#!/bin/sh\ncat >/dev/null\n"
+                "echo '{\"conversation_id\": \"c-5\", \"status\": \"SUCCESS\", "
+                "\"response\": \"I could not write it; here is the diff.\", "
+                "\"denied_actions\": [{\"action\": \"write_file\"}]}'\n",
+                workspace,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+            record = state["history"][0]
+            self.assertTrue(record["handoff_needed"])
+            self.assertTrue(record["reason"].startswith("tool_failure:"), msg=record["reason"])
+            self.assertTrue(record["final_text"].startswith("I could not write it; here is the diff."))
+            self.assertIn("were not applied", record["final_text"])
+            self.assertEqual(state["status"], "handoff_needed")
 
     def test_unauthenticated_agy_run_end_to_end(self):
         # A headless run with no cached login exits non-zero with

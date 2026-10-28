@@ -53,9 +53,12 @@ actually confines writes to the workspace is unverified.
   Changed/Verified/Remaining/Blocked summary in the final reply (the bridge appends
   every provider's final reply to `current.md` itself) plus a short runtime note
   ("do not retry a denied action; always reply in text"). After that change a real
-  first turn returned its answer and saved the conversation id. If tool denials
-  accompany a real answer, they are noted on the recorded reply but do not count
-  as a failure.
+  first turn returned its answer and saved the conversation id. The same applies
+  to the protocol summary and, in `--full-prompt` mode, to a closing "Final
+  Instruction" that overrides the docs' own "update `current.md`" lines, so a
+  prompt never tells agy both things. A tool denial next to a real reply is a
+  `tool_failure` as well (the reply may only propose changes that were not
+  applied): the reply is kept for the next provider and a note is added.
 - `diagnose` reports whether `agy` is installed; it does not check auth.
 - The bridge never passes `--dangerously-skip-permissions`. Adding an explicit
   opt-in for it is a possible follow-up if the default turns out too restrictive.
