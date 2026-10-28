@@ -409,7 +409,7 @@
 
   // ---------- provider connection panel (Phase 4, SCR-06/components.html §14) ----------
 
-  const PROVIDER_LABEL = { codex: "Codex", claude: "Claude Code", gemini: "Gemini" };
+  const PROVIDER_LABEL = { codex: "Codex", claude: "Claude Code", agy: "Antigravity" };
 
   // Fills a <datalist> with a provider's known models (see
   // known_cli_models() server-side) so a model input can offer a pickable

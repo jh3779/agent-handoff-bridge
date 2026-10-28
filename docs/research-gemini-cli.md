@@ -1,5 +1,14 @@
 # Research: Gemini CLI (Phase 5, resolves CFL-13)
 
+> **Historical (2026-10-28).** Google stopped serving Gemini CLI to Google AI
+> Pro, Ultra and free individual accounts on 2026-06-18 and replaced it with
+> Antigravity CLI (`agy`); the bridge's third provider is now `agy`
+> ([DEC-30](design-system/flutter-mapping.html#s1c),
+> [research-antigravity-cli.md](research-antigravity-cli.md)). The `gemini`
+> CLI itself remains available only with a paid API key or an Enterprise
+> licence, and this bridge no longer drives it. Everything below describes the
+> state of things when Phase 5 was built.
+
 Date: 2026-08-05
 
 ## Real CLI Verification (2026-08-06)

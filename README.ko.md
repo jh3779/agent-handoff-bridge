@@ -1,18 +1,20 @@
-# Claude Code / Codex / Gemini CLI Handoff Bridge (한글)
+# Claude Code / Codex / Antigravity CLI Handoff Bridge (한글)
 
 이 문서는 [`README.md`](README.md)의 한글 번역본입니다. 영어 원문이
 정본(source of truth)이며, 이 문서는 `docs/ko-operator-guide.md`와 같은
 방식으로 별도 파일로 병기됩니다.
 
-Claude Code CLI, Codex CLI, Gemini CLI는 현재 "남은 토큰을 공유하고
+Claude Code CLI, Codex CLI, Antigravity CLI(`agy`)는 현재 "남은 토큰을 공유하고
 다른 CLI에서 이어서 작업"하는 단일 공식 스위치를 제공하지 않습니다. 이
 저장소는 그 실용적인 버전을 위한 작은 브릿지 뼈대입니다: 작업 상태를
 공유 파일에 보관하고, 세 CLI 중 어느 것이든 스크립트 가능한 모드로
 실행하고, 할당량/rate/컨텍스트 실패를 감지한 뒤, 현재 워크스페이스
-상태와 함께 작업을 다른 CLI로 넘깁니다. Gemini CLI는 Phase 5에서 세
-번째 provider로 추가됐습니다 — Codex/Claude와의 실질적인 차이점(실제
-ID로 세션 재개 불가, 무료 인증 상태 확인 없음)은
-[docs/research-gemini-cli.md](docs/research-gemini-cli.md) 참고.
+상태와 함께 작업을 다른 CLI로 넘깁니다. 세 번째 provider는 Antigravity
+CLI(`agy`)입니다. Google이 2026-06-18에 Gemini CLI의 개인 계정 서비스를
+종료하면서 대체됐습니다. 검증 내용과 파일 수정 허용 방법은
+[docs/research-antigravity-cli.md](docs/research-antigravity-cli.md) 참고.
+`agy`는 Gemini뿐 아니라 Claude·오픈 가중치 모델도 쓸 수 있고, 자체 주간
+쿼터를 사용합니다.
 
 ## 다운로드
 
@@ -69,13 +71,15 @@ python3 handoff_bridge.py check
 
 ## 현재 로컬 상태
 
-- `codex`, `claude`, `gemini` 중 최소 하나 설치, 그리고 전체 로컬
+- `codex`, `claude`, `agy` 중 최소 하나 설치, 그리고 전체 로컬
   워크플로(릴리스 업데이트 확인, `--auto-fallback`이 실제로 설치된
   셋 중 하나로 넘어감)를 위한 `gh` 필요.
 - `python3 handoff_bridge.py diagnose`로 로컬 경로와 인증 상태 확인.
-- Claude를 자동 fallback으로 쓰기 전에 `claude auth login` 실행. Gemini
-  CLI는 무료 인증 상태 확인 명령이 없어서, `diagnose`는 설치 여부만
-  알려주고 인증 여부는 알려주지 않습니다.
+- Claude를 자동 fallback으로 쓰기 전에 `claude auth login` 실행. `agy`는
+  무료 인증 상태 확인 명령이 없어서, `diagnose`는 설치 여부만 알려주고 인증
+  여부는 알려주지 않습니다(`agy`를 한 번 대화형으로 실행해 로그인). 헤드리스
+  실행에서 `agy`는 자체 설정의 `permissions.allow`에 허용하지 않은 파일 쓰기와
+  셸 명령을 거부합니다.
 
 ## 빠른 시작
 
@@ -105,8 +109,8 @@ launchers\windows\handoff-bridge.cmd
 
 v0.2 채팅 스타일 재설계 사용해보기(파일 탐색, 드래그/클릭으로 첨부,
 VS Code 스타일 Open Folder, 워크스페이스별 로컬 채팅 기록, Phase 1부터
-실제 Codex/Claude 호출과 auto-fallback(Phase 5부터 Gemini도 세 번째
-선택 가능한 provider로 합류), Phase 2부터 `--workspace`가 선택
+실제 Codex/Claude 호출과 auto-fallback(`agy`가 세 번째
+선택 가능한 provider), Phase 2부터 `--workspace`가 선택
 사항이 됨(고르지 않으면 첫 메시지로부터
 `~/Documents/Agent Handoff Bridge/` 아래에 폴더 자동 생성) — 그리고
 Phase 3부터 현재 프로젝트뿐 아니라 열어본 모든 프로젝트의 최근 활동을

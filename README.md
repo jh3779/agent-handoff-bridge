@@ -1,16 +1,18 @@
-# Claude Code / Codex / Gemini CLI Handoff Bridge
+# Claude Code / Codex / Antigravity CLI Handoff Bridge
 
 *([한글 번역](README.ko.md) available.)*
 
-Claude Code CLI, Codex CLI, and Gemini CLI do not currently expose a single
+Claude Code CLI, Codex CLI, and Antigravity CLI (`agy`) do not currently expose a single
 official "share my remaining tokens and continue in the other CLI" switch.
 This repo is a small bridge scaffold for the practical version: keep work
 state in shared files, run any of the three CLIs in a scriptable mode, detect
 quota/rate/context failures, then hand the task to another CLI with the
-current workspace state. Gemini CLI was added as a third provider in Phase 5
-— see [docs/research-gemini-cli.md](docs/research-gemini-cli.md) for the
-practical differences from Codex/Claude (no session resume by real ID, no
-free auth-status check).
+current workspace state. The third provider is Antigravity CLI (`agy`), which
+replaced Gemini CLI after Google ended individual-account service for it on
+2026-06-18 — see [docs/research-antigravity-cli.md](docs/research-antigravity-cli.md)
+for how it was verified, and what to configure so it may edit files. `agy` can
+run Claude and open-weight models as well as Gemini, and draws on its own weekly
+quota.
 
 ## Download
 
@@ -66,13 +68,16 @@ and [docs/release-notes.md](docs/release-notes.md) (or the
 
 ## Current Local Status
 
-- Requires at least one of `codex`, `claude`, `gemini` installed, plus `gh`
+- Requires at least one of `codex`, `claude`, `agy` installed, plus `gh`
   for the full local workflow (release update checks, `--auto-fallback`
   hops to whichever of the three is actually installed).
 - Run `python3 handoff_bridge.py diagnose` to inspect local paths and auth.
 - Run `claude auth login` before using Claude as an automatic fallback.
-  Gemini CLI has no free auth-status command to check, so `diagnose` only
-  reports whether it's installed, not whether it's authenticated.
+  `agy` has no free auth-status command to check, so `diagnose` only reports
+  whether it's installed, not whether it's authenticated (run `agy` once
+  interactively to sign in). In headless runs `agy` refuses file writes and
+  shell commands unless you allow them under `permissions.allow` in its own
+  settings — see the research note above.
 
 ## Quick Start
 
@@ -102,8 +107,8 @@ launchers\windows\handoff-bridge.cmd
 
 Try the v0.2 chat-style redesign (file browsing, drag/click attaching,
 VS Code-style Open Folder, local per-folder chat history, real Codex/Claude
-calls with auto-fallback since Phase 1 (Gemini joined as a third selectable
-provider in Phase 5), `--workspace` made optional since
+calls with auto-fallback since Phase 1 (`agy` is the third selectable
+provider), `--workspace` made optional since
 Phase 2 (auto-creates a folder under `~/Documents/Agent Handoff Bridge/`
 from your first message if you don't pick one), and — as of Phase 3 — a
 History drawer showing recent activity across every project you've opened,

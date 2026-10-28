@@ -6,7 +6,7 @@ description: Check this project's shared cross-agent handoff state (.handoff/cur
 # Handoff Status
 
 This project uses agent-handoff-bridge (`handoff_bridge.py`) to hand work off
-between Codex CLI, Claude Code, and Gemini CLI. Before starting or continuing
+between Codex CLI, Claude Code, and Antigravity CLI. Before starting or continuing
 any task, check the shared state so you don't repeat work another agent
 already did or miss a blocker it left behind.
 

@@ -11,9 +11,9 @@ All commands are safe preview commands unless `--execute` or
 python3 handoff_bridge.py diagnose
 ```
 
-Checks local CLI paths for Codex, Claude Code, and (as of Phase 5) Gemini
-CLI, plus auth status for Codex and Claude Code. Gemini has no free
-auth-status command to check (`docs/research-gemini-cli.md`), so its line
+Checks local CLI paths for Codex, Claude Code, and Antigravity CLI (`agy`),
+plus auth status for Codex and Claude Code. `agy` has no free
+auth-status command to check (`docs/research-antigravity-cli.md`), so its line
 always reads "not checked" rather than a real status — checking would
 require a real, token-spending call, which `diagnose()` deliberately
 avoids so it stays free to run anytime.
@@ -93,11 +93,11 @@ the next CLI on a limit). Type a message and press Enter; end a line with `\`
 to continue it on the next line. After each reply it prints a token line:
 `sent ~N` is the bridge's estimate of the prompt it built (characters / 4), and
 `reported ...` is the usage the provider CLI itself returned (shown for Codex
-and Claude Code; Gemini's usage shape is not parsed, so only `sent` appears).
+and Claude Code; `agy` reports its usage too, as `input_tokens`/`output_tokens`/`cache_read_tokens`).
 
 | Command | Effect |
 |---|---|
-| `/provider [auto\|codex\|claude\|gemini]` | show or set the provider for the next turn |
+| `/provider [auto\|codex\|claude\|agy]` | show or set the provider for the next turn |
 | `/fallback [on\|off]` | show or set auto-fallback (default on) |
 | `/full [on\|off]` | show or set full-prompt mode (see `run --full-prompt`) |
 | `/tokens` | token totals for this chat session |
@@ -254,7 +254,7 @@ Phase 1, this actually calls Codex/Claude; as of Phase 2, `--workspace` is
 optional; as of Phase 3, a history drawer shows recent activity across
 every project you've opened, not just the current one; (Phase 4's API-key
 mode, which let a provider with no local CLI be reached by API key, was
-removed after v0.4.11); as of Phase 5, Gemini CLI is a third selectable provider; as
+removed after v0.4.11); the third selectable provider is Antigravity CLI (`agy`, replacing Gemini CLI); as
 of Phase 6, a titlebar badge checks for a newer release. A local stdlib
 HTTP server. What it does:
 
@@ -282,7 +282,7 @@ HTTP server. What it does:
   a real OS folder picker in the native window; a manual absolute-path
   prompt in browser mode), instead of only being able to browse the single
   folder passed at startup via `--workspace`.
-- Lets you pick a provider (`auto`/`codex`/`claude`/`gemini`, as of Phase
+- Lets you pick a provider (`auto`/`codex`/`claude`/`agy`, as of Phase
   5) from the titlebar, then
   **"Send" actually runs it** — `POST /api/run` shells out to
   `handoff_bridge.py run <provider> --execute --auto-fallback` (the same CLI
@@ -479,7 +479,7 @@ Endpoints:
 | GET | `/api/chat?month=YYYY-MM` | This month's (or a given month's) chat history, plus the list of months that exist |
 | POST | `/api/chat` | Append one message to the current month's log |
 | POST | `/api/open-folder` | Switch the active workspace (validates the path is a real, absolute directory) |
-| POST | `/api/run` | Run `provider` (`auto`\|`codex`\|`claude`\|`gemini`) with `text` as the turn prompt; persists and returns the resulting agent message(s) |
+| POST | `/api/run` | Run `provider` (`auto`\|`codex`\|`claude`\|`agy`) with `text` as the turn prompt; persists and returns the resulting agent message(s) |
 | GET | `/api/history` | History drawer data: recently-opened workspaces grouped with their last 5 chat turns each (current workspace pinned first) |
 | GET | `/api/sessions` | List every open session (multi-session, M1 — see above) |
 | POST | `/api/sessions` | Create a new session, returns its `session_id` |
@@ -499,7 +499,7 @@ fake `codex`/`claude` scripts on `PATH` (deterministic, no tokens spent, no
 network). See [Provider Extensibility](provider-extensibility.md) and the
 Conflict List in
 [design-system/flutter-mapping.html](design-system/flutter-mapping.html#s2)
-for the roadmap history of what was once missing (Gemini, update checks,
+for the roadmap history of what was once missing (a third provider, update checks,
 and cross-project history browsing have all since shipped).
 
 ## Platform Packages

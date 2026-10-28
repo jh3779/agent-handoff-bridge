@@ -10,7 +10,7 @@
 
 ## 1. 한 줄 요약
 
-Codex·Claude Code·Gemini 같은 **구독형 CLI** 사이에서, 한쪽이 한도(quota, rate
+Codex·Claude Code·Antigravity(`agy`) 같은 **구독형 CLI** 사이에서, 한쪽이 한도(quota, rate
 limit, context 등)에 걸리면 **작업 폴더의 파일**을 통해 다음 CLI에게 일을 넘기는
 도구입니다. 대화 기록을 옮기지 않습니다. 모든 CLI가 같은 폴더의 파일
 (`.handoff/current.md`, git 상태)을 읽고 쓰기 때문에, 어느 쪽이 이어받아도 같은
@@ -30,7 +30,7 @@ limit, context 등)에 걸리면 **작업 폴더의 파일**을 통해 다음 CL
                               |
         .---------------------+---------------------.
         v                     v                     v
-  codex exec --json   claude -p ... stream-json   gemini --output-format json
+  codex exec --json   claude -p ... stream-json   agy --output-format json
         \                     |                     /
          '------------> 결과 파싱 · 분류 <----------'
                               |
@@ -154,12 +154,12 @@ provider가 한 턴 돌았더라도 이 provider가 못 본 부분을 건너뛰�
 |---|---|---|---|
 | codex | `codex exec --json --skip-git-repo-check --sandbox workspace-write` | JSONL 이벤트 | `codex exec resume ... <세션ID> -` |
 | claude | `claude -p --input-format text --output-format stream-json --verbose --permission-mode auto` | JSONL 이벤트 | `claude --resume <세션ID> ...` |
-| gemini | `gemini --output-format json` | 끝에 JSON 객체 하나 | `--resume latest` (실제 ID가 아니라 고정 문자열) |
+| agy | `agy --output-format json` (프롬프트는 stdin, `-p` 사용 안 함) | 끝에 JSON 객체 하나 | `--conversation <대화ID>` |
 
 `--model`은 진짜 모델 이름일 때만 넘깁니다. `app-selected default`, `provider default`,
 `default`, `unknown`은 기록용 라벨이라 CLI에 넘기지 않습니다(`model_override_arg()`).
 
-결과 파서(`summarize_codex` / `summarize_claude` / `summarize_gemini`)는 공통으로
+결과 파서(`summarize_codex` / `summarize_claude` / `summarize_agy`)는 공통으로
 세션 ID, 사용량(`usage`), 최종 답변(`final_text`), 오류 목록, 도구 출력에서 인용된
 텍스트(`quoted_text`)를 뽑습니다. Claude는 `cost_usd`도 있습니다. 모델이 파일을
 읽다가 "rate limit"이라는 글자를 *본* 것과 *실제로 걸린* 것을 구분하려고
@@ -193,7 +193,7 @@ provider가 한 턴 돌았더라도 이 provider가 못 본 부분을 건너뛰�
 `run`에 `--auto-fallback`을 주면 넘겨야 할 때 바로 다른 CLI를 실행합니다.
 
 - 다음 provider는 `next_available_provider()`가 정합니다. `PROVIDERS` 순서
-  (`codex → claude → gemini → codex ...`)로 돌되 **설치되지 않은 CLI는 건너뜁니다.**
+  (`codex → claude → agy → codex ...`)로 돌되 **설치되지 않은 CLI는 건너뜁니다.**
 - 설치된 다른 CLI가 없으면(자기 자신만 남으면) 같은 provider를 다시 돌리지 않고
   멈춥니다.
 - 전환은 **한 번만** 합니다. 재귀 호출에 `auto_fallback=False`를 넘기기 때문입니다.

@@ -1,5 +1,12 @@
 # Provider Extensibility
 
+> **Update (2026-10-28):** the CLI provider this document uses as its worked
+> example (Gemini CLI) was replaced by Antigravity CLI (`agy`)
+> ([DEC-30](design-system/flutter-mapping.html#s1c)). The walk-through below is
+> kept as written because the *process* of adding a provider is unchanged;
+> `agy` followed the same checklist — see
+> [research-antigravity-cli.md](research-antigravity-cli.md).
+
 How to add a new AI provider (CLI-based) to this bridge.
 This doc exists because the 2026-08-04 design-review requirements asked for
 Gemini CLI to be *recognized* by the v0.2 chat redesign, and for "any other

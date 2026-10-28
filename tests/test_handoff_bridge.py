@@ -48,68 +48,53 @@ class ClassifyHandoffTests(unittest.TestCase):
         self.assertTrue(needed)
         self.assertTrue(reason.startswith("auth:"))
 
-    def test_successful_response_merely_mentioning_auth_method_is_not_misclassified(self):
-        # Regression (found in review of the "auth method" pattern added
-        # for the real Gemini auth-failure signal): that pattern is also
-        # checked against a *successful* run's raw combined stdout+stderr
-        # in classify_handoff()'s second, unconditional loop -- a bare
-        # "auth method" match wrongly fired on a genuinely successful
-        # response that merely discusses auth methods in prose, discarding
-        # a good answer (and, with --auto-fallback, re-running the prompt
-        # on a different provider for no reason). The pattern must match
-        # Gemini's distinctive imperative error wording ("set an auth
-        # method"), not just any mention of the phrase.
-        stdout = json.dumps({"response": "You can configure the auth method in your settings.json file."})
-        parsed = hb.summarize_gemini(stdout, "", exit_code=0)
+    def test_successful_response_merely_mentioning_authentication_is_not_misclassified(self):
+        # The auth pattern is also checked against a *successful* run's raw
+        # combined stdout+stderr (classify_handoff()'s second loop). A
+        # response that merely discusses authentication in prose -- here
+        # with the exact phrase agy's real error uses -- must not trigger a
+        # handoff/auto-fallback that discards a good answer.
+        stdout = json.dumps(
+            {
+                "conversation_id": "c1",
+                "status": "SUCCESS",
+                "response": "Note: authentication required for the admin API.",
+            }
+        )
+        parsed = hb.summarize_agy(stdout, "", exit_code=0)
         needed, reason = hb.classify_handoff(0, stdout, "", parsed)
         self.assertFalse(needed, msg=reason)
 
-    def test_gemini_autherror_is_classified_as_auth_not_unknown(self):
-        # Regression (found in review): summarize_gemini()'s error dict
-        # for an auth failure looks like {"type": "AuthError", "message":
-        # "not authenticated"} -- neither "AuthError" nor "not
-        # authenticated" matched the old auth pattern
-        # (not logged in|authentication_failed|unauthorized|forbidden),
-        # so this fell all the way through to "unknown" even though
-        # AuthError is a documented Gemini signal
-        # (docs/research-gemini-cli.md).
-        parsed = hb.summarize_gemini(
-            "",
-            json.dumps({"response": "", "error": {"type": "AuthError", "message": "not authenticated"}}),
-            exit_code=41,
-        )
-        needed, reason = hb.classify_handoff(41, "", "", parsed)
+    def test_agy_unauthenticated_headless_run_is_classified_as_auth(self):
+        # agy exits non-zero with "authentication required" when a
+        # non-interactive run has no cached login
+        # (https://antigravity.google/docs/cli/headless).
+        stderr = "Error: authentication required. Run `agy` interactively to sign in."
+        parsed = hb.summarize_agy("", stderr, exit_code=1)
+        needed, reason = hb.classify_handoff(1, "", stderr, parsed)
         self.assertTrue(needed)
         self.assertTrue(reason.startswith("auth:"), msg=reason)
 
-    def test_gemini_real_cli_autherror_shape_is_classified_as_auth(self):
-        # Regression (found via real verification against an actually
-        # installed gemini binary, v0.54.0, 2026-08-06, not a mock): the
-        # unauthenticated-CLI failure writes its JSON error object to
-        # *stderr*, not stdout, and error.type comes back as the generic
-        # "Error" rather than "AuthError"/"FatalAuthenticationError" --
-        # so this real shape must still classify as "auth" through the
-        # message-text match, not the type-name match, and only after
-        # summarize_gemini() is given stderr to fall back to.
-        stderr = json.dumps(
+    def test_agy_denied_tool_actions_with_an_empty_response_is_a_tool_failure_handoff(self):
+        # Verified against agy 1.4.8 (2026-10-28): print mode auto-denies a
+        # write/command that needs a permission prompt, yet exits 0 with
+        # status SUCCESS and an empty response. That must not look like a
+        # finished run.
+        stdout = json.dumps(
             {
-                "session_id": "eab3f432-f14a-431d-b976-7ffa1a3b0e1a",
-                "error": {
-                    "type": "Error",
-                    "message": (
-                        "Please set an Auth method in your /Users/x/.gemini/settings.json "
-                        "or specify one of the following environment variables before "
-                        "running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA"
-                    ),
-                    "code": 41,
-                },
+                "conversation_id": "c1",
+                "status": "SUCCESS",
+                "response": "",
+                "usage": {"input_tokens": 6870, "output_tokens": 145},
+                "denied_actions": [{"action": "write_file", "display_name": "WriteFile"}],
             }
         )
-        parsed = hb.summarize_gemini("", stderr, exit_code=41)
-        self.assertEqual(len(parsed["errors"]), 1)
-        needed, reason = hb.classify_handoff(41, "", stderr, parsed)
+        parsed = hb.summarize_agy(stdout, "jetski: no output produced", exit_code=0)
+        needed, reason = hb.classify_handoff(0, stdout, "", parsed)
         self.assertTrue(needed)
-        self.assertTrue(reason.startswith("auth:"), msg=reason)
+        self.assertTrue(reason.startswith("tool_failure:"), msg=reason)
+        self.assertIn("permissions.allow", parsed["final_text"])
+        self.assertIn("write_file", parsed["final_text"])
 
     def test_successful_response_merely_quoting_tool_failure_text_is_not_misclassified(self):
         # Regression (full-project review, 2026-08-07): the false-positive
@@ -129,7 +114,7 @@ class ClassifyHandoffTests(unittest.TestCase):
         stdout = json.dumps(
             {"response": "Fixed it: the script previously failed with command not found."}
         )
-        parsed = hb.summarize_gemini(stdout, "", exit_code=0)
+        parsed = hb.summarize_agy(stdout, "", exit_code=0)
         needed, reason = hb.classify_handoff(0, stdout, "", parsed)
         self.assertFalse(needed, msg=reason)
 
@@ -273,28 +258,37 @@ class ChooseAutoProviderTests(unittest.TestCase):
         with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"):
             self.assertEqual(hb.choose_auto_provider(state), "claude")
 
-    def test_handoff_needed_from_claude_switches_to_gemini(self):
-        # Phase 5: PROVIDERS is now ("codex", "claude", "gemini") -- N-way
+    def test_handoff_needed_from_claude_switches_to_agy(self):
+        # Phase 5: PROVIDERS is now ("codex", "claude", "agy") -- N-way
         # fallback walks to the *next* provider in that order, not back to
         # the start. "the other one" stopped being well-defined once a
         # third provider existed (docs/provider-extensibility.md).
         state = {"status": "handoff_needed", "last_provider": "claude", "primary_provider": "codex"}
         with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"):
-            self.assertEqual(hb.choose_auto_provider(state), "gemini")
+            self.assertEqual(hb.choose_auto_provider(state), "agy")
 
-    def test_handoff_needed_from_gemini_wraps_around_to_codex(self):
-        state = {"status": "handoff_needed", "last_provider": "gemini", "primary_provider": "codex"}
+    def test_a_state_file_from_before_gemini_was_removed_still_resolves(self):
+        # state.json written by an older version can name "gemini" as the
+        # primary or last provider; neither may crash or be run.
+        with mock.patch.object(hb.shutil, "which", side_effect=lambda name: name == "claude" and "/usr/bin/claude"):
+            legacy_primary = {"status": "ready", "primary_provider": "gemini"}
+            self.assertEqual(hb.choose_auto_provider(legacy_primary), "claude")
+            legacy_last = {"status": "handoff_needed", "last_provider": "gemini", "primary_provider": "codex"}
+            self.assertEqual(hb.choose_auto_provider(legacy_last), "claude")
+
+    def test_handoff_needed_from_agy_wraps_around_to_codex(self):
+        state = {"status": "handoff_needed", "last_provider": "agy", "primary_provider": "codex"}
         with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"):
             self.assertEqual(hb.choose_auto_provider(state), "codex")
 
     def test_handoff_needed_skips_an_uninstalled_provider_in_between(self):
         # The exact scenario a review flagged: codex fails, claude isn't
-        # installed, gemini is -- the single-hop fallback must still reach
-        # the installed gemini instead of naively landing on claude and
+        # installed, agy is -- the single-hop fallback must still reach
+        # the installed agy instead of naively landing on claude and
         # stopping there.
         state = {"status": "handoff_needed", "last_provider": "codex", "primary_provider": "codex"}
-        with mock.patch.object(hb.shutil, "which", side_effect=lambda name: name in ("codex", "gemini") and f"/usr/bin/{name}"):
-            self.assertEqual(hb.choose_auto_provider(state), "gemini")
+        with mock.patch.object(hb.shutil, "which", side_effect=lambda name: name in ("codex", "agy") and f"/usr/bin/{name}"):
+            self.assertEqual(hb.choose_auto_provider(state), "agy")
 
     def test_prefers_primary_when_available(self):
         state = {"status": "ready", "primary_provider": "claude"}
@@ -1764,23 +1758,23 @@ class NextProviderTests(unittest.TestCase):
 
     def test_walks_to_the_next_provider_in_order(self):
         self.assertEqual(hb.next_provider("codex"), "claude")
-        self.assertEqual(hb.next_provider("claude"), "gemini")
+        self.assertEqual(hb.next_provider("claude"), "agy")
 
     def test_wraps_around_at_the_end(self):
-        self.assertEqual(hb.next_provider("gemini"), "codex")
+        self.assertEqual(hb.next_provider("agy"), "codex")
 
     def test_skips_entries_already_in_tried(self):
         # codex -> claude is next in order, but claude is already tried,
-        # so this must skip to gemini instead.
-        self.assertEqual(hb.next_provider("codex", tried={"claude"}), "gemini")
+        # so this must skip to agy instead.
+        self.assertEqual(hb.next_provider("codex", tried={"claude"}), "agy")
 
     def test_falls_back_to_current_when_every_provider_is_exhausted(self):
-        self.assertEqual(hb.next_provider("codex", tried={"codex", "claude", "gemini"}), "codex")
+        self.assertEqual(hb.next_provider("codex", tried={"codex", "claude", "agy"}), "codex")
 
     def test_current_itself_is_always_excluded_even_if_not_in_tried(self):
-        # A 2-provider cycle: excluding claude and gemini leaves only
+        # A 2-provider cycle: excluding claude and agy leaves only
         # codex itself, which must never be returned as its own "next".
-        self.assertEqual(hb.next_provider("codex", tried={"claude", "gemini"}), "codex")
+        self.assertEqual(hb.next_provider("codex", tried={"claude", "agy"}), "codex")
 
 
 class NextAvailableProviderTests(unittest.TestCase):
@@ -1788,19 +1782,19 @@ class NextAvailableProviderTests(unittest.TestCase):
     PROVIDERS grew past two entries in Phase 5): a single-hop auto-fallback
     used to pick next_provider() blindly, with no regard for whether that
     candidate's CLI was actually installed -- a codex failure could land on
-    an uninstalled claude and never reach an installed gemini sitting right
+    an uninstalled claude and never reach an installed agy sitting right
     after it in PROVIDERS order."""
 
     def test_skips_an_uninstalled_provider_to_reach_an_installed_one(self):
         # codex fails -> naive next_provider() would say "claude" -- but
-        # only codex and gemini are "installed" here, so this must skip
-        # past claude to gemini instead.
-        with mock.patch.object(hb.shutil, "which", side_effect=lambda name: name in ("codex", "gemini") and f"/usr/bin/{name}"):
-            self.assertEqual(hb.next_available_provider("codex"), "gemini")
+        # only codex and agy are "installed" here, so this must skip
+        # past claude to agy instead.
+        with mock.patch.object(hb.shutil, "which", side_effect=lambda name: name in ("codex", "agy") and f"/usr/bin/{name}"):
+            self.assertEqual(hb.next_available_provider("codex"), "agy")
 
     def test_still_respects_tried_on_top_of_availability(self):
         with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"):  # everything "installed"
-            self.assertEqual(hb.next_available_provider("codex", tried={"claude"}), "gemini")
+            self.assertEqual(hb.next_available_provider("codex", tried={"claude"}), "agy")
 
     def test_falls_back_to_current_when_nothing_else_is_installed(self):
         with mock.patch.object(hb.shutil, "which", side_effect=lambda name: name == "codex" and "/usr/bin/codex"):
@@ -1817,8 +1811,8 @@ class ProviderCommandCodexTests(unittest.TestCase):
     trusted directory and --skip-git-repo-check was not specified") in
     any workspace that isn't itself a git repo -- which every workspace
     this bridge auto-creates is not, by default. provider_command() had
-    no test coverage at all for codex/claude before this (only Gemini,
-    see ProviderCommandGeminiTests below) -- exactly the kind of gap
+    no test coverage at all for codex/claude before this (only agy,
+    see ProviderCommandAgyTests below) -- exactly the kind of gap
     that let a real CLI flag requirement change through unnoticed."""
 
     def test_first_call_has_no_resume_flag_and_skips_the_git_repo_check(self):
@@ -1955,118 +1949,148 @@ class GitSnapshotTests(unittest.TestCase):
         self.assertLess(len(snapshot), 500, msg=snapshot)
 
 
-class ProviderCommandGeminiTests(unittest.TestCase):
-    def test_first_call_in_a_workspace_has_no_resume_flag(self):
-        state = {"sessions": {"gemini": None}}
-        command = hb.provider_command("gemini", state)
-        self.assertEqual(command[0], "gemini")
-        self.assertIn("--output-format", command)
-        self.assertIn("json", command)
-        self.assertNotIn("--resume", command)
+class ProviderCommandAgyTests(unittest.TestCase):
+    def test_first_call_in_a_workspace_has_no_conversation_flag(self):
+        state = {"sessions": {"agy": None}}
+        command = hb.provider_command("agy", state)
+        self.assertEqual(command[0], "agy")
+        self.assertEqual(command[1:3], ["--output-format", "json"])
+        self.assertNotIn("--conversation", command)
 
-    def test_a_prior_clean_run_adds_resume_latest(self):
-        # session_id is always the literal sentinel "latest" for gemini
-        # (see summarize_gemini()) -- provider_command() doesn't know or
-        # care that it isn't a real ID, only that one was previously set.
-        state = {"sessions": {"gemini": "latest"}}
-        command = hb.provider_command("gemini", state)
-        idx = command.index("--resume")
-        self.assertEqual(command[idx + 1], "latest")
+    def test_a_prior_clean_run_resumes_that_conversation_by_id(self):
+        state = {"sessions": {"agy": "941d1baa-2dcf-4f2a-a9c9-d33c5c2e36ea"}}
+        command = hb.provider_command("agy", state)
+        idx = command.index("--conversation")
+        self.assertEqual(command[idx + 1], "941d1baa-2dcf-4f2a-a9c9-d33c5c2e36ea")
 
     def test_model_is_passed_through(self):
-        state = {"sessions": {"gemini": None}}
-        command = hb.provider_command("gemini", state, model="gemini-2.5-pro")
+        state = {"sessions": {"agy": None}}
+        command = hb.provider_command("agy", state, model="claude-sonnet-5-5-medium")
         idx = command.index("--model")
-        self.assertEqual(command[idx + 1], "gemini-2.5-pro")
+        self.assertEqual(command[idx + 1], "claude-sonnet-5-5-medium")
 
-    def test_no_inline_prompt_flag_prompt_travels_via_stdin_like_the_others(self):
-        # docs/research-gemini-cli.md: piped stdin alone auto-triggers
-        # non-interactive mode, matching how codex/claude already receive
-        # their prompt via subprocess.run(..., input=prompt), not argv.
-        state = {"sessions": {"gemini": None}}
-        command = hb.provider_command("gemini", state)
-        self.assertNotIn("-p", command)
+    def test_prompt_travels_via_stdin_not_a_print_flag(self):
+        # Verified against agy 1.4.8: piped stdin alone triggers print mode,
+        # while `-p` followed by another flag swallows that flag as its
+        # prompt and exits 2.
+        command = hb.provider_command("agy", {"sessions": {"agy": None}})
+        for flag in ("-p", "--print", "--prompt"):
+            self.assertNotIn(flag, command)
+
+    def test_agy_gets_a_runtime_note_telling_it_to_always_reply_in_text(self):
+        for state in ({"task": "t", "sessions": {}}, {"task": "t", "sessions": {"agy": "c-1"}}):
+            prompt = hb.build_prompt("agy", state, "hello")
+            self.assertIn("## Runtime Note (agy)", prompt)
+            self.assertIn("never end your", prompt)
+
+    def test_agy_is_not_told_to_edit_current_md_itself(self):
+        prompt = hb.build_prompt("agy", {"task": "t", "sessions": {}}, "hello")
+        self.assertIn("do not edit that file yourself", prompt)
+        self.assertNotIn("Before stopping, update `.handoff/current.md`", prompt)
+
+    def test_codex_and_claude_still_update_current_md_themselves(self):
+        for provider in ("codex", "claude"):
+            prompt = hb.build_prompt(provider, {"task": "t", "sessions": {}}, "hello")
+            self.assertIn("Before stopping, update `.handoff/current.md`", prompt)
+
+    def test_other_providers_get_no_runtime_note(self):
+        self.assertNotIn("Runtime Note", hb.build_prompt("codex", {"task": "t", "sessions": {}}, "hello"))
+
+    def test_no_permission_bypass_flag_is_ever_added(self):
+        # --dangerously-skip-permissions approves every tool with no
+        # scoping; the bridge leaves permissions to agy's own settings.
+        command = hb.provider_command("agy", {"sessions": {"agy": "id"}}, model="m")
+        self.assertNotIn("--dangerously-skip-permissions", command)
 
 
-class SummarizeGeminiTests(unittest.TestCase):
-    def test_successful_response_is_parsed(self):
-        stdout = json.dumps({"response": "hello back", "stats": {"tokens": {"total": 42}}})
-        summary = hb.summarize_gemini(stdout, exit_code=0)
-        self.assertEqual(summary["final_text"], "hello back")
-        self.assertEqual(summary["usage"], {"tokens": {"total": 42}})
+class SummarizeAgyTests(unittest.TestCase):
+    ENVELOPE = {
+        "conversation_id": "941d1baa-2dcf-4f2a-a9c9-d33c5c2e36ea",
+        "status": "SUCCESS",
+        "response": "PONG\n",
+        "duration_seconds": 3.9,
+        "num_turns": 1,
+        "usage": {"input_tokens": 6858, "output_tokens": 6, "thinking_tokens": 0, "cache_read_tokens": 0, "total_tokens": 6864},
+    }
+
+    def test_successful_envelope_is_parsed(self):
+        summary = hb.summarize_agy(json.dumps(self.ENVELOPE), exit_code=0)
+        self.assertEqual(summary["provider"], "agy")
+        self.assertEqual(summary["final_text"], "PONG\n")
+        self.assertEqual(summary["usage"]["total_tokens"], 6864)
         self.assertEqual(summary["errors"], [])
-        # A clean run marks the resume sentinel -- the *only* way
-        # provider_command() ever learns "gemini has run here before".
-        self.assertEqual(summary["session_id"], "latest")
+        self.assertEqual(summary["session_id"], "941d1baa-2dcf-4f2a-a9c9-d33c5c2e36ea")
 
-    def test_nonzero_exit_never_marks_the_resume_sentinel_even_with_a_clean_looking_body(self):
-        # Regression (found in review): Gemini's own docs have two
-        # overlapping, disagreeing exit-code tables and don't fully
-        # document exit-code/JSON-body correlation on failure -- a
-        # nonzero exit (e.g. exit 41, FatalAuthenticationError) could in
-        # principle still print a `response`/no-`error` body. Checking
-        # only the JSON body (ignoring exit_code) would have wrongly
-        # marked a failed run as safe to --resume latest on the next
-        # call.
-        stdout = json.dumps({"response": "partial output before the crash"})
-        summary = hb.summarize_gemini(stdout, exit_code=41)
+    def test_usage_is_understood_by_the_chat_token_readout(self):
+        summary = hb.summarize_agy(json.dumps(self.ENVELOPE), exit_code=0)
+        self.assertEqual(hb.usage_token_counts(summary["usage"]), {"input": 6858, "output": 6, "cached": 0})
+
+    def test_nonzero_exit_never_marks_a_conversation_resumable(self):
+        summary = hb.summarize_agy(json.dumps(self.ENVELOPE), exit_code=1)
         self.assertIsNone(summary["session_id"])
-        # The (misleadingly clean-looking) response text/usage still get
-        # surfaced -- only the resume sentinel is suppressed.
-        self.assertEqual(summary["final_text"], "partial output before the crash")
+        self.assertEqual(summary["final_text"], "PONG\n")
 
-    def test_error_field_is_captured_and_session_id_stays_none(self):
-        stdout = json.dumps({"response": "", "error": {"type": "AuthError", "message": "not authenticated"}})
-        summary = hb.summarize_gemini(stdout)
+    def test_non_success_status_is_an_error_and_not_resumable(self):
+        envelope = dict(self.ENVELOPE, status="ERROR", response="")
+        summary = hb.summarize_agy(json.dumps(envelope), exit_code=0)
         self.assertEqual(len(summary["errors"]), 1)
-        self.assertEqual(summary["errors"][0]["type"], "AuthError")
-        # An error response must never mark the resume sentinel -- there's
-        # nothing confirmed resumable from a failed call.
+        self.assertEqual(summary["errors"][0]["status"], "ERROR")
         self.assertIsNone(summary["session_id"])
+
+    def test_error_field_is_captured(self):
+        summary = hb.summarize_agy(json.dumps({"status": "SUCCESS", "error": {"message": "boom"}}), exit_code=0)
+        self.assertEqual(summary["errors"], [{"message": "boom"}])
+        self.assertIsNone(summary["session_id"])
+
+    def test_denied_actions_with_an_empty_response_become_a_tool_failure(self):
+        envelope = dict(
+            self.ENVELOPE,
+            response="",
+            denied_actions=[{"action": "write_file", "display_name": "WriteFile"}, {"action": "command"}],
+        )
+        summary = hb.summarize_agy(json.dumps(envelope), exit_code=0)
+        self.assertEqual([e["type"] for e in summary["errors"]], ["tool_failure"])
+        self.assertIn("command", summary["final_text"])
+        self.assertIn("write_file", summary["final_text"])
+        self.assertIn("permissions.allow", summary["final_text"])
+        # The conversation itself is fine and may still be resumed.
+        self.assertEqual(summary["session_id"], self.ENVELOPE["conversation_id"])
+
+    def test_denied_actions_alongside_a_real_response_are_not_an_error(self):
+        envelope = dict(self.ENVELOPE, response="I could not write the file, here is the diff instead.",
+                        denied_actions=[{"action": "write_file"}])
+        summary = hb.summarize_agy(json.dumps(envelope), exit_code=0)
+        self.assertEqual(summary["errors"], [])
+        self.assertEqual(summary["final_text"], envelope["response"])
+        self.assertIn("write_file", summary["note"])
 
     def test_malformed_json_does_not_raise(self):
-        summary = hb.summarize_gemini("not json at all")
-        self.assertEqual(summary["provider"], "gemini")
+        summary = hb.summarize_agy("not json at all")
+        self.assertEqual(summary["provider"], "agy")
         self.assertIsNone(summary["session_id"])
         self.assertEqual(summary["final_text"], "")
 
     def test_empty_stdout_does_not_raise(self):
-        summary = hb.summarize_gemini("")
-        self.assertIsNone(summary["session_id"])
+        self.assertIsNone(hb.summarize_agy("")["session_id"])
 
     def test_a_json_array_top_level_does_not_raise(self):
-        # Valid JSON, but not the expected object shape -- must not crash
-        # trying to call .get() on a list.
-        summary = hb.summarize_gemini("[1, 2, 3]")
+        summary = hb.summarize_agy("[1, 2, 3]")
         self.assertIsNone(summary["session_id"])
         self.assertEqual(summary["final_text"], "")
 
     def test_falls_back_to_stderr_when_stdout_has_nothing_parseable(self):
-        # The real CLI (confirmed against v0.54.0) writes fatal-error
-        # bodies to stderr, empty stdout -- summarize_gemini() must find
-        # the JSON there instead of giving up after an empty/unparseable
-        # stdout.
-        stderr = json.dumps({"error": {"type": "Error", "message": "boom"}})
-        summary = hb.summarize_gemini("", stderr, exit_code=1)
-        self.assertEqual(summary["errors"], [{"type": "Error", "message": "boom"}])
-
-    def test_prefers_stdout_over_stderr_when_both_are_present(self):
-        # A successful run's real response must never be shadowed by
-        # leftover/unrelated stderr text.
-        stdout = json.dumps({"response": "real reply"})
-        summary = hb.summarize_gemini(stdout, "some unrelated stderr noise", exit_code=0)
-        self.assertEqual(summary["final_text"], "real reply")
+        stderr = json.dumps({"status": "ERROR", "message": "boom"})
+        summary = hb.summarize_agy("", stderr, exit_code=1)
+        self.assertEqual(summary["errors"][0]["status"], "ERROR")
 
     def test_falls_back_to_stderr_when_stdout_parses_but_is_not_a_dict(self):
-        # Regression (found in review): the original stdout/stderr
-        # fallback only tried stderr on a JSONDecodeError from stdout, not
-        # when stdout parsed fine but wasn't the expected object shape
-        # (e.g. "null", a bare array) -- it returned the empty summary
-        # immediately instead of still checking stderr, contradicting this
-        # function's own documented stdout-then-stderr fallback contract.
-        stderr = json.dumps({"error": {"type": "Error", "message": "boom"}})
-        summary = hb.summarize_gemini("null", stderr, exit_code=1)
-        self.assertEqual(summary["errors"], [{"type": "Error", "message": "boom"}])
+        stderr = json.dumps({"status": "ERROR", "message": "boom"})
+        summary = hb.summarize_agy("null", stderr, exit_code=1)
+        self.assertEqual(len(summary["errors"]), 1)
+
+    def test_prefers_stdout_over_stderr_when_both_are_present(self):
+        summary = hb.summarize_agy(json.dumps(self.ENVELOPE), "some unrelated stderr noise", exit_code=0)
+        self.assertEqual(summary["final_text"], "PONG\n")
 
 
 class SummarizeCodexTests(unittest.TestCase):
@@ -2166,8 +2190,8 @@ class SummarizeClaudeTests(unittest.TestCase):
         self.assertEqual(len(summary["errors"]), 1)
 
 
-class GeminiIntegrationTests(unittest.TestCase):
-    """Real subprocess, fake `gemini` binary -- same pattern as
+class AgyIntegrationTests(unittest.TestCase):
+    """Real subprocess, fake `agy` binary -- same pattern as
     RunProviderTimeoutIntegrationTests/AutoFallbackPromptPropagationTests
     above, extended to the third provider."""
 
@@ -2175,19 +2199,20 @@ class GeminiIntegrationTests(unittest.TestCase):
         if os.name != "posix" or not hb.shutil.which("sh"):
             self.skipTest("POSIX shell not available for fake provider scripts")
 
-    def test_successful_gemini_run_end_to_end(self):
+    def test_successful_agy_run_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             fake_bin = workspace / "fake-bin"
             fake_bin.mkdir()
-            fake_gemini = fake_bin / "gemini"
-            fake_gemini.write_text(
+            fake_agy = fake_bin / "agy"
+            fake_agy.write_text(
                 "#!/bin/sh\n"
                 "cat >/dev/null\n"
-                'echo \'{"response": "fake gemini reply", "stats": {"tokens": {"total": 7}}}\'\n',
+                'echo \'{"conversation_id": "c-123", "status": "SUCCESS", "response": "fake agy reply", '
+                '"usage": {"input_tokens": 7, "output_tokens": 3}}\'\n',
                 encoding="utf-8",
             )
-            fake_gemini.chmod(0o755)
+            fake_agy.chmod(0o755)
 
             prompt_path = workspace / "prompt.txt"
             prompt_path.write_text("hello", encoding="utf-8")
@@ -2202,7 +2227,7 @@ class GeminiIntegrationTests(unittest.TestCase):
                     "--workspace",
                     str(workspace),
                     "run",
-                    "gemini",
+                    "agy",
                     "--execute",
                     "--prompt-file",
                     str(prompt_path),
@@ -2217,74 +2242,69 @@ class GeminiIntegrationTests(unittest.TestCase):
             state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(len(state["history"]), 1)
             record = state["history"][0]
-            self.assertEqual(record["provider"], "gemini")
-            self.assertEqual(record["final_text"], "fake gemini reply")
+            self.assertEqual(record["provider"], "agy")
+            self.assertEqual(record["final_text"], "fake agy reply")
             self.assertFalse(record["handoff_needed"])
-            # The sentinel, captured from summarize_gemini()'s clean-run
-            # detection, now saved into state so the *next* gemini call in
-            # this workspace resumes instead of starting fresh.
-            self.assertEqual(state["sessions"]["gemini"], "latest")
+            # The real conversation id, captured by summarize_agy(), is saved
+            # so the *next* agy call in this workspace resumes it.
+            self.assertEqual(state["sessions"]["agy"], "c-123")
 
-    def test_unauthenticated_gemini_run_end_to_end(self):
-        # Fake binary shaped exactly like the real unauthenticated CLI
-        # (v0.54.0, confirmed 2026-08-06): empty stdout, the JSON error
-        # object on stderr, exit code 41. Exercises the real stdout/stderr
-        # split through the full run_provider() path, not just
-        # summarize_gemini() directly.
+    def _run_agy(self, fake_script_body: str, workspace: Path):
+        fake_bin = workspace / "fake-bin"
+        fake_bin.mkdir()
+        fake_agy = fake_bin / "agy"
+        fake_agy.write_text(fake_script_body, encoding="utf-8")
+        fake_agy.chmod(0o755)
+        prompt_path = workspace / "prompt.txt"
+        prompt_path.write_text("hello", encoding="utf-8")
+        env = dict(os.environ)
+        env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
+        bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
+        return subprocess.run(
+            [sys.executable, str(bridge_script), "--workspace", str(workspace), "run", "agy", "--execute",
+             "--prompt-file", str(prompt_path)],
+            text=True, capture_output=True, env=env, check=False, timeout=30,
+        )
+
+    def test_unauthenticated_agy_run_end_to_end(self):
+        # A headless run with no cached login exits non-zero with
+        # "authentication required" on stderr and nothing on stdout.
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            fake_bin = workspace / "fake-bin"
-            fake_bin.mkdir()
-            fake_gemini = fake_bin / "gemini"
-            fake_gemini.write_text(
-                "#!/bin/sh\n"
-                "cat >/dev/null\n"
-                "cat >&2 <<'EOF'\n"
-                '{"session_id": "abc", "error": {"type": "Error", "message": "Please set an Auth method in your settings.json", "code": 41}}\n'
-                "EOF\n"
-                "exit 41\n",
-                encoding="utf-8",
+            result = self._run_agy(
+                "#!/bin/sh\ncat >/dev/null\necho 'Error: authentication required' >&2\nexit 1\n", workspace
             )
-            fake_gemini.chmod(0o755)
-
-            prompt_path = workspace / "prompt.txt"
-            prompt_path.write_text("hello", encoding="utf-8")
-
-            env = dict(os.environ)
-            env["PATH"] = f"{fake_bin}{os.pathsep}{env.get('PATH', '')}"
-            bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(bridge_script),
-                    "--workspace",
-                    str(workspace),
-                    "run",
-                    "gemini",
-                    "--execute",
-                    "--prompt-file",
-                    str(prompt_path),
-                ],
-                text=True,
-                capture_output=True,
-                env=env,
-                check=False,
-                timeout=30,
-            )
-            # run_provider() propagates the provider's own exit code as
-            # the bridge's exit code, so 41 here (not 0) is expected.
-            self.assertEqual(result.returncode, 41, msg=result.stderr)
+            self.assertEqual(result.returncode, 1, msg=result.stderr)
             state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
             record = state["history"][0]
             self.assertTrue(record["handoff_needed"])
             self.assertTrue(record["reason"].startswith("auth:"), msg=record["reason"])
-            self.assertIsNone(state["sessions"].get("gemini"))
+            self.assertIsNone(state["sessions"].get("agy"))
 
-    def test_auto_fallback_skips_an_uninstalled_middle_provider_to_reach_gemini(self):
+    def test_agy_run_that_was_denied_every_tool_is_recorded_as_a_tool_failure(self):
+        # Exit 0 + status SUCCESS + empty response + denied_actions: what
+        # agy 1.4.8 really prints when print mode refuses a file write.
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            result = self._run_agy(
+                "#!/bin/sh\ncat >/dev/null\n"
+                "echo '{\"conversation_id\": \"c-9\", \"status\": \"SUCCESS\", \"response\": \"\", "
+                "\"denied_actions\": [{\"action\": \"write_file\"}]}'\n",
+                workspace,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
+            record = state["history"][0]
+            self.assertTrue(record["handoff_needed"])
+            self.assertTrue(record["reason"].startswith("tool_failure:"), msg=record["reason"])
+            self.assertIn("permissions.allow", record["final_text"])
+            self.assertEqual(state["status"], "handoff_needed")
+
+    def test_auto_fallback_skips_an_uninstalled_middle_provider_to_reach_agy(self):
         # The exact scenario a review flagged as reachable only once
         # PROVIDERS grew past two entries: codex fails, claude isn't
-        # installed at all, gemini is -- the single-hop auto-fallback
-        # must still land on gemini, not silently stop after failing to
+        # installed at all, agy is -- the single-hop auto-fallback
+        # must still land on agy, not silently stop after failing to
         # even start "claude".
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
@@ -2299,12 +2319,13 @@ class GeminiIntegrationTests(unittest.TestCase):
             fake_codex.chmod(0o755)
             # Deliberately no fake "claude" script in fake_bin.
 
-            fake_gemini = fake_bin / "gemini"
-            fake_gemini.write_text(
-                "#!/bin/sh\ncat >/dev/null\necho '{\"response\": \"gemini picked up the handoff\"}'\n",
+            fake_agy = fake_bin / "agy"
+            fake_agy.write_text(
+                "#!/bin/sh\ncat >/dev/null\n"
+                "echo '{\"conversation_id\": \"c-7\", \"status\": \"SUCCESS\", \"response\": \"agy picked up the handoff\"}'\n",
                 encoding="utf-8",
             )
-            fake_gemini.chmod(0o755)
+            fake_agy.chmod(0o755)
 
             prompt_path = workspace / "prompt.txt"
             prompt_path.write_text("hello", encoding="utf-8")
@@ -2346,15 +2367,15 @@ class GeminiIntegrationTests(unittest.TestCase):
             state = json.loads((workspace / ".handoff" / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(len(state["history"]), 2)
             self.assertEqual(state["history"][0]["provider"], "codex")
-            self.assertEqual(state["history"][1]["provider"], "gemini")
-            self.assertEqual(state["history"][1]["final_text"], "gemini picked up the handoff")
+            self.assertEqual(state["history"][1]["provider"], "agy")
+            self.assertEqual(state["history"][1]["final_text"], "agy picked up the handoff")
             self.assertFalse(state["history"][1]["handoff_needed"])
 
     def _run_codex_with_auto_fallback(self, workspace: Path, fake_bin: Path):
         prompt_path = workspace / "prompt.txt"
         prompt_path.write_text("hello", encoding="utf-8")
         # Minimal system baseline + fake_bin, not the inherited PATH, so a
-        # real claude/gemini CLI on this machine can't answer for a
+        # real claude/agy CLI on this machine can't answer for a
         # provider this test needs to be absent (see the skip-uninstalled
         # test above for why a fully-empty PATH doesn't work).
         env = dict(os.environ)
@@ -2408,7 +2429,7 @@ class GeminiIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             fake_bin = workspace / "fake-bin"
-            fake_bin.mkdir()  # deliberately empty: no codex/claude/gemini
+            fake_bin.mkdir()  # deliberately empty: no codex/claude/agy
 
             result = self._run_codex_with_auto_fallback(workspace, fake_bin)
             self.assertEqual(result.returncode, 127, msg=result.stderr)

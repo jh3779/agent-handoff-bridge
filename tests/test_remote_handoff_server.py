@@ -5,7 +5,7 @@ module: an empty/corrupted token file silently disabling remote-server auth,
 user-controlled task/prompt text reaching handoff_bridge.py's argv with no
 "--" separator, TimeoutExpired.stdout/.stderr staying `bytes` and crashing
 the JSON write, non-atomic/unguarded task-JSON reads and writes, and a
-Gemini-excluding stale copy of handoff_bridge.PROVIDERS.
+agy-excluding stale copy of handoff_bridge.PROVIDERS.
 """
 
 from __future__ import annotations
@@ -177,37 +177,37 @@ class RunCommandTimeoutDecodeTests(unittest.TestCase):
 
 
 class ProviderListTests(unittest.TestCase):
-    def test_gemini_is_a_valid_provider_and_primary(self):
+    def test_agy_is_a_valid_provider_and_primary(self):
         # Regression: PROVIDERS/PRIMARY_PROVIDERS used to be separate
-        # hardcoded copies that never picked up Gemini when it was added to
+        # hardcoded copies that never picked up agy when it was added to
         # handoff_bridge.PROVIDERS, silently rejecting it on this server.
-        self.assertIn("gemini", rhs.PROVIDERS)
-        self.assertIn("gemini", rhs.PRIMARY_PROVIDERS)
+        self.assertIn("agy", rhs.PROVIDERS)
+        self.assertIn("agy", rhs.PRIMARY_PROVIDERS)
 
 
 class NormalizeTaskTests(unittest.TestCase):
     def _fake_server(self, allow_roots):
         return types.SimpleNamespace(allow_execute=False, allow_roots=allow_roots)
 
-    def test_gemini_provider_and_primary_are_accepted(self):
+    def test_agy_provider_and_primary_are_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
             server = self._fake_server([Path(tmp).resolve()])
             task = rhs.normalize_task(
-                {"task": "do it", "provider": "gemini", "primary": "gemini", "workspace": tmp}, server
+                {"task": "do it", "provider": "agy", "primary": "agy", "workspace": tmp}, server
             )
-        self.assertEqual(task["provider"], "gemini")
-        self.assertEqual(task["primary"], "gemini")
+        self.assertEqual(task["provider"], "agy")
+        self.assertEqual(task["primary"], "agy")
 
-    def test_invalid_provider_error_message_lists_gemini(self):
+    def test_invalid_provider_error_message_lists_agy(self):
         # Regression (structure audit): the error message used to be a
         # second hardcoded string ("auto, codex, claude") that fell out of
-        # sync with PROVIDERS itself once gemini was added -- telling a
-        # caller gemini wasn't allowed when it actually was. Now built
+        # sync with PROVIDERS itself once agy was added -- telling a
+        # caller agy wasn't allowed when it actually was. Now built
         # from PROVIDERS directly, so it can't drift again.
         server = self._fake_server([Path(".")])
         with self.assertRaises(ValueError) as ctx:
             rhs.normalize_task({"task": "do it", "provider": "not-a-real-provider"}, server)
-        self.assertIn("gemini", str(ctx.exception))
+        self.assertIn("agy", str(ctx.exception))
 
     def test_relative_workspace_resolves_against_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:
