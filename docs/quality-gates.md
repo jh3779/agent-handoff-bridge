@@ -17,8 +17,8 @@ Each rule is enforced at up to three layers:
   `scripts/install_git_hooks.sh` has been run. Opt-in per clone.
 - **CI**: `.github/workflows/check.yml` runs `branch-name` (pull requests) and
   `handoff_bridge.py check` on Ubuntu, macOS and Windows for every pull request
-  and push to `main`; see "CI History" below. It is not a required status check
-  on `main`.
+  and push to `main`; see "CI History" below. All four of its jobs are required
+  status checks on `main`.
 
 Run `scripts/install_git_hooks.sh` once per clone to get the local-hook
 layer; see [Platform Setup](platform-setup.md).
@@ -51,9 +51,13 @@ CI was removed once and has been partly restored:
   cargo build --manifest-path src-tauri/Cargo.toml
   ```
 
-- **Branch protection on `main`** is applied (pull request required, enforced
-  for admins, no force-push or deletion) but requires no status checks; adding
-  `check (…)` as required checks is a separate decision.
+- **Branch protection on `main`** (pull request required, enforced for admins,
+  no force-push or deletion) requires these status checks again as of
+  2026-10-28: `branch-name`, `check (ubuntu-latest, py3.11)`,
+  `check (macos-latest, py3.11)` and `check (windows-latest, py3.11)` (not
+  "up to date" strict). A job renamed in `check.yml` must be renamed in the
+  protection settings too, or merges are blocked waiting for a check that no
+  longer exists.
 - **The review bot** (`review-bot-notify`, `plan-bot-events`) does not depend
   on `check.yml`.
 

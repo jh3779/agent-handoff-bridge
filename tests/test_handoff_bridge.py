@@ -994,6 +994,73 @@ class UsageTokenCountsTests(unittest.TestCase):
         self.assertEqual(hb.estimate_tokens(5), 2)
 
 
+class WriteLockBusyTests(unittest.TestCase):
+    """Windows reports a lock file another holder is deleting as
+    PermissionError, which failed concurrent Web UI requests with a 500 (found by
+    the Windows CI run). It is retried briefly there, but a lasting
+    PermissionError must surface instead of waiting out a long lock timeout."""
+
+    def _lock(self, timeout=3600.0):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return hb.WriteLock(Path(tmp.name) / ".write.lock", timeout=timeout)
+
+    @staticmethod
+    def _clock(step):
+        ticks = iter(i * step for i in range(10_000))
+        return lambda: next(ticks)
+
+    def _patched(self, errors, open_side_effect, step=0.1):
+        return (
+            mock.patch.object(hb, "TRANSIENT_LOCK_ERRORS", errors),
+            mock.patch.object(hb.os, "open", side_effect=open_side_effect),
+            mock.patch.object(hb.time, "sleep"),
+            mock.patch.object(hb.time, "monotonic", side_effect=self._clock(step)),
+        )
+
+    def test_a_brief_permission_error_is_retried_until_the_lock_is_free(self):
+        real_open = os.open
+        calls = {"n": 0}
+
+        def flaky(path, flags, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise PermissionError(13, "Permission denied")
+            return real_open(path, flags, *args, **kwargs)
+
+        patches = self._patched((PermissionError,), flaky)
+        with patches[0], patches[1], patches[2], patches[3]:
+            with self._lock():
+                pass
+        self.assertEqual(calls["n"], 3)
+
+    def test_a_lasting_permission_error_is_raised_not_waited_out(self):
+        always = PermissionError(13, "Permission denied")
+        patches = self._patched((PermissionError,), always, step=0.5)
+        with patches[0], patches[1] as opened, patches[2], patches[3]:
+            with self.assertRaises(PermissionError):
+                with self._lock(timeout=3600.0):
+                    pass
+        # 2.0s of budget at 0.5s per tick: a handful of attempts, not thousands.
+        self.assertLess(opened.call_count, 10)
+
+    def test_where_permission_errors_are_not_transient_they_fail_immediately(self):
+        patches = self._patched((), PermissionError(13, "Permission denied"))
+        with patches[0], patches[1] as opened, patches[2], patches[3]:
+            with self.assertRaises(PermissionError):
+                with self._lock():
+                    pass
+        self.assertEqual(opened.call_count, 1)
+
+    def test_a_held_lock_still_times_out_with_the_cause_attached(self):
+        patches = self._patched((), FileExistsError(17, "exists"), step=1.0)
+        with patches[0], patches[1], patches[2], patches[3]:
+            with self.assertRaises(TimeoutError) as raised:
+                with self._lock(timeout=3.0):
+                    pass
+        self.assertIsInstance(raised.exception.__cause__, FileExistsError)
+
+
 class ParseCliArgsTests(unittest.TestCase):
     """The docs write `run codex --execute "text"`; Python 3.11's argparse
     rejected it (optional positional after an option), so main() goes through

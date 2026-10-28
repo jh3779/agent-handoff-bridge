@@ -12,7 +12,12 @@
 - **CI: `handoff_bridge.py check` runs on Ubuntu, macOS and Windows again**
   (`.github/workflows/check.yml`; free now that the repository is public). The
   earlier "Actions minutes ran out" note applied to the private-repository
-  period. See [Quality Gates](quality-gates.md#ci-history).
+  period. See [Quality Gates](quality-gates.md#ci-history). `main` requires
+  those checks to pass before a pull request can merge.
+- **Fixed (Windows): `WriteLock` failed when the lock file was being deleted.**
+  Windows raises `PermissionError`, not `FileExistsError`, in that case, so
+  concurrent Web UI requests could crash a handler thread. It is retried briefly
+  now (2 seconds); a lasting permission error is raised as it is.
 - **New: `handoff_bridge.py stats` (and `/stats` in `chat`).** Every run now
   records its wall time (`duration_seconds`, also shown in `.handoff/current.md`),
   and `stats` summarizes a workspace's history per provider: runs, ok versus
