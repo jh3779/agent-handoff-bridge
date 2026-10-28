@@ -1016,6 +1016,16 @@ class ParseCliArgsTests(unittest.TestCase):
     def test_chat_provider_after_an_option(self):
         self.assertEqual(self._parse("chat", "--full-prompt", "claude").provider, "claude")
 
+    def test_chat_without_a_provider_defaults_to_auto(self):
+        self.assertEqual(self._parse("chat").provider, "auto")
+        self.assertEqual(self._parse("chat", "--full-prompt").provider, "auto")
+
+    def test_a_second_chat_provider_never_replaces_the_first(self):
+        # chat codex --full-prompt claude must be rejected, not become claude.
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            self._parse("chat", "codex", "--full-prompt", "claude")
+        self.assertEqual(raised.exception.code, 2)
+
     def test_an_unknown_extra_argument_is_still_an_error(self):
         for argv in (
             ("run", "codex", "--execute", "a", "b"),
@@ -1073,11 +1083,12 @@ class ChatReplTests(unittest.TestCase):
         return code, "\n".join(output)
 
     def test_parser_defaults(self):
-        args = hb.build_parser().parse_args(["chat"])
+        parser = hb.build_parser()
+        args = hb.parse_cli_args(parser, ["chat"])
         self.assertEqual(args.provider, "auto")
         self.assertTrue(args.auto_fallback)
         self.assertFalse(args.full_prompt)
-        self.assertFalse(hb.build_parser().parse_args(["chat", "--no-auto-fallback"]).auto_fallback)
+        self.assertFalse(hb.parse_cli_args(parser, ["chat", "--no-auto-fallback"]).auto_fallback)
 
     def test_a_message_runs_the_provider_and_shows_reply_and_token_line(self):
         code, output = self._chat(["fix the bug", "/exit"])

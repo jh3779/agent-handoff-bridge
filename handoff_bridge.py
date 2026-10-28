@@ -2187,7 +2187,7 @@ def read_chat_message(input_fn: "Any") -> str:
 
 
 def chat_command(args: argparse.Namespace, input_fn: "Any" = input, out: "Any" = print) -> int:
-    session = ChatSession(args.provider, args.auto_fallback, args.full_prompt, args.model, args.timeout_seconds)
+    session = ChatSession(args.provider or "auto", args.auto_fallback, args.full_prompt, args.model, args.timeout_seconds)
     try:
         import readline  # noqa: F401  (line editing and history; unavailable on Windows)
     except ImportError:
@@ -2475,7 +2475,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.set_defaults(func=run_command)
 
     p_chat = sub.add_parser("chat", help="Interactive terminal chat that runs providers through the bridge.")
-    p_chat.add_argument("provider", nargs="?", choices=("auto",) + PROVIDERS, default="auto")
+    # default None (not "auto") so parse_cli_args() can tell an omitted provider
+    # from an explicit one; it turns None into "auto".
+    p_chat.add_argument("provider", nargs="?", choices=("auto",) + PROVIDERS, default=None)
     p_chat.add_argument(
         "--auto-fallback",
         action=argparse.BooleanOptionalAction,
@@ -2530,11 +2532,13 @@ def parse_cli_args(parser: argparse.ArgumentParser, argv: list[str] | None) -> a
         if args.command == "run" and not args.prompt:
             args.prompt = value
             return args
-        if args.command == "chat" and value in ("auto",) + PROVIDERS:
+        if args.command == "chat" and args.provider is None and value in ("auto",) + PROVIDERS:
             args.provider = value
             return args
     if extras:
         parser.error("unrecognized arguments: " + " ".join(extras))
+    if args.command == "chat" and args.provider is None:
+        args.provider = "auto"
     return args
 
 
