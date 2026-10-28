@@ -994,6 +994,55 @@ class UsageTokenCountsTests(unittest.TestCase):
         self.assertEqual(hb.estimate_tokens(5), 2)
 
 
+class WriteLockBusyTests(unittest.TestCase):
+    """Windows reports a lock file another holder is deleting as
+    PermissionError, which failed concurrent Web UI requests with a 500 (found by
+    the Windows CI run); there it must be retried like FileExistsError."""
+
+    def _lock(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return hb.WriteLock(Path(tmp.name) / ".write.lock", timeout=2.0)
+
+    def _flaky_open(self, error):
+        real_open = os.open
+        calls = {"n": 0}
+
+        def fake_open(path, flags, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise error
+            return real_open(path, flags, *args, **kwargs)
+
+        return fake_open, calls
+
+    def test_busy_errors_are_retried_until_the_lock_is_free(self):
+        fake_open, calls = self._flaky_open(PermissionError(13, "Permission denied"))
+        with mock.patch.object(hb, "LOCK_BUSY_ERRORS", (FileExistsError, PermissionError)):
+            with mock.patch.object(hb.os, "open", side_effect=fake_open), mock.patch.object(hb.time, "sleep"):
+                with self._lock():
+                    pass
+        self.assertEqual(calls["n"], 3)
+
+    def test_without_windows_semantics_permission_errors_are_not_swallowed(self):
+        fake_open, _ = self._flaky_open(PermissionError(13, "Permission denied"))
+        with mock.patch.object(hb, "LOCK_BUSY_ERRORS", (FileExistsError,)):
+            with mock.patch.object(hb.os, "open", side_effect=fake_open), self.assertRaises(PermissionError):
+                with self._lock():
+                    pass
+
+    def test_a_lock_that_never_frees_times_out_with_the_cause_attached(self):
+        lock = self._lock()
+        lock.timeout = 0.0
+        with mock.patch.object(hb, "LOCK_BUSY_ERRORS", (FileExistsError, PermissionError)):
+            with mock.patch.object(hb.os, "open", side_effect=PermissionError(13, "denied")), mock.patch.object(
+                hb.time, "sleep"
+            ):
+                with self.assertRaises(TimeoutError) as raised:
+                    lock.__enter__()
+        self.assertIsInstance(raised.exception.__cause__, PermissionError)
+
+
 class ParseCliArgsTests(unittest.TestCase):
     """The docs write `run codex --execute "text"`; Python 3.11's argparse
     rejected it (optional positional after an option), so main() goes through

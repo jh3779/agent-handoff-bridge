@@ -367,6 +367,16 @@ def read_workspace_or_bridge(rel_path: str, default: str = "") -> str:
     return default
 
 
+# What os.open(O_CREAT | O_EXCL) raises while another holder has the lock file.
+# On Windows a lock file that is being deleted (or is still open) by the
+# previous holder reports PermissionError (EACCES), not FileExistsError, so
+# that is a "busy, retry" signal there too. On POSIX PermissionError stays a
+# real error (unwritable directory) and is raised immediately.
+LOCK_BUSY_ERRORS: tuple[type[OSError], ...] = (
+    (FileExistsError, PermissionError) if os.name == "nt" else (FileExistsError,)
+)
+
+
 class WriteLock:
     """Cross-process advisory lock for shared handoff files.
 
@@ -388,9 +398,9 @@ class WriteLock:
             try:
                 self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 return self
-            except FileExistsError:
+            except LOCK_BUSY_ERRORS as exc:
                 if time.monotonic() > deadline:
-                    raise TimeoutError(f"timed out waiting for handoff write lock: {self.path}")
+                    raise TimeoutError(f"timed out waiting for handoff write lock: {self.path}") from exc
                 time.sleep(0.05)
 
     def __exit__(self, *exc_info: Any) -> None:
