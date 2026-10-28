@@ -4542,3 +4542,38 @@ tag" rule by construction rather than by discipline.
   `agy --dangerously-skip-permissions` and `--sandbox` unverified against a real
   run, Web UI has no pre-run banner for allow-all agy.
 - **Blocked**: nothing; waiting on the installer build.
+
+### 2026-10-28 — v0.5.1 released (supersedes the mid-release checkpoint above)
+
+- **Target**: Claude Code CLI (Sonnet 5.5), repo-level (release).
+- **Changed**: `v0.5.1` is published (https://github.com/jh3779/agent-handoff-bridge/releases/tag/v0.5.1),
+  tag `42331ed` (squash-merge of #102). Installers came from run 40686616380
+  (3 OSes, all succeeded). Assets: `agent-handoff-bridge-{macos,windows}.zip`
+  (built from the tagged tree, both report 0.5.1), `latest.json`, `.dmg`,
+  `agent-handoff-bridge.app.tar.gz` + `.sig`, nsis `-setup.exe`, `.AppImage`.
+  `.msi`/`.deb`/`.rpm` were built but are not attached. The release body carries
+  the v0.5.1 notes (incl. the OS-level unsigned-installer warning) plus a
+  paragraph on what was and was not verified. This PR also points the README /
+  README.ko download links at v0.5.1.
+- **Verified**: publish gate passed before `latest.json` was made -- the macOS
+  `.app.tar.gz` unpacked in a scratch dir (not installed): bundle 0.5.1,
+  ad-hoc signed, the 4 sidecars ran, and the `-server` sidecar (temp HOME)
+  served `/` (200) and `/api/providers` (codex, claude, agy detected). After
+  publishing: the three `latest.json` URLs and the three README download URLs
+  respond (HTTP 206 to a range request), and
+  `releases/latest/download/latest.json` returns the same 0.5.1 manifest as the
+  one uploaded. All required CI checks (branch-name + `check` on ubuntu/macOS/
+  Windows, Python 3.11) passed on #102.
+- **Not verified**: launching the desktop GUI, the titlebar update badge, a
+  provider chat round trip, the Windows and Linux installers and the Windows
+  source zip being run, and the minisign signatures in `latest.json` checked
+  independently. If a real install is broken, publish a new patch version; do
+  not replace the v0.5.1 assets.
+- **Remaining**: a manual install of the v0.5.1 build on a real machine
+  (macOS `.dmg`, then confirm the update badge and a chat round trip);
+  `AGENTS.md`/`CLAUDE.md` dedupe; `release-notes.ko.md` behind;
+  `rust-build`/`sidecar-build` not automatic; `agy --dangerously-skip-permissions`
+  and `--sandbox` unverified against a real run; no Web UI pre-run banner for
+  allow-all agy.
+- **Blocked**: nothing. **Next**: the manual install check above, then pick
+  the next feature (OpenCode as a provider was researched and deferred).
