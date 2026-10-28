@@ -97,9 +97,11 @@ class AugmentPathForGuiLaunchTests(unittest.TestCase):
         fake_result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="__AHB_PATH__/opt/homebrew/bin:/usr/bin:/bin__AHB_PATH__\n"
         )
+        # The function only does anything on macOS, where os.pathsep is ":";
+        # pin it so this also passes on a Windows test host (issue #84).
         with mock.patch.object(webui.sys, "platform", "darwin"), mock.patch.object(
-            webui.subprocess, "run", return_value=fake_result
-        ) as run:
+            webui.os, "pathsep", ":"
+        ), mock.patch.object(webui.subprocess, "run", return_value=fake_result) as run:
             webui.augment_path_for_gui_launch()
         run.assert_called_once()
         # New entry appended; already-present entries not duplicated.

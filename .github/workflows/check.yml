@@ -1,0 +1,47 @@
+name: Check
+
+# The no-token validation suite (`handoff_bridge.py check`) on all three
+# desktop OSes. The repo is public, so GitHub-hosted runner minutes are free
+# (the earlier CI was removed while it was private and the quota ran out).
+# fail-fast is off on purpose: one OS failing must not hide the others' results.
+# Installer builds stay manual -- see ci.yml.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  branch-name:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check branch naming convention
+        # github.head_ref is attacker-controlled; pass it through env so it
+        # reaches the script as an inert argv value, never as shell text.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: python3 scripts/check_branch_name.py "$HEAD_REF"
+
+  check:
+    name: check (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the full no-token validation suite
+        run: python3 handoff_bridge.py check
