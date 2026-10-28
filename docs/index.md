@@ -26,6 +26,8 @@ context.
 - [Platform Setup](platform-setup.md): macOS and Windows launcher setup.
 - [Architecture](architecture.md): how the files and command flows fit
   together.
+- [How It Works](how-it-works.md): 한국어 로직 설명서 — 명령 한 번이 실행되는
+  순서, 프롬프트 구성, 핸드오프 판정과 자동 전환, 상태 파일과 동시성, 웹 UI·앱 계층.
 - [Codebase Review](codebase-review.md): a point-in-time code review of the
   whole project — architecture, code quality, and concrete findings.
 - [Korean Operator Guide](ko-operator-guide.md): Korean setup and instruction
