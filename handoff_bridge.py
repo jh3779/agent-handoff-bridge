@@ -1713,6 +1713,18 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
     state["active_provider"] = provider
     state["instruction_type"] = args.instruction_type
     full_prompt = bool(getattr(args, "full_prompt", False))
+    # A run started while the previous run's handoff is still unresolved, on a
+    # different provider, is the bridge's own notion of "taking over" (it is
+    # what choose_auto_provider() and auto-fallback act on). Remember which run
+    # it took over so stats can count real hops instead of adjacent records.
+    handoff_from = None
+    history_so_far = state.get("history") or []
+    if (
+        history_so_far
+        and state.get("status") == "handoff_needed"
+        and state.get("last_provider") not in (None, provider)
+    ):
+        handoff_from = history_so_far[-1].get("run_dir")
     if args.execute:
         moved = archive_old_current_entries(state)
         if moved:
@@ -1820,6 +1832,7 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         "instruction_type": state.get("instruction_type") or "continue",
         "exit_code": exit_code,
         "duration_seconds": duration_seconds,
+        **({"handoff_from": handoff_from} if handoff_from else {}),
         **({"permissions": "allow-all"} if allow_all else {}),
         "session_id": session_id,
         "usage": parsed.get("usage"),
@@ -2142,10 +2155,20 @@ def compute_stats(history: list[dict[str, Any]]) -> dict[str, Any]:
     Claude's does not), and no price is applied: subscription quota and API
     token prices are different units.
 
-    "per ok run" divides the spend of ALL runs (failed ones cost tokens and
-    time too) by the number of ok runs, and is None when no run reported the
-    figure. Records written before duration_seconds existed simply do not
-    count toward the time figures."""
+    "per ok run" is computed over the *measured* runs only: the tokens (or
+    seconds) of the runs that reported them, divided by the number of ok runs
+    among those same runs. Dividing measured spend by ALL ok runs would
+    understate the cost whenever some runs (older records, a failed run whose
+    CLI printed no usage) have no figure. `tokens_complete` / `seconds_complete`
+    say whether every run of the provider was measured; when not, the figure is
+    only an estimate from the measured subset. It is None when no ok run is in
+    that subset.
+
+    Handoff hops are the records the bridge itself marked `handoff_from` --
+    a run started while the previous run's handoff was still unresolved and
+    on a different provider. Records written before that field existed are
+    not counted, because adjacent records alone do not show that one run
+    actually took over the other's task."""
     providers: dict[str, dict[str, Any]] = {}
     for record in history:
         name = str(record.get("provider") or "?")
@@ -2158,35 +2181,41 @@ def compute_stats(history: list[dict[str, Any]]) -> dict[str, Any]:
                 "reasons": {},
                 "tokens": {"input": 0, "output": 0, "cached": 0},
                 "runs_with_usage": 0,
+                "ok_with_usage": 0,
                 "seconds": 0.0,
                 "runs_timed": 0,
+                "ok_timed": 0,
             },
         )
+        is_ok = not record.get("handoff_needed")
         entry["runs"] += 1
-        if record.get("handoff_needed"):
+        if is_ok:
+            entry["ok"] += 1
+        else:
             entry["handoffs"] += 1
             label = str(record.get("reason") or "unknown").split(":", 1)[0].strip() or "unknown"
             entry["reasons"][label] = entry["reasons"].get(label, 0) + 1
-        else:
-            entry["ok"] += 1
         counts = usage_token_counts(record.get("usage"))
         if counts:
             entry["runs_with_usage"] += 1
+            entry["ok_with_usage"] += int(is_ok)
             for key, value in counts.items():
                 entry["tokens"][key] += value
         duration = record.get("duration_seconds")
         if isinstance(duration, (int, float)) and not isinstance(duration, bool):
             entry["seconds"] += float(duration)
             entry["runs_timed"] += 1
+            entry["ok_timed"] += int(is_ok)
     for entry in providers.values():
-        ok = entry["ok"]
         billed = entry["tokens"]["input"] + entry["tokens"]["output"]
-        entry["tokens_per_ok_run"] = round(billed / ok) if ok and entry["runs_with_usage"] else None
-        entry["seconds_per_ok_run"] = round(entry["seconds"] / ok, 1) if ok and entry["runs_timed"] else None
+        entry["tokens_per_ok_run"] = round(billed / entry["ok_with_usage"]) if entry["ok_with_usage"] else None
+        entry["seconds_per_ok_run"] = round(entry["seconds"] / entry["ok_timed"], 1) if entry["ok_timed"] else None
+        entry["tokens_complete"] = entry["runs_with_usage"] == entry["runs"]
+        entry["seconds_complete"] = entry["runs_timed"] == entry["runs"]
         entry["seconds"] = round(entry["seconds"], 1)
     hops = hops_ok = 0
-    for previous, record in zip(history, history[1:]):
-        if previous.get("handoff_needed") and record.get("provider") != previous.get("provider"):
+    for record in history:
+        if record.get("handoff_from"):
             hops += 1
             if not record.get("handoff_needed"):
                 hops_ok += 1
@@ -2195,7 +2224,8 @@ def compute_stats(history: list[dict[str, Any]]) -> dict[str, Any]:
 
 STATS_NOTE = (
     "ok = no handoff signal detected, not proof the work is correct. Tokens are as each CLI reports them "
-    "(not comparable across providers; no prices applied)."
+    "(not comparable across providers; no prices applied). \"per ok run\" uses only the runs that were "
+    "measured; \"partial\" means some runs had no figure, so it is an estimate."
 )
 
 
@@ -2219,16 +2249,20 @@ def format_stats(stats: dict[str, Any]) -> str:
             lines.append(f"  time ({entry['runs_timed']}/{entry['runs']} runs timed): {entry['seconds']}s total")
         per = []
         if entry["tokens_per_ok_run"] is not None:
-            per.append(f"{entry['tokens_per_ok_run']:,} in+out tokens")
+            partial = "" if entry["tokens_complete"] else f" (partial: {entry['runs_with_usage']}/{entry['runs']} runs)"
+            per.append(f"{entry['tokens_per_ok_run']:,} in+out tokens{partial}")
         if entry["seconds_per_ok_run"] is not None:
-            per.append(f"{entry['seconds_per_ok_run']}s")
+            partial = "" if entry["seconds_complete"] else f" (partial: {entry['runs_timed']}/{entry['runs']} runs)"
+            per.append(f"{entry['seconds_per_ok_run']}s{partial}")
         if per:
-            lines.append("  per ok run (all runs' spend / ok runs): " + ", ".join(per))
+            lines.append("  per ok run (measured runs' spend / their ok runs): " + ", ".join(per))
     lines.append("")
     if stats["handoff_hops"]:
-        lines.append(f"Handoffs: {stats['handoff_hops']} hop(s), {stats['handoff_hops_ok']} ended without another handoff")
+        lines.append(
+            f"Handoffs: {stats['handoff_hops']} linked hop(s), {stats['handoff_hops_ok']} ended without another handoff"
+        )
     else:
-        lines.append("Handoffs: none recorded")
+        lines.append("Handoffs: no linked hops recorded")
     lines.append(f"Note: {STATS_NOTE}")
     return "\n".join(lines)
 
