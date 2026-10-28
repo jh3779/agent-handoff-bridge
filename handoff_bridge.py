@@ -619,6 +619,59 @@ def chdir_workspace(path: str, create: bool = False) -> Path:
     return workspace
 
 
+# Claude Code loads project skills from `.claude/skills/<name>/SKILL.md` and does
+# NOT read `.agents/skills/` (verified against a real `claude -p` run on
+# 2026-10-28: a skill under .agents/skills was reported unavailable, and became
+# available once `.claude/skills/<name>` was a symlink to it; the symlink form
+# is documented at code.claude.com/docs/en/skills). Codex, Antigravity (agy)
+# and OpenCode read `.agents/skills/`. So the bridge's own skills keep ONE
+# original under `.agents/skills/` and get a relative symlink under
+# `.claude/skills/`.
+SHARED_SKILLS_DIR = Path(".agents/skills")
+CLAUDE_SKILLS_DIR = Path(".claude/skills")
+BRIDGE_SKILL_NAMES = tuple(
+    sorted({PurePosixPath(target).parts[2] for _, target in INSTALL_FILES if target.startswith(".agents/skills/")})
+)
+
+
+def link_claude_skills(force: bool = False) -> list[tuple[str, str]]:
+    """Make `.claude/skills/<name>` a relative symlink to
+    `.agents/skills/<name>` for each skill this bridge installs. Never
+    touches a skill the user owns: an existing real directory (or a symlink
+    that points somewhere else, unless `force`) is left as it is. Where
+    symlinks cannot be created (Windows without developer mode), the skill is
+    copied instead -- a second copy that `install --force` refreshes."""
+    results: list[tuple[str, str]] = []
+    for name in BRIDGE_SKILL_NAMES:
+        source = SHARED_SKILLS_DIR / name
+        link = CLAUDE_SKILLS_DIR / name
+        label = str(PurePosixPath(*link.parts))
+        if not (source / "SKILL.md").is_file():
+            continue
+        wanted = os.path.relpath(source.resolve(), link.parent.resolve())
+        if os.path.lexists(link):
+            if link.is_symlink():
+                points_at_source = link.exists() and link.resolve() == source.resolve()
+                if points_at_source:
+                    results.append((label, "ok"))
+                    continue
+                if not force:
+                    results.append((label, "skipped"))
+                    continue
+                link.unlink()
+            else:
+                results.append((label, "skipped"))
+                continue
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(wanted, link, target_is_directory=True)
+            results.append((label, "linked"))
+        except (OSError, NotImplementedError):
+            shutil.copytree(source, link)
+            results.append((label, "copied"))
+    return results
+
+
 def install_standard_files(force: bool = False) -> list[tuple[str, str]]:
     ensure_handoff_dir()
     results = []
@@ -635,6 +688,7 @@ def install_standard_files(force: bool = False) -> list[tuple[str, str]]:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         results.append((target_rel, "updated" if existed else "installed"))
+    results.extend(link_claude_skills(force=force))
     if not CURRENT_FILE.exists():
         CURRENT_FILE.write_text(
             f"""# Handoff Packet

@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- **Fixed: the bridge's `handoff-status` skill was invisible to Claude Code.**
+  Claude Code loads skills from `.claude/skills/` and does not read
+  `.agents/skills/` (verified with a real `claude -p` run; the old docs claimed it
+  did). `install` now also creates `.claude/skills/handoff-status` as a relative
+  symlink to the single original under `.agents/skills/` (a copy where symlinks
+  are unavailable). It never replaces a skill directory you own. Re-run
+  `handoff_bridge.py install` in existing workspaces to get the link.
+
 - **Changed: the third provider is now Antigravity CLI (`agy`); Gemini CLI
   support is removed.** Google stopped serving Gemini CLI to Google AI Pro,
   Ultra and free individual accounts on 2026-06-18 and replaced it with

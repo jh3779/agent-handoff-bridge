@@ -161,18 +161,35 @@ store: [Web UI Chat Storage](webui-chat-storage.md).
   tunnel.
 - Add project-specific portable Agent Skills under `.agents/skills/<name>/
   SKILL.md` — see [Portable Agent Skill](#portable-agent-skill-agentsskills)
-  below for why this directory (not `.claude/skills/` alone) reaches every
-  provider this bridge supports.
+  below for how one original under this directory reaches every provider
+  this bridge supports (Claude Code needs a `.claude/skills/` symlink).
 
 ## Portable Agent Skill (`.agents/skills/`)
 
 `agentskills.io`'s `SKILL.md` format (originally Claude Code's, now an open
-standard) is discovered natively by all three CLIs this bridge supports —
-Codex CLI reads `.agents/skills/` as its primary location, Claude Code reads
-`.claude/skills/` and also discovers `.agents/skills/`, and Antigravity CLI
-reads `.agents/skills/` as workspace-level skills (migrated from `.gemini/skills/`). This
-means a single `SKILL.md` under `.agents/skills/<name>/` reaches every
-provider without any bridge-side translation.
+standard) is read by all the CLIs this bridge supports, but not from one common
+directory:
+
+| CLI | Reads | Status |
+|---|---|---|
+| Codex CLI | `.agents/skills/` | Documented |
+| Antigravity CLI (`agy`) | `.agents/skills/` | Documented (migration page) |
+| OpenCode (not a provider) | `.agents/skills/`, `.claude/skills/`, `.opencode/skills/` | Documented |
+| **Claude Code** | **`.claude/skills/` only** | **Verified 2026-10-28**: a skill under `.agents/skills/` was reported unavailable; the same skill reached through a `.claude/skills/<name>` symlink was available. Its docs list only `.claude/skills/` and say a skill entry "can be a symlink to a directory elsewhere" |
+
+An earlier version of this section said Claude Code also discovers
+`.agents/skills/`; that was wrong, and the bridge's own `handoff-status` skill was
+therefore invisible to Claude Code in installed workspaces until this fix.
+
+The minimal structure that keeps **one original**: the skill lives under
+`.agents/skills/<name>/`, and `.claude/skills/<name>` is a relative symlink to it
+(`link_claude_skills()`, run by `install`; this repo's own `handoff-status` is
+linked the same way). It only ever links the skills the bridge installs, never
+replaces a directory or a differing symlink the user owns (a differing symlink is
+replaced only with `install --force`), and falls back to a copy where symlinks are
+not permitted (Windows without developer mode) — that copy is refreshed by
+`install --force`. Git clones on Windows without symlink support check a link out
+as a plain text file; re-run `install` there.
 
 `install_standard_files()` ships `.agents/skills/handoff-status/SKILL.md`
 (2026-09-02) — a skill that teaches whichever CLI is running to read

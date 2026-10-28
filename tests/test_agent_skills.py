@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Unit tests for this repo's own portable Agent Skill(s)
-(.agents/skills/, the agentskills.io open standard Codex CLI/Claude Code/
-Gemini CLI all discover -- see docs/research.md's provider-selection
-discussion). Covers the actual SKILL.md frontmatter contract (required
+(.agents/skills/, the agentskills.io open standard Codex CLI, Antigravity
+CLI and OpenCode read; Claude Code reads .claude/skills/ instead, so each
+skill also gets a symlink there -- see docs/architecture.md "Portable Agent
+Skill"). Covers the actual SKILL.md frontmatter contract (required
 fields, naming/length constraints) and this project's own three-manifest
 consistency convention (INSTALL_FILES/REQUIRED_FILES/COMMON_FILES must
 all agree, per the 2026-08-20 structure audit).
@@ -103,6 +104,91 @@ class HandoffStatusSkillManifestConsistencyTests(unittest.TestCase):
 
     def test_registered_in_package_platforms_common_files(self):
         self.assertIn(ROOT / SKILL_REL_PATH, pp.package_files())
+
+
+
+class ClaudeSkillsLinkTests(unittest.TestCase):
+    """Claude Code does not read .agents/skills/ (verified against a real
+    run, 2026-10-28), so every skill the bridge installs is also linked under
+    .claude/skills/."""
+
+    def setUp(self):
+        import os
+        import tempfile
+
+        self._orig = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig)
+        self.link = Path(".claude/skills/handoff-status")
+
+    def _install(self, force=False):
+        return dict(hb.install_standard_files(force=force))
+
+    def test_this_repo_links_its_own_skill_for_claude_code(self):
+        link = ROOT / ".claude" / "skills" / "handoff-status"
+        if not link.is_symlink():
+            self.skipTest("symlinks unavailable in this checkout")
+        self.assertEqual(link.resolve(), (ROOT / ".agents" / "skills" / "handoff-status").resolve())
+        self.assertTrue((link / "SKILL.md").is_file())
+
+    def test_bridge_skill_names_come_from_the_install_list(self):
+        self.assertEqual(hb.BRIDGE_SKILL_NAMES, ("handoff-status",))
+
+    def test_install_creates_a_relative_symlink_to_the_single_original(self):
+        results = self._install()
+        self.assertEqual(results[".claude/skills/handoff-status"], "linked")
+        self.assertTrue(self.link.is_symlink())
+        self.assertFalse(Path(__import__("os").readlink(self.link)).is_absolute())
+        self.assertEqual(self.link.resolve(), Path(".agents/skills/handoff-status").resolve())
+        self.assertTrue((self.link / "SKILL.md").is_file())
+
+    def test_install_is_idempotent(self):
+        self._install()
+        self.assertEqual(self._install()[".claude/skills/handoff-status"], "ok")
+        self.assertEqual(self._install(force=True)[".claude/skills/handoff-status"], "ok")
+
+    def test_a_real_directory_the_user_owns_is_never_replaced(self):
+        self.link.mkdir(parents=True)
+        (self.link / "SKILL.md").write_text("---\nname: handoff-status\ndescription: mine\n---\n", encoding="utf-8")
+        for force in (False, True):
+            self.assertEqual(self._install(force=force)[".claude/skills/handoff-status"], "skipped")
+            self.assertFalse(self.link.is_symlink())
+            self.assertIn("description: mine", (self.link / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_a_symlink_to_somewhere_else_is_kept_unless_forced(self):
+        Path("elsewhere/handoff-status").mkdir(parents=True)
+        Path("elsewhere/handoff-status/SKILL.md").write_text("x", encoding="utf-8")
+        self.link.parent.mkdir(parents=True)
+        import os
+        os.symlink("../../elsewhere/handoff-status", self.link, target_is_directory=True)
+        self.assertEqual(self._install()[".claude/skills/handoff-status"], "skipped")
+        self.assertIn("elsewhere", os.readlink(self.link))
+        self.assertEqual(self._install(force=True)[".claude/skills/handoff-status"], "linked")
+        self.assertEqual(self.link.resolve(), Path(".agents/skills/handoff-status").resolve())
+
+    def test_a_broken_symlink_is_repaired_with_force_and_otherwise_left_alone(self):
+        import os
+        self.link.parent.mkdir(parents=True)
+        os.symlink("../../nowhere", self.link, target_is_directory=True)
+        self.assertEqual(self._install()[".claude/skills/handoff-status"], "skipped")
+        self.assertEqual(self._install(force=True)[".claude/skills/handoff-status"], "linked")
+
+    def test_falls_back_to_a_copy_where_symlinks_are_unavailable(self):
+        from unittest import mock
+        with mock.patch.object(hb.os, "symlink", side_effect=OSError("symlinks not permitted")):
+            results = self._install()
+        self.assertEqual(results[".claude/skills/handoff-status"], "copied")
+        self.assertFalse(self.link.is_symlink())
+        self.assertTrue((self.link / "SKILL.md").is_file())
+
+    def test_only_the_bridges_own_skills_are_linked(self):
+        other = Path(".agents/skills/my-own-skill")
+        other.mkdir(parents=True)
+        (other / "SKILL.md").write_text("---\nname: my-own-skill\ndescription: x\n---\n", encoding="utf-8")
+        self._install()
+        self.assertFalse(Path(".claude/skills/my-own-skill").exists())
 
 
 if __name__ == "__main__":
