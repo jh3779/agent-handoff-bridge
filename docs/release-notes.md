@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.5.1 — 2026-10-28
+
 - **Fixed: `run <provider> --execute "text"` failed on Python 3.11.** Python
   3.11's argparse rejected an optional positional (the prompt, or `chat`'s
   provider) after an option with "unrecognized arguments", although the docs use

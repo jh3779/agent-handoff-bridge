@@ -147,6 +147,10 @@ class ClaudeSkillsLinkTests(unittest.TestCase):
 
     def test_this_repo_links_its_own_skill_for_claude_code(self):
         link = ROOT / ".claude" / "skills" / "handoff-status"
+        if not (ROOT / ".git").exists():
+            # The packaged source zips carry no .claude/ link: it only exists
+            # for developing this repo (install creates it in user workspaces).
+            self.skipTest("not a git checkout of this repo (e.g. an extracted release zip)")
         if not SYMLINKS_WORK:
             self.skipTest("this environment cannot create symlinks")
         self.assertTrue(link.is_symlink(), "run `handoff_bridge.py install` to relink .claude/skills/handoff-status")
