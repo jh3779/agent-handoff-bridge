@@ -769,7 +769,35 @@ class CompactPromptSizeTests(unittest.TestCase):
         Path("docs/shared-agent-contract.md").write_text("CUSTOM_CONTRACT_MARKER", encoding="utf-8")
         state = {"task": "t", "sessions": {}}
         self.assertIn("CUSTOM_CONTRACT_MARKER", hb.build_prompt("codex", state, "hi", full=True))
-        self.assertNotIn("CUSTOM_CONTRACT_MARKER", hb.build_prompt("codex", state, "hi"))
+        # A customised doc is sent as written even without --full-prompt.
+        self.assertIn("CUSTOM_CONTRACT_MARKER", hb.build_prompt("codex", state, "hi"))
+
+    def test_workspace_copies_identical_to_the_bundled_docs_stay_compact(self):
+        Path("docs").mkdir()
+        for rel in hb.PROTOCOL_DOC_PATHS:
+            Path(rel).write_text((hb.BRIDGE_ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
+        self.assertFalse(hb.protocol_docs_customized())
+        prompt = hb.build_prompt("codex", {"task": "t", "sessions": {}}, "hi")
+        self.assertIn("## Working Rules", prompt)
+
+    def test_crlf_line_endings_alone_do_not_count_as_customised(self):
+        Path("docs").mkdir()
+        for rel in hb.PROTOCOL_DOC_PATHS:
+            text = (hb.BRIDGE_ROOT / rel).read_text(encoding="utf-8").replace("\n", "\r\n")
+            Path(rel).write_bytes(text.encode("utf-8"))
+        self.assertFalse(hb.protocol_docs_customized())
+
+    def test_a_workspace_without_the_docs_stays_compact(self):
+        self.assertFalse(hb.protocol_docs_customized())
+
+    def test_an_extra_rule_in_the_verification_playbook_switches_to_full(self):
+        Path("docs").mkdir()
+        bundled = (hb.BRIDGE_ROOT / "docs/verification-playbook.md").read_text(encoding="utf-8")
+        Path("docs/verification-playbook.md").write_text(bundled + "\nRun ./company-check.sh before release.\n", encoding="utf-8")
+        self.assertTrue(hb.protocol_docs_customized())
+        prompt = hb.build_prompt("codex", {"task": "t", "sessions": {}}, "hi")
+        self.assertIn("Run ./company-check.sh before release.", prompt)
+        self.assertNotIn("## Working Rules", prompt)
 
     def test_protocol_summary_names_every_failure_label(self):
         for label in hb.HANDOFF_LABELS:
@@ -844,6 +872,51 @@ class ArchiveOldCurrentEntriesTests(unittest.TestCase):
         prompt = hb.build_prompt("codex", state, "second")
         self.assertIn("FRESH_ENTRY_MARKER", prompt)
         self.assertNotIn("## Run 399\n", prompt)
+
+    def test_an_offset_past_the_end_of_the_log_resends_instead_of_skipping_new_entries(self):
+        # Reproduces: archive, then the run is interrupted before state.json
+        # is saved, so the on-disk offset still points into the old, longer log.
+        hb.CURRENT_FILE.write_text("## Fresh\nFRESH_AFTER_INTERRUPT\n", encoding="utf-8")
+        state = {"task": "t", "sessions": {"codex": "s1"}, "prompt_context_offsets": {"codex": 100_000}}
+        prompt = hb.build_prompt("codex", state, "next")
+        self.assertIn("FRESH_AFTER_INTERRUPT", prompt)
+
+    def test_a_negative_or_non_integer_offset_is_treated_as_zero(self):
+        hb.CURRENT_FILE.write_text("## Entry\nENTRY_MARKER\n", encoding="utf-8")
+        for bad in (-5, "12", None):
+            state = {"task": "t", "sessions": {"codex": "s1"}, "prompt_context_offsets": {"codex": bad}}
+            self.assertIn("ENTRY_MARKER", hb.build_prompt("codex", state, "next"))
+
+    def test_run_provider_saves_the_shifted_offsets_before_calling_the_provider(self):
+        hb.CURRENT_FILE.write_text(self._big_log(), encoding="utf-8")
+        old_len = len(hb.CURRENT_FILE.read_text(encoding="utf-8"))
+        state = {"task": "t", "primary_provider": "claude", "status": "ready",
+                 "sessions": {"claude": "s1"}, "prompt_context_offsets": {"claude": old_len}}
+        hb.save_state(state)
+        seen = {}
+
+        def fake_run(command, **kwargs):
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+            # What an interruption right now would leave on disk.
+            seen["offset"] = json.loads(hb.STATE_FILE.read_text(encoding="utf-8"))["prompt_context_offsets"]["claude"]
+            seen["live_len"] = len(hb.CURRENT_FILE.read_text(encoding="utf-8"))
+            raise KeyboardInterrupt
+
+        args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                     timeout_seconds=0, model=None, instruction_type="continue")
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+            hb.subprocess, "run", side_effect=fake_run
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                hb.run_provider("claude", args, state)
+        self.assertLess(seen["offset"], old_len)
+        self.assertLessEqual(seen["offset"], seen["live_len"])
+
+    def test_the_archive_directory_is_not_git_ignored(self):
+        ignore_lines = (hb.BRIDGE_ROOT / ".handoff/.gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertNotIn("archive/", [line.strip() for line in ignore_lines])
+        self.assertNotIn("archive", [line.strip().rstrip("/") for line in ignore_lines])
 
     def test_an_offset_pointing_into_archived_text_clamps_to_zero(self):
         hb.CURRENT_FILE.write_text(self._big_log(), encoding="utf-8")

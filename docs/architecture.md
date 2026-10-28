@@ -84,16 +84,20 @@ provider's last turn.
 repository's own 283KB `current.md`, a handoff/cold-start prompt dropped from
 about 32,700 characters (~8,200 tokens) to about 8,800 (~2,200 tokens).
 `run --full-prompt` restores the previous behavior (the three docs inlined in
-full, plus a 20,000-character tail of the log) — use it if a workspace has
-customised those docs and the receiving provider must see their exact text.
+full, plus a 20,000-character tail of the log). Compact mode switches to full
+by itself when the workspace's copy of any of those three docs differs from the
+bundled one (a customised rule set must be sent as written), so the Web UI,
+desktop app, and remote server need no extra flag.
 
 **Log archiving.** `.handoff/current.md` is append-only, and an agent told to
 "read `.handoff/current.md`" opens the whole file regardless of what the prompt
 contains. Before each `--execute` run, once the file passes 60,000 characters
 the oldest entries move to `.handoff/archive/current-<UTC timestamp>.md`
-(git-ignored) and about 30,000 characters of the newest stay; the live file
-starts with a one-line pointer comment. Per-provider offsets in `state.json` are
-shifted by the same amount so continuation turns still see only new entries.
+(not git-ignored: it travels with the project like `current.md` does) and about
+30,000 characters of the newest stay; the live file starts with a one-line
+pointer comment. Per-provider offsets in `state.json` are shifted by the same
+amount and saved before the provider runs, and an offset that points past the end
+of the log is treated as 0, so continuation turns never skip new entries.
 
 ## Provider Selection
 

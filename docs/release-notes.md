@@ -10,15 +10,15 @@
   inlined in full, and the newest few whole `.handoff/current.md` entries
   (5,000 characters) instead of a 20,000-character tail. Measured on this
   repository's own log: about 8,200 tokens down to about 2,200. Turns that
-  resume a live session were already small and are unchanged. **If you
-  customised `docs/*.md` and need the exact text sent, use
-  `run --full-prompt`.**
+  resume a live session were already small and are unchanged. A workspace that
+  has customised any of the three protocol docs keeps getting them in full
+  automatically; `run --full-prompt` forces full mode.
 - **`.handoff/current.md` is archived when it grows large.** Once it passes
   60,000 characters, the oldest entries move to `.handoff/archive/` before the
   next `--execute` run and about 30,000 characters stay in place, so an agent
-  that opens the whole file no longer pays for a 280KB log. Nothing is deleted.
-  `.handoff/.gitignore` gained `archive/` — an existing install picks that up
-  with `install --force`, otherwise add the line yourself.
+  that opens the whole file no longer pays for a 280KB log. Nothing is deleted,
+  and the archive files are not git-ignored, so they are committed and shared
+  along with `current.md`.
 
 ## v0.5.0 — 2026-10-27
 

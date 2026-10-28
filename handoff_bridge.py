@@ -951,6 +951,40 @@ PROTOCOL_SUMMARY = """- Priority when instructions conflict: the user's latest i
   `docs/verification-playbook.md`; this summary is complete for ordinary tasks."""
 
 
+PROTOCOL_DOC_PATHS = (
+    "docs/agent-targeting-protocol.md",
+    "docs/shared-agent-contract.md",
+    "docs/verification-playbook.md",
+)
+
+
+def _normalized_doc_text(text: str) -> str:
+    return text.replace("\r\n", "\n").strip()
+
+
+def protocol_docs_customized() -> bool:
+    """True when this workspace carries its own version of any of the three
+    protocol docs (text differs from the copy bundled with the bridge).
+    PROTOCOL_SUMMARY only summarizes the *bundled* rules, so a workspace
+    that added its own rules (e.g. extra checks in
+    docs/verification-playbook.md -- a documented extension point) must
+    have the real text sent, on every surface (CLI, Web UI, desktop,
+    remote) without any flag having to be threaded through each of them."""
+    for rel in PROTOCOL_DOC_PATHS:
+        workspace_path = Path(rel)
+        bundled_path = BRIDGE_ROOT / rel
+        if not workspace_path.exists() or not bundled_path.exists():
+            continue
+        try:
+            workspace_text = workspace_path.read_text(encoding="utf-8")
+            bundled_text = bundled_path.read_text(encoding="utf-8")
+        except OSError:
+            return True
+        if _normalized_doc_text(workspace_text) != _normalized_doc_text(bundled_text):
+            return True
+    return False
+
+
 def build_prompt(
     provider: str, state: dict[str, Any], user_prompt: str, reason: str | None = None, full: bool = False
 ) -> str:
@@ -958,7 +992,9 @@ def build_prompt(
     `.handoff/current.md` entries (COMPACT_CURRENT_PROMPT_CHARS) and
     PROTOCOL_SUMMARY; `full=True` (`run --full-prompt`) restores the
     original behavior of inlining the three docs/ files in full plus a
-    MAX_CURRENT_FILE_PROMPT_CHARS tail of the log.
+    MAX_CURRENT_FILE_PROMPT_CHARS tail of the log. Compact mode switches
+    itself to full when the workspace has customised any of the three docs
+    (protocol_docs_customized()).
 
     `reason` is set only for a genuine handoff (this provider is being
     invoked *because* another one just hit quota/rate-limit/etc., or this
@@ -1004,6 +1040,8 @@ def build_prompt(
     from existing; the notice is a best-effort, in-prompt mitigation, not
     a guarantee.
     """
+    if not full and protocol_docs_customized():
+        full = True
     task = state.get("task") or user_prompt or "Continue the current handoff task."
     active_model = state.get("active_model") or "app-selected default"
     instruction_type = state.get("instruction_type") or "continue"
@@ -1018,6 +1056,11 @@ def build_prompt(
 
     resumed_session_id = (state.get("sessions") or {}).get(provider)
     prior_offset = (state.get("prompt_context_offsets") or {}).get(provider, 0)
+    if not isinstance(prior_offset, int) or prior_offset < 0 or prior_offset > len(full_current):
+        # A stale offset (log shortened by archiving, edited, or replaced
+        # since it was recorded) would slice to nothing and silently skip
+        # everything new; re-send what is there instead.
+        prior_offset = 0
     # Recorded unconditionally (both branches below), so whichever branch
     # runs this turn, the *next* continuation turn's delta starts from
     # here -- not just from whenever a continuation turn last happened to
@@ -1547,6 +1590,11 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
     if args.execute:
         moved = archive_old_current_entries(state)
         if moved:
+            # The shifted prompt_context_offsets must reach disk before the
+            # (possibly minutes-long) provider call: state is otherwise only
+            # saved after it, and an interruption in between would leave
+            # offsets pointing past the end of the now-shorter log.
+            save_state(state)
             print(f"Archived {moved} characters of older .handoff/current.md entries to {ARCHIVE_DIR}/")
     prompt = build_prompt(provider, state, user_prompt, reason, full=full_prompt)
     command = provider_command(provider, state, model_override_arg(args.model))

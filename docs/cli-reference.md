@@ -76,7 +76,8 @@ may spend provider tokens.
 By default the prompt is **compact**: a short rules summary plus the newest
 `.handoff/current.md` entries (see "Prompt Construction" in
 [Architecture](architecture.md)). Add `--full-prompt` to inline the three
-`docs/` protocol files in full and a 20,000-character log tail instead.
+`docs/` protocol files in full and a 20,000-character log tail instead. This
+happens automatically when the workspace has customised any of those files.
 
 ### Model Labels And Overrides
 
