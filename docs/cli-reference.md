@@ -79,6 +79,12 @@ By default the prompt is **compact**: a short rules summary plus the newest
 `docs/` protocol files in full and a 20,000-character log tail instead. This
 happens automatically when the workspace has customised any of those files.
 
+`run` and `chat` also take `--agy-allow-writes` (same as `HANDOFF_AGY_ALLOW_WRITES=1`):
+by default `agy` cannot write files or run commands in headless mode, and this
+opts in to passing `--dangerously-skip-permissions`, which approves every tool
+call. Read [Security Model § agy write access](security-model.md#agy-write-access-opt-in)
+first.
+
 ### Interactive Chat
 
 ```bash

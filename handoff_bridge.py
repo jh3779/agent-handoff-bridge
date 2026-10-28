@@ -722,6 +722,10 @@ def diagnose(_: argparse.Namespace) -> int:
     print(f"- codex auth: exit {codex_auth[0]} | {(codex_auth[1] or codex_auth[2])}")
     print(f"- claude auth: exit {claude_auth[0]} | {(claude_auth[1] or claude_auth[2])}")
     print("- agy auth: not checked (no free status command exists; run `agy` once interactively to sign in)")
+    if agy_allow_writes_enabled():
+        print(f"- agy permissions: ALL tool calls auto-approved ({AGY_ALLOW_WRITES_ENV} is set)")
+    else:
+        print("- agy permissions: file writes and commands are denied unless allowed in agy's own settings")
     return 0
 
 
@@ -996,8 +1000,34 @@ BEFORE_STOPPING_BY_PROVIDER = {
 }
 
 
+# Opt-in to agy writing files and running commands in headless mode. Off by
+# default (see provider_command()); read from the environment so every surface
+# that ends up running `handoff_bridge.py` (CLI, chat, Web UI, desktop app,
+# remote server) honours it, and `--agy-allow-writes` just sets it for the
+# current process tree.
+AGY_ALLOW_WRITES_ENV = "HANDOFF_AGY_ALLOW_WRITES"
+
+
+def agy_allow_writes_enabled() -> bool:
+    return os.environ.get(AGY_ALLOW_WRITES_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+AGY_ALLOW_WRITES_RUNTIME_NOTE = (
+    "This provider runs headless with every tool call pre-approved (no permission prompts), so a file\n"
+    "write or shell command takes effect immediately. Stay inside the workspace, make only the changes\n"
+    "the task asks for, and do not run destructive or irreversible commands (deleting files, git reset,\n"
+    "git clean, force-push, publishing packages) unless the user's request explicitly asks for them."
+)
+
+
+def provider_runtime_note(provider: str) -> str | None:
+    if provider == "agy" and agy_allow_writes_enabled():
+        return AGY_ALLOW_WRITES_RUNTIME_NOTE
+    return PROVIDER_RUNTIME_NOTES.get(provider)
+
+
 def provider_runtime_note_block(provider: str) -> str:
-    note = PROVIDER_RUNTIME_NOTES.get(provider)
+    note = provider_runtime_note(provider)
     return f"\n## Runtime Note ({provider})\n\n{note}\n" if note else ""
 
 
@@ -1323,9 +1353,13 @@ def provider_command(provider: str, state: dict[str, Any], model: str | None = N
     # settings.json -- the run still exits 0 with status SUCCESS and an empty
     # response plus a `denied_actions` list, which summarize_agy() turns into
     # a tool_failure so the work is handed on instead of looking done.
-    # `--dangerously-skip-permissions` would approve every tool with no
-    # scoping, which is broader than codex's workspace-write sandbox, so it
-    # is deliberately not used here.
+    # `--dangerously-skip-permissions` approves every tool call with no
+    # scoping (documented at antigravity.google/docs/cli/headless), which is
+    # broader than codex's workspace-write sandbox, so it is only passed when
+    # the user opted in (HANDOFF_AGY_ALLOW_WRITES / --agy-allow-writes). The
+    # separate `--sandbox` flag is NOT added: its effect ("terminal
+    # restrictions") could not be verified, and an unverified flag would only
+    # give a false sense of safety.
     command = ["agy", "--output-format", "json"]
     if session_id:
         # `--conversation <ID>` resumes a specific prior conversation (the
@@ -1334,6 +1368,8 @@ def provider_command(provider: str, state: dict[str, Any], model: str | None = N
         command.extend(["--conversation", session_id])
     if model:
         command.extend(["--model", model])
+    if agy_allow_writes_enabled():
+        command.append("--dangerously-skip-permissions")
     return command
 
 
@@ -1619,6 +1655,7 @@ def append_current(record: dict[str, Any]) -> None:
         f"- Instruction type: {record.get('instruction_type') or 'continue'}",
         f"- Exit code: {record['exit_code']}",
         *([f"- Duration: {record['duration_seconds']}s"] if record.get("duration_seconds") is not None else []),
+        *(["- Permissions: all tool calls auto-approved"] if record.get("permissions") == "allow-all" else []),
         f"- Handoff needed: {record['handoff_needed']}",
         f"- Reason: {record['reason']}",
     ]
@@ -1727,6 +1764,9 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
     started_at = utc_now()
     started_clock = time.monotonic()
     print(f"Running {provider}; logs will be written to {run_dir}")
+    allow_all = provider == "agy" and agy_allow_writes_enabled()
+    if allow_all:
+        print(f"WARNING: agy runs with every tool call auto-approved ({AGY_ALLOW_WRITES_ENV} / --agy-allow-writes).")
     try:
         process = subprocess.run(
             command,
@@ -1793,6 +1833,7 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         "exit_code": exit_code,
         "duration_seconds": duration_seconds,
         **({"handoff_from": handoff_from} if handoff_from else {}),
+        **({"permissions": "allow-all"} if allow_all else {}),
         "session_id": session_id,
         "usage": parsed.get("usage"),
         "cost_usd": parsed.get("cost_usd"),
@@ -1989,6 +2030,10 @@ class ChatSession:
                 self.reported[key] += reported.get(key, 0)
             status = "handoff needed" if record.get("handoff_needed") else "ok"
             out(f"[{record.get('provider')}] exit {record.get('exit_code')} - {status} ({record.get('reason')})")
+            if record.get("permissions") == "allow-all":
+                # run_provider()'s own warning went into `buffer` above and is
+                # dropped when a record exists, so repeat it for every run.
+                out(f"WARNING: {record.get('provider')} ran with every tool call auto-approved ({AGY_ALLOW_WRITES_ENV} / --agy-allow-writes).")
             final_text = (record.get("final_text") or "").strip()
             if final_text:
                 out(final_text)
@@ -2067,6 +2112,8 @@ def chat_command(args: argparse.Namespace, input_fn: "Any" = input, out: "Any" =
     installed = ", ".join(p for p in PROVIDERS if shutil.which(p)) or "none found"
     out(f"agent-handoff-bridge {BRIDGE_VERSION} chat - workspace {Path.cwd()}")
     out(f"provider: {session.provider} | installed CLIs: {installed} | /help for commands")
+    if agy_allow_writes_enabled():
+        out("WARNING: agy will run with every tool call auto-approved (file writes and shell commands run immediately).")
     while True:
         try:
             text = read_chat_message(input_fn)
@@ -2332,6 +2379,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Inline the full docs/ protocol files and a 20,000-character log tail instead of the compact default.",
     )
+    p_run.add_argument(
+        "--agy-allow-writes",
+        action="store_true",
+        help=f"Let agy write files and run commands without prompting (passes --dangerously-skip-permissions; same as {AGY_ALLOW_WRITES_ENV}=1).",
+    )
     p_run.add_argument("--timeout-seconds", type=int, default=0, help="0 means no timeout.")
     p_run.add_argument("--model", help="Model label to record; exact model strings are also passed to the provider.")
     p_run.add_argument(
@@ -2348,6 +2400,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Switch to another installed CLI on a quota/rate-limit/context signal (default: on).",
     )
     p_chat.add_argument("--full-prompt", action="store_true", help="Inline the full docs/ files in cold-start prompts.")
+    p_chat.add_argument(
+        "--agy-allow-writes",
+        action="store_true",
+        help=f"Let agy write files and run commands without prompting (passes --dangerously-skip-permissions; same as {AGY_ALLOW_WRITES_ENV}=1).",
+    )
     p_chat.add_argument("--timeout-seconds", type=int, default=0, help="Per-provider timeout; 0 means no timeout.")
     p_chat.add_argument("--model", help="Model label to record; exact model strings are also passed to the provider.")
     p_chat.set_defaults(func=chat_command)
@@ -2379,6 +2436,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if getattr(args, "agy_allow_writes", False):
+        # Through the environment so the nested auto-fallback call and any
+        # subprocess started from here see it exactly like a user-set variable.
+        os.environ[AGY_ALLOW_WRITES_ENV] = "1"
     chdir_workspace(args.workspace, create=args.command == "install")
     return args.func(args)
 

@@ -26,8 +26,12 @@
   it is never run. **Important:** in headless mode `agy` refuses file writes
   and shell commands unless you allow them under `permissions.allow` in its
   own settings; the bridge records any run in which `agy` had a tool call
-  denied as a `tool_failure` (so auto-fallback moves on, with agy's reply kept)
-  and does not pass `--dangerously-skip-permissions`.
+  denied as a `tool_failure` (so auto-fallback moves on, with agy's reply kept).
+  To let `agy` write files and run commands, opt in with `run --agy-allow-writes`,
+  `chat --agy-allow-writes` or `HANDOFF_AGY_ALLOW_WRITES=1`: this passes
+  `--dangerously-skip-permissions`, which approves **every** tool call with no
+  scoping, so each such run prints a warning and is marked in its record. See
+  [Security Model](security-model.md#agy-write-access-opt-in).
   `agy` is asked to put its Changed/Verified/Remaining summary in its reply
   rather than edit `.handoff/current.md` itself (the bridge records the reply).
   See [Research: Antigravity CLI](research-antigravity-cli.md).
