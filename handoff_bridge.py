@@ -619,6 +619,88 @@ def chdir_workspace(path: str, create: bool = False) -> Path:
     return workspace
 
 
+# Claude Code loads project skills from `.claude/skills/<name>/SKILL.md` and does
+# NOT read `.agents/skills/` (verified against a real `claude -p` run on
+# 2026-10-28: a skill under .agents/skills was reported unavailable, and became
+# available once `.claude/skills/<name>` was a symlink to it; the symlink form
+# is documented at code.claude.com/docs/en/skills). Codex, Antigravity (agy)
+# and OpenCode read `.agents/skills/`. So the bridge's own skills keep ONE
+# original under `.agents/skills/` and get a relative symlink under
+# `.claude/skills/`.
+SHARED_SKILLS_DIR = Path(".agents/skills")
+CLAUDE_SKILLS_DIR = Path(".claude/skills")
+MANAGED_COPY_MARKER = ".handoff-bridge-managed"
+BRIDGE_SKILL_NAMES = tuple(
+    sorted({PurePosixPath(target).parts[2] for _, target in INSTALL_FILES if target.startswith(".agents/skills/")})
+)
+
+
+def link_claude_skills(force: bool = False) -> list[tuple[str, str]]:
+    """Make `.claude/skills/<name>` a relative symlink to
+    `.agents/skills/<name>` for each skill this bridge installs. Never
+    touches a skill the user owns: an existing real directory (or a symlink
+    that points somewhere else, unless `force`) is left as it is. Where
+    symlinks cannot be created (Windows without developer mode), the skill is
+    copied instead and the copy is marked as bridge-managed, so `install
+    --force` can refresh it without ever touching a directory the user made.
+    A plain file holding exactly the link target is what git leaves behind
+    when it checks a symlink out without symlink support; that is replaced
+    on any `install`."""
+    results: list[tuple[str, str]] = []
+    for name in BRIDGE_SKILL_NAMES:
+        source = SHARED_SKILLS_DIR / name
+        link = CLAUDE_SKILLS_DIR / name
+        label = str(PurePosixPath(*link.parts))
+        if not (source / "SKILL.md").is_file():
+            continue
+        wanted = os.path.relpath(source.resolve(), link.parent.resolve())
+        if os.path.lexists(link):
+            if link.is_symlink():
+                points_at_source = link.exists() and link.resolve() == source.resolve()
+                if points_at_source:
+                    results.append((label, "ok"))
+                    continue
+                if not force:
+                    results.append((label, "skipped"))
+                    continue
+                link.unlink()
+            elif link.is_file() and _is_git_symlink_placeholder(link, wanted):
+                link.unlink()
+            elif link.is_dir() and (link / MANAGED_COPY_MARKER).is_file():
+                if not force:
+                    results.append((label, "ok"))
+                    continue
+                shutil.rmtree(link)
+            else:
+                results.append((label, "skipped"))
+                continue
+        link.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(wanted, link, target_is_directory=True)
+            results.append((label, "linked"))
+        except (OSError, NotImplementedError):
+            shutil.copytree(source, link)
+            (link / MANAGED_COPY_MARKER).write_text(
+                f"Copied from {source.as_posix()} by handoff_bridge.py install; "
+                "`install --force` refreshes it. Delete this file to keep your own edits.\n",
+                encoding="utf-8",
+            )
+            results.append((label, "copied"))
+    return results
+
+
+def _is_git_symlink_placeholder(path: Path, wanted: str) -> bool:
+    """True for the small text file git writes in place of a symlink
+    (core.symlinks=false): its whole content is the link target."""
+    try:
+        if path.stat().st_size > 512:
+            return False
+        content = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return content.replace("\\", "/") == wanted.replace("\\", "/")
+
+
 def install_standard_files(force: bool = False) -> list[tuple[str, str]]:
     ensure_handoff_dir()
     results = []
@@ -635,6 +717,7 @@ def install_standard_files(force: bool = False) -> list[tuple[str, str]]:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         results.append((target_rel, "updated" if existed else "installed"))
+    results.extend(link_claude_skills(force=force))
     if not CURRENT_FILE.exists():
         CURRENT_FILE.write_text(
             f"""# Handoff Packet
