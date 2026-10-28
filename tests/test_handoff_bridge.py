@@ -2163,11 +2163,130 @@ class ProviderCommandAgyTests(unittest.TestCase):
     def test_other_providers_get_no_runtime_note(self):
         self.assertNotIn("Runtime Note", hb.build_prompt("codex", {"task": "t", "sessions": {}}, "hello"))
 
-    def test_no_permission_bypass_flag_is_ever_added(self):
+    def test_no_permission_bypass_flag_by_default(self):
         # --dangerously-skip-permissions approves every tool with no
-        # scoping; the bridge leaves permissions to agy's own settings.
-        command = hb.provider_command("agy", {"sessions": {"agy": "id"}}, model="m")
+        # scoping; unless the user opts in, the bridge leaves permissions to
+        # agy's own settings.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(hb.AGY_ALLOW_WRITES_ENV, None)
+            command = hb.provider_command("agy", {"sessions": {"agy": "id"}}, model="m")
         self.assertNotIn("--dangerously-skip-permissions", command)
+        self.assertNotIn("--sandbox", command)
+
+    def test_opt_in_adds_the_bypass_flag_and_nothing_else(self):
+        for value in ("1", "true", "YES", " on "):
+            with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: value}):
+                command = hb.provider_command("agy", {"sessions": {"agy": None}})
+            self.assertEqual(command, ["agy", "--output-format", "json", "--dangerously-skip-permissions"], msg=value)
+
+    def test_other_values_do_not_enable_it(self):
+        for value in ("", "0", "false", "no", "off", "maybe"):
+            with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: value}):
+                self.assertFalse(hb.agy_allow_writes_enabled(), msg=value)
+                self.assertNotIn(
+                    "--dangerously-skip-permissions", hb.provider_command("agy", {"sessions": {"agy": None}})
+                )
+
+    def test_the_opt_in_only_affects_agy(self):
+        with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: "1"}):
+            for provider in ("codex", "claude"):
+                self.assertNotIn(
+                    "--dangerously-skip-permissions",
+                    hb.provider_command(provider, {"sessions": {provider: None}}),
+                )
+
+    def test_cli_flag_sets_the_environment_variable_for_the_process(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(hb.AGY_ALLOW_WRITES_ENV, None)
+            with tempfile.TemporaryDirectory() as tmp:
+                orig = os.getcwd()
+                try:
+                    hb.main(["--workspace", tmp, "run", "agy", "--agy-allow-writes", "preview"])
+                finally:
+                    os.chdir(orig)
+            self.assertTrue(hb.agy_allow_writes_enabled())
+
+    def test_without_the_flag_main_leaves_the_environment_alone(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(hb.AGY_ALLOW_WRITES_ENV, None)
+            with tempfile.TemporaryDirectory() as tmp:
+                orig = os.getcwd()
+                try:
+                    hb.main(["--workspace", tmp, "run", "agy", "preview"])
+                finally:
+                    os.chdir(orig)
+            self.assertFalse(hb.agy_allow_writes_enabled())
+
+    def test_runtime_note_switches_to_a_caution_when_everything_is_pre_approved(self):
+        with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: "1"}):
+            prompt = hb.build_prompt("agy", {"task": "t", "sessions": {}}, "hello")
+        self.assertIn("pre-approved", prompt)
+        self.assertIn("destructive or irreversible", prompt)
+        self.assertNotIn("is denied without a prompt", prompt)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(hb.AGY_ALLOW_WRITES_ENV, None)
+            default_prompt = hb.build_prompt("agy", {"task": "t", "sessions": {}}, "hello")
+        self.assertIn("is denied without a prompt", default_prompt)
+
+    def test_run_records_and_announces_the_elevated_permissions(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                def fake_run(command, **kwargs):
+                    if command[0] == "git":
+                        return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+                    self.assertIn("--dangerously-skip-permissions", command)
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stderr="",
+                        stdout='{"conversation_id": "c", "status": "SUCCESS", "response": "done"}',
+                    )
+                args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                             timeout_seconds=0, model=None, instruction_type="continue")
+                state = {"task": "t", "primary_provider": "agy", "status": "ready"}
+                buffer = io.StringIO()
+                with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: "1"}), mock.patch.object(
+                    hb.shutil, "which", return_value="/usr/bin/x"
+                ), mock.patch.object(hb.subprocess, "run", side_effect=fake_run), contextlib.redirect_stdout(buffer):
+                    hb.run_provider("agy", args, state)
+                self.assertIn("WARNING: agy runs with every tool call auto-approved", buffer.getvalue())
+                self.assertEqual(state["history"][0]["permissions"], "allow-all")
+                self.assertIn("- Permissions: all tool calls auto-approved", hb.CURRENT_FILE.read_text(encoding="utf-8"))
+            finally:
+                os.chdir(orig)
+
+    def test_default_runs_carry_no_permissions_field(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                def fake_run(command, **kwargs):
+                    if command[0] == "git":
+                        return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stderr="",
+                        stdout='{"conversation_id": "c", "status": "SUCCESS", "response": "done"}',
+                    )
+                args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                             timeout_seconds=0, model=None, instruction_type="continue")
+                state = {"task": "t", "primary_provider": "agy", "status": "ready"}
+                with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(
+                    hb.shutil, "which", return_value="/usr/bin/x"
+                ), mock.patch.object(hb.subprocess, "run", side_effect=fake_run), contextlib.redirect_stdout(io.StringIO()):
+                    os.environ.pop(hb.AGY_ALLOW_WRITES_ENV, None)
+                    hb.run_provider("agy", args, state)
+                self.assertNotIn("permissions", state["history"][0])
+            finally:
+                os.chdir(orig)
+
+    def test_chat_banner_warns_when_enabled(self):
+        args = hb.build_parser().parse_args(["chat", "agy"])
+        out = []
+        with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: "1"}), mock.patch.object(
+            hb.shutil, "which", return_value="/usr/bin/x"
+        ):
+            hb.chat_command(args, input_fn=lambda prompt: (_ for _ in ()).throw(EOFError), out=out.append)
+        self.assertIn("WARNING: agy will run with every tool call auto-approved", "\n".join(out))
 
 
 class SummarizeAgyTests(unittest.TestCase):
