@@ -45,8 +45,10 @@ CI was removed once and has been partly restored:
   when you touch `src-tauri/`:
 
   ```bash
-  cargo build --manifest-path src-tauri/Cargo.toml   # was: rust-build (needs src-tauri/binaries/ files)
-  python scripts/build_sidecars.py --target-triple <triple>  # was: sidecar-build, per OS
+  # was: sidecar-build, per OS (needs PyInstaller; writes src-tauri/binaries/)
+  python scripts/build_sidecars.py --target-triple <triple>
+  # was: rust-build -- needs the files from the step above, so run it second
+  cargo build --manifest-path src-tauri/Cargo.toml
   ```
 
 - **Branch protection on `main`** is applied (pull request required, enforced

@@ -1,9 +1,9 @@
 name: CI
 
 # The automatic checks that used to run here were removed while the repo was
-# private (Actions minutes ran out). branch-name and the validation suite now
-# run from check.yml on all three OSes -- see docs/quality-gates.md
-# ("CI History"). rust-build and sidecar-build are not automatic; run them
+# private (Actions minutes ran out). check.yml now runs branch-name (once, on
+# Ubuntu, pull requests only) and the validation suite (all three OSes) -- see
+# docs/quality-gates.md ("CI History"). rust-build and sidecar-build are not automatic; run them
 # locally. Only the manual installer-build job below remains in this file,
 # because docs/release-process.md triggers it with
 # `gh workflow run ci.yml --ref vX.Y.Z` to produce release installers.
