@@ -4498,3 +4498,47 @@ tag" rule by construction rather than by discipline.
   and `sidecar-build` are still not automatic.
 - **Blocked**: nothing. The earlier "GitHub Actions quota" blocker above no
   longer applies. **Next**: manual installer check, then decide on v0.5.1.
+
+### 2026-10-28 — Checkpoint: v0.5.1 release in progress (tagged, installers building)
+
+- **Target**: Claude Code CLI (Sonnet 5.5), repo-level (release).
+- **State at this checkpoint**: `v0.5.1` is tagged and pushed at `42331ed` (the
+  squash-merge of #102, "Release v0.5.1"; `BRIDGE_VERSION`, `tauri.conf.json`,
+  `Cargo.toml`, `Cargo.lock` all 0.5.1; v0.5.1 notes include the OS-level
+  unsigned-installer warning). The installer build was dispatched with
+  `gh workflow run ci.yml --ref v0.5.1`: run **40686616380**, all 3 jobs still
+  `in_progress` when this was written. **No GitHub Release `v0.5.1` exists yet**
+  (`gh release view v0.5.1` -> not found), so nothing is published and
+  `releases/latest` still points at v0.5.0 (whose installers and `latest.json`
+  were published earlier today and respond).
+- **Local, not in git**: `dist/agent-handoff-bridge-{macos,windows}.zip` built
+  from the 0.5.1 tree before the notes-only fix commit (rebuild them from the
+  tag before publishing: `git checkout v0.5.1 && python3
+  scripts/package_platforms.py`); v0.5.0 artifacts and a smoke-test extraction
+  under the session scratchpad are disposable.
+- **Resume here (publish gates agreed in #102)**: (1) wait for run 40686616380 to
+  succeed, else do not publish; (2) `gh run download 40686616380 -n <artifact>`
+  per target (one at a time, a full download timed out once) into
+  `installers-<triple>/<format>/`; (3) BEFORE `latest.json`: extract the macOS
+  `.app.tar.gz` in a scratch dir, run the 4 sidecars and the `-server` sidecar
+  (temp HOME, e.g. port 18765: `/` 200, `/api/providers`); any failure -> do not
+  publish; (4) `python3 scripts/build_updater_manifest.py --installers-dir <dir>
+  --version 0.5.1 --notes "<v0.5.1 section>" --output <scratch>/latest.json`;
+  (5) rebuild the zips from the tag and `gh release create v0.5.1` with the zips,
+  `latest.json`, `.dmg`, `agent-handoff-bridge.app.tar.gz` + `.sig`, nsis
+  `-setup.exe`, `.AppImage`, notes from the v0.5.1 section; (6) verify the three
+  `latest.json` URLs and `releases/latest/download/latest.json` (curl UA); (7)
+  follow-up PR: README / README.ko download links v0.5.0 -> v0.5.1 and a final
+  checkpoint.
+- **Will stay unverified (say so in the release notes)**: GUI app launch,
+  titlebar update badge, provider chat round trip, Windows/Linux installers and
+  the Windows source zip actually being run. If a real install fails, publish a
+  new patch version instead of replacing tag assets.
+- **Other state**: all session PRs are merged (#93-#102); open PR count 0.
+  `main` requires `branch-name` + `check` on ubuntu/macOS/Windows; Python 3.11
+  CI. `.msi`/`.deb`/`.rpm` are built but intentionally not attached.
+- **Still open from earlier**: `AGENTS.md`/`CLAUDE.md` dedupe,
+  `release-notes.ko.md` behind, `rust-build`/`sidecar-build` not automatic,
+  `agy --dangerously-skip-permissions` and `--sandbox` unverified against a real
+  run, Web UI has no pre-run banner for allow-all agy.
+- **Blocked**: nothing; waiting on the installer build.
