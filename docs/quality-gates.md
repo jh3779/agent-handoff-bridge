@@ -15,44 +15,50 @@ Each rule is enforced at up to three layers:
 - **Doc**: written down so a human or agent knows the rule exists.
 - **Local hook**: runs automatically on `git commit` / `git push` once
   `scripts/install_git_hooks.sh` has been run. Opt-in per clone.
-- **CI**: ~~runs on every push to `main` and every pull request~~ — **removed**,
-  see "CI Was Removed" below. Wherever a rule below lists a **CI** layer, read
-  it as "no longer enforced automatically."
+- **CI**: `.github/workflows/check.yml` runs `branch-name` (pull requests) and
+  `handoff_bridge.py check` on Ubuntu, macOS and Windows for every pull request
+  and push to `main`; see "CI History" below. It is not a required status check
+  on `main`.
 
 Run `scripts/install_git_hooks.sh` once per clone to get the local-hook
 layer; see [Platform Setup](platform-setup.md).
 
-## CI Was Removed
+## CI History
 
-The GitHub Actions jobs that ran on every push to `main` and every pull
-request (`branch-name`, `validate`, `rust-build`, `sidecar-build`) were
-removed from `.github/workflows/ci.yml` — Actions minutes ran out, and
-`main`'s branch protection no longer requires status checks. What remains:
+CI was removed once and has been partly restored:
 
-- **Branch protection on `main`** is still applied (pull request required,
-  enforced for admins, no force-push or deletion); only the required status
-  checks were dropped.
-- **The review bot** (`review-bot-notify`, `plan-bot-events`) is unaffected —
-  it does not depend on CI.
-- **`installer-build`** stays in `ci.yml` as a manual (`workflow_dispatch`)
-  job, because `docs/release-process.md` triggers it for release installers.
-- **Nothing runs automatically on a PR now**, so run these yourself before
-  opening one and record the results in the PR (the same commands the old
-  jobs ran):
+- **Removed (2026-10-26):** while the repository was private, GitHub bills
+  macOS/Windows runner minutes at 10x/2x and the quota ran out, so the jobs
+  that ran on every push and pull request (`branch-name`, `validate`,
+  `rust-build`, `sidecar-build`) were taken out of `ci.yml`.
+- **Restored (2026-10-28):** the repository is public now, and GitHub-hosted
+  runner minutes are free for public repositories. `.github/workflows/check.yml`
+  runs `branch-name` and `handoff_bridge.py check` (Python 3.11) on
+  `ubuntu-latest`, `macos-latest` and `windows-latest`. Its first run found two
+  real failures that local runs on Python 3.14 had hidden (Python 3.11 rejects
+  `run <provider> --execute "text"`; one test hardcoded a POSIX path
+  separator), both fixed.
+- **Still not automatic:** `rust-build` and `sidecar-build` (they need
+  `src-tauri/binaries/` files and PyInstaller) and `installer-build`, which
+  stays a manual `workflow_dispatch` job in `ci.yml` that
+  `docs/release-process.md` triggers for release installers. Run those locally
+  when you touch `src-tauri/`:
 
   ```bash
-  python3 scripts/check_branch_name.py        # was: branch-name
-  python3 handoff_bridge.py check             # was: validate (tests, secret scan, contract)
-  cargo build --manifest-path src-tauri/Cargo.toml   # was: rust-build (needs src-tauri/binaries/ files)
-  python scripts/build_sidecars.py --target-triple <triple>  # was: sidecar-build, per OS
+  # was: sidecar-build, per OS (needs PyInstaller; writes src-tauri/binaries/)
+  python scripts/build_sidecars.py --target-triple <triple>
+  # was: rust-build -- needs the files from the step above, so run it second
+  cargo build --manifest-path src-tauri/Cargo.toml
   ```
 
-  `scripts/install_git_hooks.sh` (opt-in per clone) still enforces the secret
-  scan and branch naming locally. The Linux/Windows `sidecar-build` legs can
-  only be reproduced on those OSes (or a container for Linux).
+- **Branch protection on `main`** is applied (pull request required, enforced
+  for admins, no force-push or deletion) but requires no status checks; adding
+  `check (…)` as required checks is a separate decision.
+- **The review bot** (`review-bot-notify`, `plan-bot-events`) does not depend
+  on `check.yml`.
 
-Other docs (`release-process*.md`, `release-notes*.md`) still describe CI in
-past or release terms; only this document and `ci.yml` were updated.
+`scripts/install_git_hooks.sh` (opt-in per clone) still enforces the secret
+scan and branch naming locally, before CI would.
 
 ## Rule: Branch Naming
 
@@ -73,7 +79,7 @@ a merge commit) are skipped rather than failed.
 - **Doc**: this section; the pattern and type list also live in
   `scripts/check_branch_name.py` (source of truth — keep both in sync).
 - **Local hook**: `.githooks/pre-push` checks every branch ref being pushed.
-- **CI**: `.github/workflows/ci.yml`'s `branch-name` job checks
+- **CI**: `.github/workflows/check.yml`'s `branch-name` job checks
   `github.head_ref` on every pull request.
 - **Script**: `python3 scripts/check_branch_name.py [branch]`
 
@@ -214,7 +220,7 @@ beyond the current single-operator use case.
    `scripts/validate_handoff.py` if it belongs in the no-token suite).
 2. Add it to `handoff_bridge.py check` only if it should run for every
    consumer of this repo, including projects that installed it — otherwise
-   wire it into `.githooks/` and `.github/workflows/ci.yml` directly, as
+   wire it into `.githooks/` and `.github/workflows/check.yml` directly, as
    done for branch naming.
 3. Document it here with the same Doc/Local hook/CI/Script structure.
 4. Add the new files to `REQUIRED_FILES` (and `PYTHON_FILES`/`JSON_FILES` if
