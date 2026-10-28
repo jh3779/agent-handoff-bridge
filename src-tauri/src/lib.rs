@@ -256,7 +256,7 @@ const GRACEFUL_KILL_GRACE_PERIOD: std::time::Duration = std::time::Duration::fro
 /// deeper than "bootloader -> its re-exec'd interpreter" --
 /// handoff_webui.py's bridge_command_prefix() shells out to a *second*
 /// PyInstaller sidecar (agent-handoff-bridge-cli) for init/run, which
-/// itself re-execs and then spawns the real codex/claude/gemini
+/// itself re-execs and then spawns the real codex/claude/agy
 /// subprocess. That's 3-4 generations, none of which are a *direct* child
 /// of the outer tracked PID, so a one-hop `pkill -P` misses all of them --
 /// quitting the app mid-run would still orphan a live provider CLI. Fixed
@@ -308,7 +308,7 @@ fn kill_sidecar_tree(child: CommandChild) {
   {
     // Graceful attempt first (no /F -- taskkill sends a close request
     // rather than forcibly terminating), /T for the whole tree in one
-    // call. Windows console apps (which codex/claude/gemini are) may not
+    // call. Windows console apps (which codex/claude/agy are) may not
     // respond to a non-forced taskkill the same way a windowed GUI app
     // does -- unverified on real Windows, no Windows machine available to
     // test this fix on -- so this still escalates to a forced /F kill

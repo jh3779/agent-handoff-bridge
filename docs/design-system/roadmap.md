@@ -2,7 +2,7 @@
 
 **최종 목표**: [flutter-mapping.html DEC-01](flutter-mapping.html#s1b)이 가리키는
 프로덕션 앱 — 프레임워크 전환(Tauri/Electron류) 스택 위에서, Codex/Claude/
-Gemini를 실제로 호출하고, 워크스페이스를 자유롭게 오가며, 여러 프로젝트의
+Antigravity(`agy`; 원래 Gemini였으나 [DEC-30](flutter-mapping.html#s1c)으로 교체)를 실제로 호출하고, 워크스페이스를 자유롭게 오가며, 여러 프로젝트의
 대화 기록을 한 곳에서 훑어보고, 최신 버전을 스스로 확인하는 채팅형
 에이전트 클라이언트.
 

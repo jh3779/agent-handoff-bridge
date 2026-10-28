@@ -254,7 +254,7 @@ def _run_provider_via_bridge_locked(
             # so this guess has to match exactly that or it can name the
             # wrong provider whenever the naive next-in-order pick isn't
             # installed) -- e.g. a claude run needing handoff recurses
-            # into gemini, not codex, and skips further if gemini isn't
+            # into agy, not codex, and skips further if agy isn't
             # installed either. Reusing the same function here (rather
             # than reimplementing the guess) is the only way this stays
             # correct if PROVIDERS' order or installed set ever changes.

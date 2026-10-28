@@ -12,7 +12,7 @@ code path without any GUI machinery.
 
 Covers two fixes:
 1. PROVIDERS / PRIMARY_PROVIDERS are derived from handoff_bridge.PROVIDERS
-   (gemini included) instead of stale hardcoded tuples.
+   (agy included) instead of stale hardcoded tuples.
 2. run_args() passes the turn prompt via --prompt-file (not a bare trailing
    positional after --instruction-type) and uses "--model=value" (equals
    form), matching the fix already applied in handoff_webui.py.
@@ -65,10 +65,10 @@ class ProvidersDerivedFromBridgeTests(unittest.TestCase):
         # PROVIDERS set with no restricted subset, so PRIMARY_PROVIDERS
         # (the GUI's "Primary" dropdown) shouldn't be narrower either.
         self.assertEqual(hdsk.PRIMARY_PROVIDERS, handoff_bridge.PROVIDERS)
-        self.assertIn("gemini", hdsk.PRIMARY_PROVIDERS)
+        self.assertIn("agy", hdsk.PRIMARY_PROVIDERS)
 
-    def test_gemini_is_selectable(self):
-        self.assertIn("gemini", hdsk.PROVIDERS)
+    def test_agy_is_selectable(self):
+        self.assertIn("agy", hdsk.PROVIDERS)
 
 
 class RunArgsShapeTests(unittest.TestCase):

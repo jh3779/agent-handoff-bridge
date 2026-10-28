@@ -111,7 +111,7 @@ HANDOFF_LABELS = (
     "unknown",
 )
 
-PROVIDERS = ("codex", "claude", "gemini")
+PROVIDERS = ("codex", "claude", "agy")
 
 # The canonical instruction-type vocabulary. handoff_desktop.py's GUI
 # already restricts its Instruction combobox to exactly this set (its own
@@ -210,37 +210,15 @@ ERROR_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "auth",
         re.compile(
-            # AuthError/FatalAuthenticationError: Gemini's *documented*
-            # error.type/exit-code-41 vocabulary (docs/research-gemini-cli.md)
-            # -- added after a review found summarize_gemini()'s error dict
-            # (e.g. {"type": "AuthError", "message": "not authenticated"})
-            # didn't match any existing pattern and fell through to
-            # "unknown" instead of "auth".
-            #
-            # "set an auth method": what a real installed CLI (v0.54.0)
-            # actually emits for this failure, confirmed 2026-08-06 by
-            # running the real unauthenticated binary -- its JSON
-            # error.type came back as the generic "Error", not
-            # "AuthError"/"FatalAuthenticationError", so the type-name
-            # match alone does *not* fire for this real, very-likely-common
-            # case (a user who hasn't run gemini's auth setup yet). The
-            # real message text was "Please set an Auth method in your
-            # ...settings.json or specify one of the following environment
-            # variables before running: GEMINI_API_KEY,
-            # GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA". Matching the
-            # fuller imperative phrase "set an auth method" rather than the
-            # bare "auth method" matters: this pattern is also checked
-            # against a *successful* run's raw combined stdout+stderr
-            # (classify_handoff()'s second, unconditional loop, for runs
-            # with no structured `errors`) -- a bare "auth method" match
-            # was found (review) to misfire on a genuinely successful
-            # response that merely discusses auth methods in prose (e.g.
-            # "you can configure the auth method in settings.json"),
-            # wrongly triggering a handoff/auto-fallback and discarding a
-            # good answer. The fuller imperative phrase is Gemini's own
-            # distinctive error wording, not something a normal response
-            # is likely to say verbatim.
-            r"\b(not logged in|authentication_failed|unauthorized|forbidden|AuthError|FatalAuthenticationError|set an auth method)\b",
+            # "authentication required": what `agy` (Antigravity CLI) exits
+            # with when a non-interactive run has no cached login
+            # (https://antigravity.google/docs/cli/headless). The fuller
+            # phrase rather than a bare "auth" word matters: this pattern is
+            # also checked against a *successful* run's raw combined
+            # stdout+stderr (classify_handoff()'s second loop, for runs with
+            # no structured `errors`), and a normal response may merely
+            # discuss authentication in prose.
+            r"\b(not logged in|authentication_failed|unauthorized|forbidden|authentication required)\b",
             re.I,
         ),
     ),
@@ -726,13 +704,14 @@ def diagnose(_: argparse.Namespace) -> int:
 
     codex_auth = short_run(["codex", "login", "status"])
     claude_auth = short_run(["claude", "auth", "status", "--text"])
-    # Gemini CLI has no free auth-status subcommand (docs/research-gemini-
-    # cli.md "Practical Limitations") -- the only way to actually check
-    # would be a real headless call that spends a token. DEC-18
-    # (docs/design-system/flutter-mapping.html#s1c): diagnose() stays free
-    # to run as often as a user wants, so this deliberately does not
-    # probe -- CLI installation is still checked above (the `checks` loop
-    # already covers Gemini via PROVIDERS), only auth state is skipped.
+    # `agy` has no auth-status subcommand (its subcommands are agent(s),
+    # changelog, install, mcp, models, plugin(s), remote-control, update) --
+    # the only way to actually check would be a real headless call that
+    # spends quota. DEC-18 (docs/design-system/flutter-mapping.html#s1c):
+    # diagnose() stays free to run as often as a user wants, so this
+    # deliberately does not probe -- CLI installation is still checked above
+    # (the `checks` loop already covers agy via PROVIDERS), only auth state
+    # is skipped.
 
     print(f"Handoff bridge diagnostics (agent-handoff-bridge {BRIDGE_VERSION})")
     print(f"- cwd: {Path.cwd()}")
@@ -742,7 +721,7 @@ def diagnose(_: argparse.Namespace) -> int:
             print(f"  version: {item['version']}")
     print(f"- codex auth: exit {codex_auth[0]} | {(codex_auth[1] or codex_auth[2])}")
     print(f"- claude auth: exit {claude_auth[0]} | {(claude_auth[1] or claude_auth[2])}")
-    print("- gemini auth: not checked (no free status command exists -- see docs/research-gemini-cli.md)")
+    print("- agy auth: not checked (no free status command exists; run `agy` once interactively to sign in)")
     return 0
 
 
@@ -845,7 +824,7 @@ def next_available_provider(current: str, tried: "set[str] | frozenset[str]" = f
     two providers this never mattered -- if "the other one" wasn't
     installed either, there was no third option being skipped past. With
     three, a codex failure could land the single-hop auto-fallback on an
-    uninstalled "claude" and never reach an installed "gemini" sitting
+    uninstalled "claude" and never reach an installed third provider sitting
     right after it in PROVIDERS order, even though auto-fallback exists
     specifically to reach a *working* provider. Still exactly one hop
     (unchanged token-spend-bounding design, docs/research.md) -- this
@@ -945,12 +924,81 @@ PROTOCOL_SUMMARY = """- Priority when instructions conflict: the user's latest i
   billing, context_limit, overloaded, tool_failure, unknown.
 - Hand off to another provider when the current one hits a quota, rate-limit, billing, auth,
   context, or max-output failure, when tools are repeatedly blocked, or when the user asks.
-- Before stopping, append a concise entry to `.handoff/current.md` in this shape: Target
-  (provider/model/workspace), Changed, Verified, Remaining, Blocked, Next. If nothing changed, say
-  so. The task is done only when the requested work exists, checks passed or are marked not
-  applicable, and the other provider could continue from files alone.
+- @@FINISH@@ Target (provider/model/workspace), Changed, Verified, Remaining, Blocked, Next. If
+  nothing changed, say so. The task is done only when the requested work exists, checks passed or
+  are marked not applicable, and the other provider could continue from files alone.
 - The full rules live in `docs/shared-agent-contract.md`, `docs/agent-targeting-protocol.md`, and
   `docs/verification-playbook.md`; this summary is complete for ordinary tasks."""
+
+# The one sentence of PROTOCOL_SUMMARY that differs per provider: how the final
+# summary reaches .handoff/current.md. agy cannot write it (see
+# PROVIDER_RUNTIME_NOTES), so it must not be told to.
+_SUMMARY_FINISH_DEFAULT = "Before stopping, append a concise entry to `.handoff/current.md` in this shape:"
+_SUMMARY_FINISH_BY_PROVIDER = {
+    "agy": (
+        "Before stopping, end your reply with a concise entry in this shape (do not edit"
+        " `.handoff/current.md` yourself; the bridge records your reply there):"
+    ),
+}
+
+
+def protocol_summary_for(provider: str) -> str:
+    finish = _SUMMARY_FINISH_BY_PROVIDER.get(provider, _SUMMARY_FINISH_DEFAULT)
+    return PROTOCOL_SUMMARY.replace("@@FINISH@@", finish)
+
+
+# Appended last in a full-mode prompt, after the real docs, because those docs
+# tell every agent to read and update `.handoff/current.md` itself and the last
+# instruction wins: agy would otherwise spend its turn on a denied write.
+PROVIDER_FINAL_OVERRIDES = {
+    "agy": (
+        "Override for this provider: where the protocol documents above tell you to update, append to,\n"
+        "or write `.handoff/current.md`, do not do that -- put the same content at the end of your reply;\n"
+        "the bridge records it. Reading the log (included above) is fine."
+    ),
+}
+
+
+def provider_final_override_block(provider: str, full: bool) -> str:
+    note = PROVIDER_FINAL_OVERRIDES.get(provider)
+    return f"\n## Final Instruction ({provider})\n\n{note}\n" if note and full else ""
+
+
+# Extra, provider-specific instructions folded into the prompt. agy runs
+# headless, where a tool call that needs a permission prompt is denied
+# silently; without this note a first-turn "also update .handoff/current.md"
+# made it try (and fail) to write, then end the turn with an empty reply
+# (observed against agy 1.4.8, 2026-10-28) -- which looks like a failed run.
+PROVIDER_RUNTIME_NOTES = {
+    "agy": (
+        "This provider runs headless: any file write or shell command that is not pre-approved in\n"
+        "its settings is denied without a prompt. Do not retry a denied action and never end your\n"
+        "turn without a text reply -- say what you did or would have done."
+    ),
+}
+
+# The standard "update .handoff/current.md before stopping" instruction needs
+# a file write. For agy that write is denied unless the user allowed it, and
+# even with a note saying so the model still spent its turn trying (agy 1.4.8,
+# 2026-10-28) and finished with an empty reply. The bridge appends every
+# provider's final reply to current.md itself (append_current()), so agy is
+# asked to put the same summary in its reply instead.
+BEFORE_STOPPING_DEFAULT = (
+    "- Before stopping, update `.handoff/current.md` with changed files, checks run,\n"
+    "  remaining work, and any blocker."
+)
+BEFORE_STOPPING_BY_PROVIDER = {
+    "agy": (
+        "- Before stopping, end your reply with a concise summary (changed files, checks run,\n"
+        "  remaining work, any blocker). The bridge records your final reply in\n"
+        "  `.handoff/current.md` -- do not edit that file yourself."
+    ),
+}
+
+
+def provider_runtime_note_block(provider: str) -> str:
+    note = PROVIDER_RUNTIME_NOTES.get(provider)
+    return f"\n## Runtime Note ({provider})\n\n{note}\n" if note else ""
 
 
 PROTOCOL_DOC_PATHS = (
@@ -1090,7 +1138,7 @@ session; only what's new is included below.
 ## User Prompt For This Turn
 
 {user_prompt or "Continue from the shared handoff packet and current workspace."}
-{reason_block}{shared_context_block}{new_entries_block}
+{reason_block}{shared_context_block}{new_entries_block}{provider_runtime_note_block(provider)}
 ## Active Work Target
 
 - Provider: {provider}
@@ -1134,7 +1182,7 @@ session; only what's new is included below.
         )
         docs_sections = f"""## Working Rules
 
-{PROTOCOL_SUMMARY}
+{protocol_summary_for(provider)}
 """
     return f"""You are {provider}, working via the agent-handoff-bridge CLI tool on a task in this workspace.
 
@@ -1164,9 +1212,8 @@ session; only what's new is included below.
   was generated.
 - Continue from the files on disk rather than assuming the prior transcript is complete.
 - Keep changes narrowly scoped to the task.
-- Before stopping, update `.handoff/current.md` with changed files, checks run,
-  remaining work, and any blocker.
-
+{BEFORE_STOPPING_BY_PROVIDER.get(provider, BEFORE_STOPPING_DEFAULT)}
+{provider_runtime_note_block(provider)}
 ## Active Work Target
 
 - Provider: {provider}
@@ -1183,7 +1230,7 @@ session; only what's new is included below.
 ## Workspace Snapshot
 
 {git_snapshot()}
-"""
+{provider_final_override_block(provider, full)}"""
 
 
 def provider_command(provider: str, state: dict[str, Any], model: str | None = None) -> list[str]:
@@ -1262,23 +1309,29 @@ def provider_command(provider: str, state: dict[str, Any], model: str | None = N
             command.extend(["--model", model])
         return command
 
-    # provider == "gemini". Prompt travels via stdin like the other two
-    # (subprocess.run(..., input=prompt, ...) in run_provider()) -- no
-    # `-p "<text>"` flag needed; docs/research-gemini-cli.md confirmed
-    # piped stdin alone auto-triggers Gemini's non-interactive mode.
-    command = ["gemini", "--output-format", "json"]
+    # provider == "agy" (Antigravity CLI, which replaced Gemini CLI for
+    # individual accounts on 2026-06-18 and can run Google, Anthropic and
+    # open-weight models -- `agy models`). The prompt travels via stdin like
+    # the other two (subprocess.run(..., input=prompt, ...) in
+    # run_provider()): piped stdin alone triggers print mode, verified
+    # against agy 1.4.8 on 2026-10-28. Do NOT add `-p`: `-p` followed by
+    # another flag swallows that flag as its prompt and exits 2.
+    #
+    # No permission flag is passed. In print mode agy auto-denies any tool
+    # that needs a permission prompt (file writes, shell commands) unless
+    # the user has allow rules under `permissions.allow` in agy's own
+    # settings.json -- the run still exits 0 with status SUCCESS and an empty
+    # response plus a `denied_actions` list, which summarize_agy() turns into
+    # a tool_failure so the work is handed on instead of looking done.
+    # `--dangerously-skip-permissions` would approve every tool with no
+    # scoping, which is broader than codex's workspace-write sandbox, so it
+    # is deliberately not used here.
+    command = ["agy", "--output-format", "json"]
     if session_id:
-        # Gemini's JSON response has no session/thread ID field
-        # (docs/research-gemini-cli.md "Practical Limitations") -- unlike
-        # codex/claude, this bridge can never capture a *specific* prior
-        # session to resume by ID. DEC-17
-        # (docs/design-system/flutter-mapping.html#s1c): use `--resume
-        # latest` instead. `session_id` here is always the literal
-        # sentinel "latest" (set by summarize_gemini() only after a clean
-        # prior run in this workspace), not a real ID -- it exists purely
-        # to answer "has gemini run successfully here before," which is
-        # exactly when --resume is safe to add at all.
-        command.extend(["--resume", "latest"])
+        # `--conversation <ID>` resumes a specific prior conversation (the
+        # `conversation_id` in agy's JSON response, captured by
+        # summarize_agy()); verified together with stdin input.
+        command.extend(["--conversation", session_id])
     if model:
         command.extend(["--model", model])
     return command
@@ -1395,40 +1448,33 @@ def summarize_claude(events: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def summarize_gemini(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[str, Any]:
-    """`gemini --output-format json` returns one JSON object at the end
-    of the run, not a JSONL event stream like Codex/Claude
-    (docs/research-gemini-cli.md "Bottom Line") -- parse_jsonl() doesn't
-    apply here, so this parses the JSON directly instead of taking
-    pre-parsed `events` like summarize_codex()/summarize_claude() do.
+def summarize_agy(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[str, Any]:
+    """`agy --output-format json` writes one JSON envelope (not a JSONL
+    stream): `conversation_id`, `status`, `response`, `duration_seconds`,
+    `num_turns`, `usage` (input/output/thinking/cache_read/total tokens), and
+    -- only when something was refused -- `denied_actions`. Shape verified
+    against agy 1.4.8 (2026-10-28) and
+    https://antigravity.google/docs/cli/headless.
 
-    Confirmed against a real installed binary (v0.54.0, 2026-08-06): a
-    *successful* response object is written to stdout, but a
-    *fatal-error* response object (auth failure, cancellation,
-    max-turns-exceeded, fatal tool error) is written to stderr instead,
-    via the CLI's internal `UserFeedback` event path -- the two streams
-    are mutually exclusive for this command, never both populated by the
-    same run. `stdout` is tried first, so a successful run's parsing is
-    unaffected; `stderr` is only consulted when `stdout` has nothing
-    parseable, so this can't accidentally prefer stale/interleaved
-    stderr log text over a genuine response.
+    Two quirks this has to handle:
 
-    `session_id` is always the literal sentinel "latest", never a real
-    ID (see provider_command()'s Gemini branch for why) -- set only when
-    `exit_code` is 0 *and* the response parsed as a JSON object with no
-    `error` field, so a workspace that has never had a clean Gemini run
-    has nothing marked resumable. Both conditions matter: Gemini's own
-    exit-code/JSON-body correlation on failure isn't fully documented
-    (docs/research-gemini-cli.md "Practical Limitations" -- two
-    overlapping, disagreeing exit-code tables exist in its own docs), so
-    a nonzero exit with a superficially clean, `error`-free JSON body is
-    a real possibility this project can't rule out from official sources
-    alone -- checking exit_code too, not just the JSON body, avoids
-    marking a failed run resumable on the strength of the body check
-    alone.
+    - A tool call that needs a permission prompt is auto-denied in print
+      mode, yet the run still exits 0 with `status: "SUCCESS"`. With an empty
+      `response` that means the work was not done, so it is reported as a
+      `tool_failure` (which classify_handoff() turns into a handoff) with a
+      message telling the user how to grant the permission. A denial next to
+      a non-empty response is a failure too: a refused write or command
+      means the changes that reply describes were not applied (agy may only
+      be proposing a diff), so the work is handed on with the reply kept.
+    - `stdout` is tried first and `stderr` only when stdout has nothing
+      parseable, so a real response is never shadowed by stderr noise.
+
+    `session_id` is the real `conversation_id`, set only when exit_code is 0
+    and nothing in the envelope signalled a hard error, so a failed run never
+    marks a conversation resumable.
     """
     summary: dict[str, Any] = {
-        "provider": "gemini",
+        "provider": "agy",
         "session_id": None,
         "usage": None,
         "cost_usd": None,
@@ -1447,14 +1493,52 @@ def summarize_gemini(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[
     if not isinstance(data, dict):
         return summary
     summary["final_text"] = data.get("response") or ""
-    stats = data.get("stats")
-    if isinstance(stats, dict):
-        summary["usage"] = stats
+    usage = data.get("usage")
+    if isinstance(usage, dict):
+        summary["usage"] = usage
+    hard_error = False
     error = data.get("error")
+    status = data.get("status")
     if error:
         summary["errors"].append(error)
-    elif exit_code == 0:
-        summary["session_id"] = "latest"
+        hard_error = True
+    elif isinstance(status, str) and status.upper() != "SUCCESS":
+        summary["errors"].append({"type": "agy_status", "status": status, "message": str(data.get("message") or "")})
+        hard_error = True
+    denied = data.get("denied_actions")
+    if isinstance(denied, list) and denied:
+        names = sorted(
+            {
+                str(item.get("action") or item.get("display_name") or "?")
+                for item in denied
+                if isinstance(item, dict)
+            }
+        )
+        listed = ", ".join(names) or "?"
+        if not str(summary["final_text"]).strip():
+            message = (
+                f"agy denied tool action(s) [{listed}]: print mode cannot prompt for "
+                "permission, so nothing was done. Add allow rules under `permissions.allow` in agy's "
+                "settings.json (for example write_file(<path>) or command(<command>))."
+            )
+            summary["final_text"] = message
+        else:
+            # The reply is kept as-is (the next provider can read what agy
+            # proposed), and a denied write/command means the work it
+            # describes was NOT applied -- so this is still a failure, not a
+            # success with a footnote. The note stays out of final_text on
+            # purpose: classify_handoff() cuts final_text out of the stdout
+            # it scans, which only works while final_text is byte-for-byte
+            # what the CLI printed.
+            message = (
+                f"agy denied tool action(s) [{listed}]: print mode cannot prompt for permission, so "
+                "the changes its reply describes were not applied. Allow them under `permissions.allow` "
+                "in agy's settings.json, or let the next provider apply them."
+            )
+            summary["note"] = f"({message})"
+        summary["errors"].append({"type": "tool_failure", "message": message})
+    if not hard_error and exit_code == 0 and data.get("conversation_id"):
+        summary["session_id"] = str(data["conversation_id"])
     return summary
 
 
@@ -1467,7 +1551,7 @@ def classify_handoff(exit_code: int, stdout: str, stderr: str, parsed: dict[str,
     """
     combined = "\n".join([stdout, stderr])
     # The provider's own final answer text (already extracted into
-    # parsed["final_text"] by summarize_gemini()/its counterparts), plus any
+    # parsed["final_text"] by summarize_agy()/its counterparts), plus any
     # tool-echoed content collected into parsed["quoted_text"] by
     # summarize_codex()/summarize_claude() (command output, file reads, tool
     # call arguments), are cut out of the text these patterns scan below.
@@ -1557,7 +1641,9 @@ def choose_auto_provider(state: dict[str, Any]) -> str:
     if state.get("status") == "handoff_needed" and state.get("last_provider"):
         return next_available_provider(state["last_provider"])
     primary = state.get("primary_provider") or "codex"
-    if shutil.which(primary):
+    # A state.json written before a provider was removed (e.g. "gemini")
+    # must not resolve to it: fall through to the first installed one.
+    if primary in PROVIDERS and shutil.which(primary):
         return primary
     for provider in PROVIDERS:
         if shutil.which(provider):
@@ -1676,8 +1762,8 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         parsed = summarize_claude(parse_jsonl(stdout))
     else:
         # single JSON object, not a JSONL stream; may land on stdout
-        # (success) or stderr (fatal error) -- see summarize_gemini()
-        parsed = summarize_gemini(stdout, stderr, exit_code)
+        # (success) or stderr (fatal error) -- see summarize_agy()
+        parsed = summarize_agy(stdout, stderr, exit_code)
     handoff_needed, handoff_reason = classify_handoff(exit_code, stdout, stderr, parsed)
 
     session_id = parsed.get("session_id")
@@ -1693,7 +1779,7 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         "session_id": session_id,
         "usage": parsed.get("usage"),
         "cost_usd": parsed.get("cost_usd"),
-        "final_text": parsed.get("final_text") or excerpt(stderr),
+        "final_text": ((parsed.get("final_text") or excerpt(stderr)) + (f"\n\n{parsed['note']}" if parsed.get("note") else "")),
         "handoff_needed": handoff_needed,
         "reason": handoff_reason,
         "run_dir": str(run_dir),
@@ -1775,7 +1861,7 @@ def run_command(args: argparse.Namespace) -> int:
 
 CHAT_HELP = """Type a message and press Enter to send it. End a line with \\ to continue on the next line.
 
-  /provider [auto|codex|claude|gemini]   show or set which provider runs the next turn
+  /provider [auto|codex|claude|agy]   show or set which provider runs the next turn
   /fallback [on|off]                     show or set auto-fallback to another CLI on a limit
   /full [on|off]                         show or set full-prompt mode (inline the docs/ files)
   /tokens                                token totals for this chat session
@@ -1795,15 +1881,16 @@ def estimate_tokens(char_count: int) -> int:
 
 def usage_token_counts(usage: Any) -> dict[str, int]:
     """Best-effort sum of the input/output/cached token fields found anywhere
-    in a provider's `usage` object. Only field names Codex and Claude Code are
-    known to emit are recognised; anything else (including Gemini's `stats`
-    shape) yields {} and the caller shows no reported figure rather than a
+    in a provider's `usage` object. Only field names Codex, Claude Code and agy are
+    known to emit are recognised (plus agy's `cache_read_tokens`); anything
+    else yields {} and the caller shows no reported figure rather than a
     guessed one."""
     names = {
         "inputtokens": "input",
         "outputtokens": "output",
         "cachedinputtokens": "cached",
         "cachereadinputtokens": "cached",
+        "cachereadtokens": "cached",
     }
     totals: dict[str, int] = {}
 

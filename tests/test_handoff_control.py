@@ -2,7 +2,7 @@
 """Unit tests for handoff_control.py.
 
 Covers two fixes:
-1. PROVIDERS is derived from handoff_bridge.PROVIDERS (gemini included)
+1. PROVIDERS is derived from handoff_bridge.PROVIDERS (agy included)
    instead of a stale hardcoded ("auto", "codex", "claude") tuple.
 2. run_with_prompt() passes the turn prompt via --prompt-file (not a bare
    trailing positional after --instruction-type), which is the fix for a
@@ -29,20 +29,20 @@ class ProvidersDerivedFromBridgeTests(unittest.TestCase):
     def test_providers_matches_bridge_providers_plus_auto(self):
         self.assertEqual(hc.PROVIDERS, ("auto",) + handoff_bridge.PROVIDERS)
 
-    def test_gemini_is_selectable(self):
-        self.assertIn("gemini", hc.PROVIDERS)
+    def test_agy_is_selectable(self):
+        self.assertIn("agy", hc.PROVIDERS)
 
-    def test_primary_choices_in_build_parser_include_gemini(self):
+    def test_primary_choices_in_build_parser_include_agy(self):
         parser = hc.build_parser()
         primary_action = next(a for a in parser._actions if a.dest == "primary")
         self.assertEqual(tuple(primary_action.choices), handoff_bridge.PROVIDERS)
-        self.assertIn("gemini", primary_action.choices)
+        self.assertIn("agy", primary_action.choices)
 
 
 class AskProviderTests(unittest.TestCase):
-    def test_accepts_gemini_from_input(self):
-        with mock.patch("builtins.input", return_value="gemini"):
-            self.assertEqual(hc.ask_provider("auto"), "gemini")
+    def test_accepts_agy_from_input(self):
+        with mock.patch("builtins.input", return_value="agy"):
+            self.assertEqual(hc.ask_provider("auto"), "agy")
 
     def test_reprompts_on_unknown_value(self):
         with mock.patch("builtins.input", side_effect=["bogus", "codex"]):
@@ -71,9 +71,9 @@ class AskPrimaryProviderTests(unittest.TestCase):
         with mock.patch("builtins.input", side_effect=["auto", "codex"]):
             self.assertEqual(hc.ask_primary_provider("codex"), "codex")
 
-    def test_accepts_gemini(self):
-        with mock.patch("builtins.input", return_value="gemini"):
-            self.assertEqual(hc.ask_primary_provider("codex"), "gemini")
+    def test_accepts_agy(self):
+        with mock.patch("builtins.input", return_value="agy"):
+            self.assertEqual(hc.ask_primary_provider("codex"), "agy")
 
     def test_initialize_task_never_offers_auto_as_primary(self):
         captured, fake_run_bridge = _capture_run_bridge()

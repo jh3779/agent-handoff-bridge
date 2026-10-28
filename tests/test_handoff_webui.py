@@ -76,7 +76,7 @@ class IsLoopbackHostTests(unittest.TestCase):
 
 class AugmentPathForGuiLaunchTests(unittest.TestCase):
     """A GUI launch (Finder/Dock, not a terminal) inherits launchd's
-    minimal PATH on macOS -- codex/claude/gemini CLIs installed via
+    minimal PATH on macOS -- codex/claude/agy CLIs installed via
     Homebrew/nvm/etc. become invisible to shutil.which() as a result.
     augment_path_for_gui_launch() asks the user's login shell for its
     real PATH and merges in whatever's missing."""
@@ -1822,12 +1822,12 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         self.assertEqual(status, 200)
 
     def test_run_with_invalid_provider_is_rejected(self):
-        # "gemini" used to be the invalid example here -- Phase 5 made it
-        # a real provider (handoff_bridge.PROVIDERS grew to include it),
-        # so a genuinely unknown name is needed instead.
-        status, data = self._post("/api/run", {"provider": "not-a-real-provider", "text": "hi"})
-        self.assertEqual(status, 400)
-        self.assertIn("error", data)
+        # A provider name that was once real (agy, removed after Google
+        # ended individual-account service) is as invalid as any other.
+        for name in ("not-a-real-provider", "gemini"):
+            status, data = self._post("/api/run", {"provider": name, "text": "hi"})
+            self.assertEqual(status, 400, msg=name)
+            self.assertIn("error", data)
 
 
 class GetRunLockForTests(unittest.TestCase):
@@ -2782,7 +2782,7 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertNotIn("claude", webui_credentials.read_cli_provider_models())
 
     def test_whitespace_only_model_is_treated_as_empty(self):
-        webui_credentials.save_cli_provider_model("gemini", "   ")
+        webui_credentials.save_cli_provider_model("agy", "   ")
         self.assertEqual(webui_credentials.read_cli_provider_models(), {})
 
     def test_saving_one_provider_does_not_clobber_another(self):
@@ -2834,11 +2834,17 @@ class KnownCliModelsTests(unittest.TestCase):
             self.assertIn("id", m)
             self.assertIn("label", m)
 
-    def test_gemini_returns_a_nonempty_static_list(self):
-        models = webui_credentials.known_cli_models("gemini")
+    def test_agy_returns_a_nonempty_static_list_that_includes_non_google_models(self):
+        models = webui_credentials.known_cli_models("agy")
         self.assertTrue(models)
         for m in models:
             self.assertIn("id", m)
+        ids = {m["id"] for m in models}
+        self.assertTrue(any(i.startswith("claude-") for i in ids))
+        self.assertTrue(any(i.startswith("gemini-") for i in ids))
+
+    def test_removed_agy_provider_has_no_suggestions(self):
+        self.assertEqual(webui_credentials.known_cli_models("gemini"), [])
 
     def test_unknown_provider_returns_empty_list(self):
         self.assertEqual(webui_credentials.known_cli_models("totally-unknown"), [])
@@ -3013,7 +3019,7 @@ class CliProviderModelLiveServerTests(unittest.TestCase):
         _, data = self._get("/api/providers")
         self.assertEqual(set(data), {"providers"})
         by_name = {p["provider"]: p for p in data["providers"]}
-        self.assertEqual(set(by_name), {"codex", "claude", "gemini"})
+        self.assertEqual(set(by_name), {"codex", "claude", "agy"})
         for info in by_name.values():
             self.assertEqual(set(info), {"provider", "cli_detected", "cli_model", "known_models"})
         # claude's list doesn't depend on any local cache file, so it's a
@@ -3031,13 +3037,13 @@ class CliProviderModelLiveServerTests(unittest.TestCase):
         self.assertIn("invalid provider", data["error"])
 
     def test_empty_model_removes_a_previously_saved_one(self):
-        self._post("/api/cli-model", {"provider": "gemini", "model": "gemini-2.5-pro"})
-        status, data = self._post("/api/cli-model", {"provider": "gemini", "model": ""})
+        self._post("/api/cli-model", {"provider": "agy", "model": "claude-sonnet-5-5-medium"})
+        status, data = self._post("/api/cli-model", {"provider": "agy", "model": ""})
         self.assertEqual(status, 200)
         self.assertIsNone(data["model"])
         _, providers = self._get("/api/providers")
-        gemini = next(p for p in providers["providers"] if p["provider"] == "gemini")
-        self.assertIsNone(gemini["cli_model"])
+        agy = next(p for p in providers["providers"] if p["provider"] == "agy")
+        self.assertIsNone(agy["cli_model"])
 
     def test_invalid_provider_is_rejected_with_400(self):
         status, data = self._post("/api/cli-model", {"provider": "totally-unknown", "model": "x"})

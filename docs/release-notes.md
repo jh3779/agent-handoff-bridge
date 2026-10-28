@@ -4,6 +4,24 @@
 
 ## Unreleased
 
+- **Changed: the third provider is now Antigravity CLI (`agy`); Gemini CLI
+  support is removed.** Google stopped serving Gemini CLI to Google AI Pro,
+  Ultra and free individual accounts on 2026-06-18 and replaced it with
+  Antigravity CLI, which can also run Claude and open-weight models and uses
+  its own weekly quota. `run`, `chat`, the Web UI, the remote server and
+  auto-fallback now take `agy` where they took `gemini` (`gemini` is rejected
+  as a provider name). `agy` conversations resume by their real id
+  (`--conversation`), and the Settings panel suggests the models `agy models`
+  lists. An existing `.handoff/state.json` that names `gemini` is still read —
+  it is never run. **Important:** in headless mode `agy` refuses file writes
+  and shell commands unless you allow them under `permissions.allow` in its
+  own settings; the bridge records any run in which `agy` had a tool call
+  denied as a `tool_failure` (so auto-fallback moves on, with agy's reply kept)
+  and does not pass `--dangerously-skip-permissions`.
+  `agy` is asked to put its Changed/Verified/Remaining summary in its reply
+  rather than edit `.handoff/current.md` itself (the bridge records the reply).
+  See [Research: Antigravity CLI](research-antigravity-cli.md).
+
 - **Smaller prompts for cold starts and handoffs.** The prompt that starts a
   provider fresh (first turn, or a handoff after a quota/context limit) now
   carries a short "Working Rules" summary instead of the three protocol docs

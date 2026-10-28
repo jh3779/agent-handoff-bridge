@@ -35,7 +35,7 @@ else:
 BRIDGE_ROOT = Path(__file__).resolve().parent
 BRIDGE_SCRIPT = BRIDGE_ROOT / "handoff_bridge.py"
 # Derived from handoff_bridge.PROVIDERS (the canonical set, currently
-# codex/claude/gemini) instead of a stale local copy -- see handoff_webui.py,
+# codex/claude/agy) instead of a stale local copy -- see handoff_webui.py,
 # which already imports PROVIDERS the same way. "auto" is a GUI-only concept
 # added on top; handoff_bridge.py itself has no "auto" provider, and its own
 # `init --primary` accepts the full PROVIDERS set with no restricted subset.

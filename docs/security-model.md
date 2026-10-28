@@ -33,9 +33,12 @@ Never commit:
 - `~/Documents/Agent Handoff Bridge/credentials.json`.
 
 The bridge (`handoff_bridge.py`) shells out to `codex`, `claude`, and (as
-of Phase 5) `gemini`; each provider uses its own local auth and
-permission model — this is unchanged. Gemini has no free auth-status
-command to check (`docs/research-gemini-cli.md`), so `diagnose()`
+of v0.5.1) `agy`; each provider uses its own local auth and
+permission model — this is unchanged. In particular the bridge never passes
+`--dangerously-skip-permissions` to `agy`: its headless mode denies file writes
+and shell commands unless the user allows them in `agy`'s own settings.
+`agy` has no free auth-status
+command to check (`docs/research-antigravity-cli.md`), so `diagnose()`
 deliberately does not probe it — see
 [CLI Reference § Diagnose](cli-reference.md#diagnose).
 
@@ -148,7 +151,7 @@ now exists.
   *direct* children) isn't enough either: an in-flight provider run makes
   the real tree deeper (a second PyInstaller sidecar,
   `agent-handoff-bridge-cli`, spawned mid-run, which itself re-execs and
-  spawns the real `codex`/`claude`/`gemini` subprocess) -- none of those
+  spawns the real `codex`/`claude`/`agy` subprocess) -- none of those
   are direct children of the tracked PID. On Unix, the fix walks the
   whole descendant tree via repeated `pgrep -P` before killing anything
   (a dead process's children can no longer be found by ppid), then

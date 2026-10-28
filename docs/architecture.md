@@ -16,13 +16,15 @@ handoff_control.py  ->  handoff_bridge.py
         |                    |
         |                    +--> claude -p --output-format stream-json
         |                    |
-        |                    +--> gemini --output-format json
+        |                    +--> agy --output-format json
         |
         v
 .handoff/current.md + shared docs + git workspace
 ```
 
-Gemini was added in Phase 5
+A third provider was added in Phase 5 (Gemini CLI, replaced by Antigravity's
+`agy` in v0.5.1 — [DEC-30](design-system/flutter-mapping.html#s1c),
+[research](research-antigravity-cli.md))
 ([docs/design-system/roadmap.md](design-system/roadmap.md)) as this
 project's first test of whether the two-provider assumption baked into
 earlier code actually generalized — see
@@ -167,8 +169,8 @@ store: [Web UI Chat Storage](webui-chat-storage.md).
 `agentskills.io`'s `SKILL.md` format (originally Claude Code's, now an open
 standard) is discovered natively by all three CLIs this bridge supports —
 Codex CLI reads `.agents/skills/` as its primary location, Claude Code reads
-`.claude/skills/` and also discovers `.agents/skills/`, and Gemini CLI
-discovers `.agents/skills/`/`.gemini/skills/` as workspace-level skills. This
+`.claude/skills/` and also discovers `.agents/skills/`, and Antigravity CLI
+reads `.agents/skills/` as workspace-level skills (migrated from `.gemini/skills/`). This
 means a single `SKILL.md` under `.agents/skills/<name>/` reaches every
 provider without any bridge-side translation.
 

@@ -17,7 +17,7 @@ from handoff_bridge import PROVIDERS as BRIDGE_PROVIDERS
 
 
 # Derived from handoff_bridge.PROVIDERS (the canonical set, currently
-# codex/claude/gemini) instead of a stale local copy -- see handoff_webui.py,
+# codex/claude/agy) instead of a stale local copy -- see handoff_webui.py,
 # which already imports PROVIDERS the same way. "auto" is a CLI-only concept
 # added on top; handoff_bridge.py itself has no "auto" provider, and its own
 # `init --primary` accepts the full PROVIDERS set with no restricted subset.

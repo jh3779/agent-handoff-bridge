@@ -36,13 +36,13 @@ TOKEN_FILE = REMOTE_DIR / "token"
 # "auto" is this server's own accepted value (routed to choose_auto_provider()
 # inside handoff_bridge.py), not one of handoff_bridge.PROVIDERS itself -- kept
 # as a local addition on top of the imported, canonical provider set instead
-# of a second hardcoded copy, so a new provider (e.g. the Gemini addition this
+# of a second hardcoded copy, so a new provider (e.g. the third provider this
 # constant used to miss) only ever needs to change in one place.
 PROVIDERS = {"auto", *BRIDGE_PROVIDERS}
 # handoff_bridge.py's own `init --primary` argparse choice accepts the full
 # PROVIDERS set (no separate restricted subset exists there) -- this used to
 # hardcode {"codex", "claude"}, the same staleness bug as PROVIDERS above,
-# rejecting a valid --primary gemini before it ever reached handoff_bridge.py.
+# rejecting a valid third --primary provider before it ever reached handoff_bridge.py.
 PRIMARY_PROVIDERS = set(BRIDGE_PROVIDERS)
 
 
@@ -207,8 +207,8 @@ def normalize_task(payload: dict[str, Any], server: RemoteHandoffServer) -> dict
     if provider not in PROVIDERS:
         # Built from the actual PROVIDERS set, not a second hardcoded
         # string -- this used to say "auto, codex, claude" even after
-        # PROVIDERS itself was fixed to include gemini, telling a caller
-        # gemini wasn't allowed when it actually was.
+        # PROVIDERS itself was fixed to include the third provider, telling
+        # a caller it wasn't allowed when it actually was.
         raise ValueError(f"provider must be one of: {', '.join(sorted(PROVIDERS))}")
     if primary not in PRIMARY_PROVIDERS:
         raise ValueError(f"primary must be one of: {', '.join(sorted(PRIMARY_PROVIDERS))}")

@@ -84,18 +84,26 @@ _CLAUDE_KNOWN_MODELS = [
     {"id": "fable", "label": "Fable (latest)"},
 ]
 
-# geminicli.com's own docs (fetched 2026-09-03), not independently verified
-# against a real authenticated call on this machine (no Gemini auth
-# configured here) -- unlike the codex/claude lists below, which come from
-# either a live local cache file or the CLI's own --help text. Still a
-# <datalist>, not a closed <select>, so a stale/renamed entry here degrades
-# to "one suggestion doesn't autofill" rather than "the only options are
-# wrong."
-_GEMINI_KNOWN_MODELS = [
-    {"id": "gemini-3-pro-preview", "label": "Gemini 3 Pro (preview)"},
-    {"id": "gemini-3-flash-preview", "label": "Gemini 3 Flash (preview, faster)"},
-    {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
-    {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash (faster)"},
+# Copied from `agy models` (agy 1.4.8, 2026-10-28), so these are the ids the
+# CLI itself accepts for --model today -- including non-Google models, since
+# Antigravity runs Claude and open-weight models as well as Gemini. The CLI's
+# own list is authoritative and changes over time; this is still a
+# <datalist>, not a closed <select>, so a stale/renamed entry here degrades to
+# "one suggestion doesn't autofill" rather than "the only options are wrong."
+_AGY_KNOWN_MODELS = [
+    {"id": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)"},
+    {"id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)"},
+    {"id": "gemini-4-argon-low", "label": "Gemini 4 Argon (Low)"},
+    {"id": "gemini-3.8-flash-high", "label": "Gemini 3.8 Flash (High)"},
+    {"id": "gemini-3.8-flash-medium", "label": "Gemini 3.8 Flash (Medium)"},
+    {"id": "gemini-3.8-flash-low", "label": "Gemini 3.8 Flash (Low)"},
+    {"id": "claude-opus-5-5-low", "label": "Claude Opus 5.5 (Low)"},
+    {"id": "claude-opus-5-5-medium", "label": "Claude Opus 5.5 (Medium)"},
+    {"id": "claude-opus-5-5-high", "label": "Claude Opus 5.5 (High)"},
+    {"id": "claude-sonnet-5-5-low", "label": "Claude Sonnet 5.5 (Low)"},
+    {"id": "claude-sonnet-5-5-medium", "label": "Claude Sonnet 5.5 (Medium)"},
+    {"id": "claude-sonnet-5-5-high", "label": "Claude Sonnet 5.5 (High)"},
+    {"id": "gpt-oss-120b-medium", "label": "GPT-OSS 120B (Medium)"},
 ]
 
 
@@ -146,8 +154,8 @@ def known_cli_models(provider: str) -> list[dict]:
         return _codex_known_models()
     if provider == "claude":
         return list(_CLAUDE_KNOWN_MODELS)
-    if provider == "gemini":
-        return list(_GEMINI_KNOWN_MODELS)
+    if provider == "agy":
+        return list(_AGY_KNOWN_MODELS)
     return []
 
 

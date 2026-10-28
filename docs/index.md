@@ -57,7 +57,10 @@ context.
 - [Research: API-Key Mode](research-api-key-mode.md): *historical* — Phase 4's
   pre-implementation research into Anthropic/OpenAI direct-API capabilities
   and credential storage options. The mode it informed was later removed.
-- [Research: Gemini CLI](research-gemini-cli.md): Phase 5's
+- [Research: Antigravity CLI](research-antigravity-cli.md): how `agy` (which
+  replaced Gemini CLI) was verified for headless use — JSON envelope, stdin,
+  conversation resume, the permission model, and available models.
+- [Research: Gemini CLI](research-gemini-cli.md): *historical* — Phase 5's
   pre-implementation research into Gemini CLI's non-interactive mode,
   JSON output, session resume, auth, and hooks.
 - [Research: Framework Migration](research-phase7-framework.md): Phase 7's

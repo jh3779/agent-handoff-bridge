@@ -832,7 +832,7 @@ def augment_path_for_gui_launch() -> None:
     from Finder/Dock/Spotlight, not run from a terminal) inherits
     launchd's minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin), not the
     user's shell PATH -- Homebrew (/opt/homebrew/bin, /usr/local/bin),
-    nvm, and other common install locations for the codex/claude/gemini
+    nvm, and other common install locations for the codex/claude/agy
     CLIs live outside that, so shutil.which() finds nothing here even
     though the same CLI works fine from Terminal.app. Fixed by asking
     the user's own login shell for its real PATH and merging in
