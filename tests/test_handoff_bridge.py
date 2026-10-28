@@ -932,6 +932,262 @@ class FullPromptFlagTests(unittest.TestCase):
         self.assertFalse(hb.build_parser().parse_args(["run", "codex", "hi"]).full_prompt)
 
 
+class UniqueRunDirectoryTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
+
+    def test_two_turns_in_the_same_second_get_separate_log_directories(self):
+        fixed = hb.datetime(2026, 1, 1, 12, 0, 0, tzinfo=hb.timezone.utc)
+
+        def fake_run(command, **kwargs):
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+            marker = command[0]
+            return subprocess.CompletedProcess(
+                command,
+                returncode=0,
+                stdout='{"type": "result", "session_id": "s", "result": "reply from ' + marker + '", "is_error": false}\n',
+                stderr="",
+            )
+
+        args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                     timeout_seconds=0, model=None, instruction_type="continue")
+        state = {"task": "t", "primary_provider": "claude", "status": "ready"}
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+            hb.subprocess, "run", side_effect=fake_run
+        ), mock.patch.object(hb, "datetime") as fake_datetime:
+            fake_datetime.now.return_value = fixed
+            hb.run_provider("claude", args, state)
+            first_stdout = (Path(state["history"][0]["run_dir"]) / "stdout.jsonl").read_text(encoding="utf-8")
+            args.prompt = "second"
+            hb.run_provider("claude", args, state)
+        dirs = [record["run_dir"] for record in state["history"]]
+        self.assertEqual(len(set(dirs)), 2)
+        self.assertEqual((Path(dirs[0]) / "stdout.jsonl").read_text(encoding="utf-8"), first_stdout)
+        self.assertTrue(dirs[1].endswith("-claude-2"))
+
+
+class UsageTokenCountsTests(unittest.TestCase):
+    def test_codex_shape(self):
+        usage = {"input_tokens": 1000, "cached_input_tokens": 800, "output_tokens": 50}
+        self.assertEqual(hb.usage_token_counts(usage), {"input": 1000, "cached": 800, "output": 50})
+
+    def test_claude_shape_with_nested_objects(self):
+        usage = {
+            "input_tokens": 12,
+            "output_tokens": 34,
+            "cache_read_input_tokens": 5000,
+            "cache_creation_input_tokens": 70,
+            "server_tool_use": {"web_search_requests": 0},
+        }
+        self.assertEqual(hb.usage_token_counts(usage), {"input": 12, "output": 34, "cached": 5000})
+
+    def test_unrecognised_or_missing_usage_yields_nothing_rather_than_a_guess(self):
+        self.assertEqual(hb.usage_token_counts(None), {})
+        self.assertEqual(hb.usage_token_counts({"models": {"x": {"tokens": {"prompt": 5, "total": 9}}}}), {})
+
+    def test_booleans_and_strings_are_ignored(self):
+        self.assertEqual(hb.usage_token_counts({"input_tokens": True, "output_tokens": "7"}), {})
+
+    def test_estimate_tokens_rounds_up(self):
+        self.assertEqual(hb.estimate_tokens(0), 0)
+        self.assertEqual(hb.estimate_tokens(1), 1)
+        self.assertEqual(hb.estimate_tokens(4), 1)
+        self.assertEqual(hb.estimate_tokens(5), 2)
+
+
+class ChatReplTests(unittest.TestCase):
+    """`chat`: a line-oriented front end over run_command(), so everything
+    below drives it with scripted input and a faked provider subprocess."""
+
+    CLAUDE_STDOUT = (
+        '{"type": "system", "subtype": "init", "session_id": "s1"}\n'
+        '{"type": "result", "session_id": "s1", "result": "all done", '
+        '"usage": {"input_tokens": 120, "output_tokens": 30, "cache_read_input_tokens": 500}, '
+        '"total_cost_usd": 0.01, "is_error": false}\n'
+    )
+
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
+        self.provider_inputs = []
+
+    def _fake_run(self, command, **kwargs):
+        if command[0] == "git":
+            return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+        self.provider_inputs.append((command[0], kwargs.get("input", "")))
+        return subprocess.CompletedProcess(command, returncode=0, stdout=self.CLAUDE_STDOUT, stderr="")
+
+    def _chat(self, lines, **overrides):
+        args = hb.build_parser().parse_args(["chat", "claude"])
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        feed = iter(lines)
+
+        def input_fn(prompt):
+            try:
+                return next(feed)
+            except StopIteration:
+                raise EOFError
+
+        output = []
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+            hb.subprocess, "run", side_effect=self._fake_run
+        ):
+            code = hb.chat_command(args, input_fn=input_fn, out=output.append)
+        return code, "\n".join(output)
+
+    def test_parser_defaults(self):
+        args = hb.build_parser().parse_args(["chat"])
+        self.assertEqual(args.provider, "auto")
+        self.assertTrue(args.auto_fallback)
+        self.assertFalse(args.full_prompt)
+        self.assertFalse(hb.build_parser().parse_args(["chat", "--no-auto-fallback"]).auto_fallback)
+
+    def test_a_message_runs_the_provider_and_shows_reply_and_token_line(self):
+        code, output = self._chat(["fix the bug", "/exit"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.provider_inputs), 1)
+        self.assertEqual(self.provider_inputs[0][0], "claude")
+        self.assertIn("fix the bug", self.provider_inputs[0][1])
+        self.assertIn("[claude] exit 0 - ok", output)
+        self.assertIn("all done", output)
+        self.assertIn("tokens: sent ~", output)
+        self.assertIn("reported in 120, out 30, cached 500", output)
+        self.assertIn("cost $0.01", output)
+
+    def test_the_result_is_recorded_in_state_like_any_other_run(self):
+        self._chat(["hello", "/exit"])
+        history = hb.load_state()["history"]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["provider"], "claude")
+
+    def test_second_turn_resumes_the_session_and_sends_a_smaller_prompt(self):
+        self._chat(["first", "second", "/exit"])
+        self.assertEqual(len(self.provider_inputs), 2)
+        self.assertLess(len(self.provider_inputs[1][1]), len(self.provider_inputs[0][1]))
+
+    def test_totals_are_printed_on_exit_and_by_slash_tokens(self):
+        _, output = self._chat(["one", "/tokens", "/exit"])
+        self.assertIn("this session: 1 run(s), sent ~", output)
+        self.assertGreaterEqual(output.count("this session:"), 2)
+
+    def test_eof_ends_the_chat_cleanly(self):
+        code, output = self._chat(["hello"])
+        self.assertEqual(code, 0)
+        self.assertIn("this session: 1 run(s)", output)
+
+    def test_blank_lines_are_ignored(self):
+        _, output = self._chat(["", "   ", "/exit"])
+        self.assertEqual(self.provider_inputs, [])
+        self.assertIn("this session: 0 run(s)", output)
+
+    def test_trailing_backslash_continues_the_message(self):
+        self._chat(["line one \\", "line two", "/exit"])
+        self.assertEqual(len(self.provider_inputs), 1)
+        sent = self.provider_inputs[0][1]
+        self.assertIn("line one \nline two", sent)
+
+    def test_eof_in_the_middle_of_a_multiline_message_sends_nothing_and_ends_the_chat(self):
+        code, output = self._chat(["delete temporary \\"])
+        self.assertEqual(code, 0)
+        self.assertEqual(self.provider_inputs, [])
+        self.assertIn("this session: 0 run(s)", output)
+
+    def test_ctrl_c_while_typing_discards_the_message_and_returns_to_the_prompt(self):
+        args = hb.build_parser().parse_args(["chat", "claude"])
+        script = iter(["delete temporary \\", KeyboardInterrupt, "hello", "/exit"])
+
+        def input_fn(prompt):
+            item = next(script)
+            if item is KeyboardInterrupt:
+                raise KeyboardInterrupt
+            return item
+
+        out = []
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+            hb.subprocess, "run", side_effect=self._fake_run
+        ):
+            hb.chat_command(args, input_fn=input_fn, out=out.append)
+        self.assertEqual(len(self.provider_inputs), 1)
+        sent = self.provider_inputs[0][1]
+        self.assertIn("hello", sent)
+        self.assertNotIn("delete temporary", sent)
+
+    def test_ctrl_c_while_a_provider_runs_reports_the_turn_as_not_recorded_and_keeps_chatting(self):
+        args = hb.build_parser().parse_args(["chat", "claude"])
+        feed = iter(["first", "/exit"])
+        calls = []
+
+        def interrupting_run_command(ns):
+            calls.append(ns.prompt)
+            raise KeyboardInterrupt
+
+        out = []
+        with mock.patch.object(hb, "run_command", side_effect=interrupting_run_command):
+            code = hb.chat_command(args, input_fn=lambda prompt: next(feed), out=out.append)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, ["first"])
+        joined = "\n".join(out)
+        self.assertIn("this turn was not recorded", joined)
+        self.assertNotIn("background", joined)
+
+    def test_unknown_slash_command_does_not_call_a_provider(self):
+        _, output = self._chat(["/nope", "/exit"])
+        self.assertIn("unknown command /nope", output)
+        self.assertEqual(self.provider_inputs, [])
+
+    def test_provider_command_validates_and_switches(self):
+        _, output = self._chat(["/provider vim", "/provider codex", "/exit"])
+        self.assertIn("unknown provider 'vim'", output)
+        self.assertIn("provider: codex", output)
+
+    def test_fallback_and_full_toggles(self):
+        session = hb.ChatSession("auto", True, False, None, 0)
+        lines = []
+        session.handle_command("/fallback off", lines.append)
+        session.handle_command("/full on", lines.append)
+        self.assertFalse(session.auto_fallback)
+        self.assertTrue(session.full_prompt)
+        self.assertEqual(lines, ["fallback: off", "full: on"])
+        session.handle_command("/full maybe", lines.append)
+        self.assertIn("usage: /full [on|off]", lines)
+        self.assertTrue(session.full_prompt)
+
+    def test_exit_and_quit_both_end_the_chat(self):
+        session = hb.ChatSession("auto", True, False, None, 0)
+        self.assertFalse(session.handle_command("/exit", lambda _: None))
+        self.assertFalse(session.handle_command("/quit", lambda _: None))
+        self.assertTrue(session.handle_command("/help", lambda _: None))
+
+    def test_a_run_that_records_nothing_surfaces_its_output(self):
+        session = hb.ChatSession("claude", True, False, None, 0)
+
+        def failing_run_command(args):
+            print("error: another `run` is already in progress")
+            return 75
+
+        lines = []
+        with mock.patch.object(hb, "run_command", side_effect=failing_run_command):
+            code = session.run_turn("hi", lines.append)
+        self.assertEqual(code, 75)
+        self.assertIn("already in progress", "\n".join(lines))
+        self.assertEqual(session.turns, 0)
+
+    def test_full_flag_reaches_the_prompt(self):
+        Path("docs").mkdir()
+        Path("docs/shared-agent-contract.md").write_text("CUSTOM_CONTRACT_MARKER", encoding="utf-8")
+        self._chat(["hello", "/exit"], full_prompt=True)
+        self.assertIn("CUSTOM_CONTRACT_MARKER", self.provider_inputs[0][1])
+
+
 class VersionTests(unittest.TestCase):
     def test_cli_version_flag_reports_bridge_version(self):
         result = subprocess.run(
