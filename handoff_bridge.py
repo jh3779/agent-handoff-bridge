@@ -49,6 +49,26 @@ CURRENT_FILE = HANDOFF_DIR / "current.md"
 # already-established "how much raw text is reasonable to hand a model at
 # once" magnitude elsewhere in this project.
 MAX_CURRENT_FILE_PROMPT_CHARS = 20_000
+# Default (compact) prompt mode: the handoff log is folded in as its newest
+# few *entries* -- whole `##`/`###` sections, newest first, up to this many
+# characters -- instead of a raw 20,000-character tail. The newest entry
+# is where the previous provider recorded Remaining/Blocked/Next, which is
+# all a receiving provider actually needs; older history stays on disk.
+# `run --full-prompt` restores the pre-compact 20,000-character tail.
+COMPACT_CURRENT_PROMPT_CHARS = 5_000
+# `.handoff/current.md` is append-only and an agent that follows "read
+# .handoff/current.md first" opens the *whole* file (a 280KB log is ~70,000
+# tokens), regardless of how little build_prompt() sends. Once the file
+# passes the threshold, the oldest entries move to .handoff/archive/ so the
+# live file stays near CURRENT_ARCHIVE_KEEP_CHARS.
+CURRENT_ARCHIVE_THRESHOLD_CHARS = 60_000
+CURRENT_ARCHIVE_KEEP_CHARS = 30_000
+ARCHIVE_DIR = HANDOFF_DIR / "archive"
+CURRENT_ARCHIVE_POINTER = "<!-- Older entries were moved to .handoff/archive/ -->\n"
+EARLIER_HISTORY_OMITTED_NOTE = (
+    "...[earlier history omitted -- see `.handoff/current.md` on disk "
+    "for the full log]"
+)
 NEXT_PROMPT_FILE = HANDOFF_DIR / "next-prompt.md"
 # User-editable, workspace-local project context that should reach every
 # provider regardless of how it's invoked -- folded into every prompt by
@@ -263,10 +283,98 @@ def tail_for_prompt(text: str, max_chars: int) -> str:
     newline_index = tail.find("\n")
     if newline_index != -1:
         tail = tail[newline_index + 1 :]
-    return (
-        "...[earlier history omitted -- see `.handoff/current.md` on disk "
-        f"for the full log]\n\n{tail}"
-    )
+    return f"{EARLIER_HISTORY_OMITTED_NOTE}\n\n{tail}"
+
+
+_LOG_SECTION_HEADING = re.compile(r"^#{2,3} ", re.M)
+
+
+def split_log_sections(text: str) -> list[str]:
+    """Split `.handoff/current.md` text into `##`/`###` sections (any text
+    before the first heading is its own leading section). `"".join()` of
+    the result is always exactly `text`."""
+    if not text:
+        return []
+    starts = [m.start() for m in _LOG_SECTION_HEADING.finditer(text)]
+    bounds = ([0] if not starts or starts[0] != 0 else []) + starts + [len(text)]
+    return [text[a:b] for a, b in zip(bounds, bounds[1:])]
+
+
+def newest_sections(sections: list[str], max_chars: int) -> list[str]:
+    """Newest-first walk keeping whole sections while they fit in
+    `max_chars`; the newest section is always kept even if it alone is
+    over budget."""
+    kept: list[str] = []
+    total = 0
+    for section in reversed(sections):
+        if kept and total + len(section) > max_chars:
+            break
+        kept.append(section)
+        total += len(section)
+    kept.reverse()
+    return kept
+
+
+def recent_log_for_prompt(text: str, max_chars: int) -> str:
+    """Compact-mode counterpart of tail_for_prompt(): keeps the newest whole
+    log entries instead of cutting at an arbitrary character offset, so the
+    receiving provider sees complete Remaining/Blocked/Next sections. A
+    single entry larger than the budget falls back to tail_for_prompt()."""
+    if len(text) <= max_chars:
+        return text
+    sections = split_log_sections(text)
+    kept = newest_sections(sections, max_chars)
+    body = "".join(kept)
+    if len(body) > max_chars:
+        return tail_for_prompt(body, max_chars)
+    if len(kept) < len(sections):
+        return f"{EARLIER_HISTORY_OMITTED_NOTE}\n\n{body}"
+    return body
+
+
+def archive_old_current_entries(state: dict[str, Any]) -> int:
+    """Move the oldest `.handoff/current.md` entries to
+    `.handoff/archive/current-<UTC timestamp>.md` once the file passes
+    CURRENT_ARCHIVE_THRESHOLD_CHARS, keeping about CURRENT_ARCHIVE_KEEP_CHARS
+    of the newest entries. Returns how many characters left the live file
+    (0 when nothing moved).
+
+    `state["prompt_context_offsets"]` are character offsets into the live
+    file (see build_prompt()), so they are shifted by exactly what was
+    removed -- otherwise a continuation turn would slice the shortened file
+    at a stale position and silently skip new entries. The caller owns
+    saving `state`."""
+    with WriteLock():
+        if not CURRENT_FILE.exists():
+            return 0
+        text = CURRENT_FILE.read_text(encoding="utf-8")
+        if len(text) <= CURRENT_ARCHIVE_THRESHOLD_CHARS:
+            return 0
+        prefix_len = len(CURRENT_ARCHIVE_POINTER) if text.startswith(CURRENT_ARCHIVE_POINTER) else 0
+        body = text[prefix_len:]
+        sections = split_log_sections(body)
+        kept = newest_sections(sections, CURRENT_ARCHIVE_KEEP_CHARS)
+        moved = "".join(sections[: len(sections) - len(kept)])
+        if not moved:
+            return 0
+        ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        archive_path = ARCHIVE_DIR / f"current-{stamp}.md"
+        counter = 1
+        while archive_path.exists():
+            archive_path = ARCHIVE_DIR / f"current-{stamp}-{counter}.md"
+            counter += 1
+        # Archive first: if we crash before the live file is rewritten the
+        # entries exist twice, never zero times.
+        atomic_write_text(archive_path, moved)
+        atomic_write_text(CURRENT_FILE, CURRENT_ARCHIVE_POINTER + "".join(kept))
+    shift = prefix_len + len(moved) - len(CURRENT_ARCHIVE_POINTER)
+    offsets = state.get("prompt_context_offsets")
+    if isinstance(offsets, dict):
+        for name, value in list(offsets.items()):
+            if isinstance(value, int):
+                offsets[name] = max(0, value - shift)
+    return shift
 
 
 def read_workspace_or_bridge(rel_path: str, default: str = "") -> str:
@@ -780,7 +888,7 @@ def git_snapshot() -> str:
 # unrelated, user-configured global skill (a same-named but functionally
 # different session-continuity or self-evaluation skill).
 SELF_CONTAINED_NOTICE = """This prompt is self-contained for this turn -- the protocol docs, workspace
-state, and git status referenced below are already included in full (or were already given to you
+state, and git status referenced below are already included (or were already given to you
 earlier in this same resumed session). Do not spend time re-opening those files or re-running the
 same git commands unless you have a concrete, stated reason to think they changed since this prompt
 was generated. This tool (agent-handoff-bridge) manages its own state under `.handoff/` -- unrelated
@@ -815,8 +923,80 @@ investigating or verifying (a failing check, a missing file, an unrelated bug) -
 in your summary and stop there; do not fix it unprompted, even if fixing it looks small."""
 
 
-def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason: str | None = None) -> str:
-    """`reason` is set only for a genuine handoff (this provider is being
+# Compact stand-in for the three docs/ files (docs/agent-targeting-protocol.md,
+# docs/shared-agent-contract.md, docs/verification-playbook.md -- ~9,400
+# characters, about half of it mobile-app example blocks) that a cold-start
+# or handoff prompt used to inline in full. Keep it in sync with the rules in
+# shared-agent-contract.md; the failure labels are checked against
+# HANDOFF_LABELS by tests. `run --full-prompt` still inlines the real files
+# (a workspace may have customised them).
+PROTOCOL_SUMMARY = """- Priority when instructions conflict: the user's latest instruction, then safety and
+  non-destructive handling, then this project's shared contract, then `.handoff/current.md`,
+  then project conventions. Record any conflict in `.handoff/current.md`.
+- The files on disk are the source of truth, not the previous provider's hidden transcript.
+  Preserve other people's unrelated edits; keep changes scoped to the task; no broad refactors,
+  new dependencies, or formatting churn unless the task needs them.
+- Verify with the narrowest relevant check first (`python3 -m py_compile` for changed Python,
+  `python3 -m json.tool` for JSON, the project's own test/build commands for app code). If a check
+  cannot run, record `not run` with the reason. Never commit secrets or auth files.
+- Failure labels (use exactly these when recording why a run stopped): quota, rate_limit, auth,
+  billing, context_limit, overloaded, tool_failure, unknown.
+- Hand off to another provider when the current one hits a quota, rate-limit, billing, auth,
+  context, or max-output failure, when tools are repeatedly blocked, or when the user asks.
+- Before stopping, append a concise entry to `.handoff/current.md` in this shape: Target
+  (provider/model/workspace), Changed, Verified, Remaining, Blocked, Next. If nothing changed, say
+  so. The task is done only when the requested work exists, checks passed or are marked not
+  applicable, and the other provider could continue from files alone.
+- The full rules live in `docs/shared-agent-contract.md`, `docs/agent-targeting-protocol.md`, and
+  `docs/verification-playbook.md`; this summary is complete for ordinary tasks."""
+
+
+PROTOCOL_DOC_PATHS = (
+    "docs/agent-targeting-protocol.md",
+    "docs/shared-agent-contract.md",
+    "docs/verification-playbook.md",
+)
+
+
+def _normalized_doc_text(text: str) -> str:
+    return text.replace("\r\n", "\n").strip()
+
+
+def protocol_docs_customized() -> bool:
+    """True when this workspace carries its own version of any of the three
+    protocol docs (text differs from the copy bundled with the bridge).
+    PROTOCOL_SUMMARY only summarizes the *bundled* rules, so a workspace
+    that added its own rules (e.g. extra checks in
+    docs/verification-playbook.md -- a documented extension point) must
+    have the real text sent, on every surface (CLI, Web UI, desktop,
+    remote) without any flag having to be threaded through each of them."""
+    for rel in PROTOCOL_DOC_PATHS:
+        workspace_path = Path(rel)
+        bundled_path = BRIDGE_ROOT / rel
+        if not workspace_path.exists() or not bundled_path.exists():
+            continue
+        try:
+            workspace_text = workspace_path.read_text(encoding="utf-8")
+            bundled_text = bundled_path.read_text(encoding="utf-8")
+        except OSError:
+            return True
+        if _normalized_doc_text(workspace_text) != _normalized_doc_text(bundled_text):
+            return True
+    return False
+
+
+def build_prompt(
+    provider: str, state: dict[str, Any], user_prompt: str, reason: str | None = None, full: bool = False
+) -> str:
+    """`full=False` (the default, "compact" prompt mode) folds in the newest few
+    `.handoff/current.md` entries (COMPACT_CURRENT_PROMPT_CHARS) and
+    PROTOCOL_SUMMARY; `full=True` (`run --full-prompt`) restores the
+    original behavior of inlining the three docs/ files in full plus a
+    MAX_CURRENT_FILE_PROMPT_CHARS tail of the log. Compact mode switches
+    itself to full when the workspace has customised any of the three docs
+    (protocol_docs_customized()).
+
+    `reason` is set only for a genuine handoff (this provider is being
     invoked *because* another one just hit quota/rate-limit/etc., or this
     is otherwise a cold start for it) -- in that case it needs the full
     picture below, same as ever.
@@ -860,6 +1040,8 @@ def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason:
     from existing; the notice is a best-effort, in-prompt mitigation, not
     a guarantee.
     """
+    if not full and protocol_docs_customized():
+        full = True
     task = state.get("task") or user_prompt or "Continue the current handoff task."
     active_model = state.get("active_model") or "app-selected default"
     instruction_type = state.get("instruction_type") or "continue"
@@ -874,6 +1056,11 @@ def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason:
 
     resumed_session_id = (state.get("sessions") or {}).get(provider)
     prior_offset = (state.get("prompt_context_offsets") or {}).get(provider, 0)
+    if not isinstance(prior_offset, int) or prior_offset < 0 or prior_offset > len(full_current):
+        # A stale offset (log shortened by archiving, edited, or replaced
+        # since it was recorded) would slice to nothing and silently skip
+        # everything new; re-send what is there instead.
+        prior_offset = 0
     # Recorded unconditionally (both branches below), so whichever branch
     # runs this turn, the *next* continuation turn's delta starts from
     # here -- not just from whenever a continuation turn last happened to
@@ -881,7 +1068,12 @@ def build_prompt(provider: str, state: dict[str, Any], user_prompt: str, reason:
     state.setdefault("prompt_context_offsets", {})[provider] = len(full_current)
 
     if resumed_session_id and reason is None:
-        new_entries = tail_for_prompt(full_current[prior_offset:].strip(), MAX_CURRENT_FILE_PROMPT_CHARS)
+        unseen = full_current[prior_offset:].strip()
+        new_entries = (
+            tail_for_prompt(unseen, MAX_CURRENT_FILE_PROMPT_CHARS)
+            if full
+            else recent_log_for_prompt(unseen, COMPACT_CURRENT_PROMPT_CHARS)
+        )
         new_entries_block = (
             f"\n## New Handoff Log Entries Since Your Last Turn\n\n{new_entries}\n" if new_entries else ""
         )
@@ -908,10 +1100,40 @@ session; only what's new is included below.
 {git_snapshot()}
 """
 
-    targeting = read_workspace_or_bridge("docs/agent-targeting-protocol.md", "(no docs/agent-targeting-protocol.md yet)")
-    contract = read_workspace_or_bridge(str(CONTRACT_FILE), "(no docs/shared-agent-contract.md yet)")
-    verification = read_workspace_or_bridge(str(VERIFICATION_FILE), "(no docs/verification-playbook.md yet)")
-    current = tail_for_prompt(full_current, MAX_CURRENT_FILE_PROMPT_CHARS)
+    if full:
+        targeting = read_workspace_or_bridge("docs/agent-targeting-protocol.md", "(no docs/agent-targeting-protocol.md yet)")
+        contract = read_workspace_or_bridge(str(CONTRACT_FILE), "(no docs/shared-agent-contract.md yet)")
+        verification = read_workspace_or_bridge(str(VERIFICATION_FILE), "(no docs/verification-playbook.md yet)")
+        current = tail_for_prompt(full_current, MAX_CURRENT_FILE_PROMPT_CHARS)
+        docs_behavior = (
+            "- The full text of `docs/agent-targeting-protocol.md`, `docs/shared-agent-contract.md`, and\n"
+            "  `docs/verification-playbook.md` is included below -- follow them, but there is no need to\n"
+            "  open these files again."
+        )
+        docs_sections = f"""## Agent Targeting Protocol
+
+{targeting}
+
+## Shared Agent Contract
+
+{contract}
+
+## Verification Playbook
+
+{verification}
+"""
+    else:
+        current = recent_log_for_prompt(full_current, COMPACT_CURRENT_PROMPT_CHARS)
+        docs_behavior = (
+            "- The working rules are summarized below under \"Working Rules\" -- that summary is complete\n"
+            "  for this task, so do not open `docs/agent-targeting-protocol.md`,\n"
+            "  `docs/shared-agent-contract.md`, or `docs/verification-playbook.md` unless the task is about\n"
+            "  changing them."
+        )
+        docs_sections = f"""## Working Rules
+
+{PROTOCOL_SUMMARY}
+"""
     return f"""You are {provider}, working via the agent-handoff-bridge CLI tool on a task in this workspace.
 
 {SELF_CONTAINED_NOTICE}
@@ -932,9 +1154,7 @@ session; only what's new is included below.
   the user's latest instruction says otherwise.
 - If the active model is unknown or app-selected, record the visible model if
   this surface exposes it.
-- The full text of `docs/agent-targeting-protocol.md`, `docs/shared-agent-contract.md`, and
-  `docs/verification-playbook.md` is included below -- follow them, but there is no need to
-  open these files again.
+{docs_behavior}
 - `.handoff/current.md`'s relevant content is included below -- respect it without re-reading
   the file.
 - The current git status is included below (see Workspace Snapshot) -- only re-run `git status`/
@@ -953,18 +1173,7 @@ session; only what's new is included below.
 - Workspace: {Path.cwd()}
 - Instruction type: {instruction_type}
 
-## Agent Targeting Protocol
-
-{targeting}
-
-## Shared Agent Contract
-
-{contract}
-
-## Verification Playbook
-
-{verification}
-
+{docs_sections}
 ## Bridge State Log (`.handoff/current.md`)
 
 {current}
@@ -1377,7 +1586,17 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         state["active_model"] = args.model
     state["active_provider"] = provider
     state["instruction_type"] = args.instruction_type
-    prompt = build_prompt(provider, state, user_prompt, reason)
+    full_prompt = bool(getattr(args, "full_prompt", False))
+    if args.execute:
+        moved = archive_old_current_entries(state)
+        if moved:
+            # The shifted prompt_context_offsets must reach disk before the
+            # (possibly minutes-long) provider call: state is otherwise only
+            # saved after it, and an interruption in between would leave
+            # offsets pointing past the end of the now-shorter log.
+            save_state(state)
+            print(f"Archived {moved} characters of older .handoff/current.md entries to {ARCHIVE_DIR}/")
+    prompt = build_prompt(provider, state, user_prompt, reason, full=full_prompt)
     command = provider_command(provider, state, model_override_arg(args.model))
 
     if not args.execute:
@@ -1500,6 +1719,7 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
                 timeout_seconds=args.timeout_seconds,
                 model=None,
                 instruction_type="handoff",
+                full_prompt=full_prompt,
             )
             return run_provider(fallback, next_args, state, handoff_reason)
         # Carry the ORIGINAL user_prompt into the fallback, not a generic
@@ -1507,7 +1727,7 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         # via build_prompt()'s reason_block, so replacing the actual
         # request/attachments here just means the fallback provider has no
         # idea what the user actually asked for.
-        next_prompt = build_prompt(fallback, state, user_prompt, handoff_reason)
+        next_prompt = build_prompt(fallback, state, user_prompt, handoff_reason, full=full_prompt)
         NEXT_PROMPT_FILE.write_text(next_prompt, encoding="utf-8")
         print(f"Next prompt written to: {NEXT_PROMPT_FILE}")
 
@@ -1628,6 +1848,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--prompt-file", help="Read the turn-specific prompt from a file.")
     p_run.add_argument("--execute", action="store_true", help="Actually invoke the provider.")
     p_run.add_argument("--auto-fallback", action="store_true", help="Invoke the other provider on handoff signals.")
+    p_run.add_argument(
+        "--full-prompt",
+        action="store_true",
+        help="Inline the full docs/ protocol files and a 20,000-character log tail instead of the compact default.",
+    )
     p_run.add_argument("--timeout-seconds", type=int, default=0, help="0 means no timeout.")
     p_run.add_argument("--model", help="Model label to record; exact model strings are also passed to the provider.")
     p_run.add_argument(

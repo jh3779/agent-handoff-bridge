@@ -534,10 +534,18 @@ class BuildPromptContinuationTests(unittest.TestCase):
 
     def test_first_turn_with_no_session_gets_the_full_context(self):
         state = {"task": "do the thing", "sessions": {}}
-        prompt = hb.build_prompt("codex", state, "hello")
+        prompt = hb.build_prompt("codex", state, "hello", full=True)
         self.assertIn("## Agent Targeting Protocol", prompt)
         self.assertIn("## Shared Agent Contract", prompt)
         self.assertIn("## Verification Playbook", prompt)
+
+    def test_first_turn_default_is_compact_working_rules_not_the_three_docs(self):
+        state = {"task": "do the thing", "sessions": {}}
+        prompt = hb.build_prompt("codex", state, "hello")
+        self.assertIn("## Working Rules", prompt)
+        self.assertNotIn("## Agent Targeting Protocol", prompt)
+        self.assertNotIn("## Shared Agent Contract", prompt)
+        self.assertNotIn("## Verification Playbook", prompt)
 
     def test_continuation_turn_omits_the_static_protocol_docs(self):
         state = {"task": "do the thing", "sessions": {"codex": "existing-session-id"}}
@@ -554,8 +562,10 @@ class BuildPromptContinuationTests(unittest.TestCase):
         # unrelated use -- it must not be treated as a plain continuation.
         state = {"task": "do the thing", "sessions": {"claude": "old-session-id"}}
         prompt = hb.build_prompt("claude", state, "hello", reason="rate_limit: codex hit a limit")
-        self.assertIn("## Shared Agent Contract", prompt)
+        self.assertIn("## Working Rules", prompt)
         self.assertIn("## Handoff Reason", prompt)
+        full_prompt = hb.build_prompt("claude", state, "hello", reason="rate_limit: codex hit a limit", full=True)
+        self.assertIn("## Shared Agent Contract", full_prompt)
 
     def test_continuation_only_includes_log_entries_added_since_this_providers_last_turn(self):
         hb.CURRENT_FILE.write_text("OLD_ENTRY_ALREADY_SEEN\n", encoding="utf-8")
@@ -628,9 +638,15 @@ class BuildPromptSelfContainedNoticeTests(unittest.TestCase):
         self.assertIn("project-continuation, checkpoint, or self-evaluation skill", prompt)
 
     def test_required_behavior_tells_the_model_not_to_reopen_already_included_docs(self):
-        prompt = hb.build_prompt("codex", {"task": "do the thing", "sessions": {}}, "hello")
+        prompt = hb.build_prompt("codex", {"task": "do the thing", "sessions": {}}, "hello", full=True)
         self.assertIn("no need to", prompt)
         self.assertIn("open these files again", prompt)
+        self.assertIn("respect it without re-reading", prompt)
+
+    def test_compact_required_behavior_also_tells_the_model_not_to_open_the_docs(self):
+        prompt = hb.build_prompt("codex", {"task": "do the thing", "sessions": {}}, "hello")
+        self.assertIn("that summary is complete", prompt)
+        self.assertIn("do not open `docs/agent-targeting-protocol.md`", prompt)
         self.assertIn("respect it without re-reading", prompt)
 
     def test_first_turn_includes_the_scope_discipline_notice(self):
@@ -667,6 +683,253 @@ class BuildPromptSelfContainedNoticeTests(unittest.TestCase):
         prompt = hb.build_prompt("codex", {"task": "do the thing", "sessions": {}}, "hello")
         self.assertIn("report it briefly", prompt)
         self.assertIn("do not fix it unprompted", prompt)
+
+
+class SplitLogSectionsTests(unittest.TestCase):
+    def test_empty_text_has_no_sections(self):
+        self.assertEqual(hb.split_log_sections(""), [])
+
+    def test_sections_rejoin_to_the_original_text(self):
+        text = "# Title\nintro\n## Run A\nbody a\n### Sub\nbody sub\n## Run B\nbody b\n"
+        sections = hb.split_log_sections(text)
+        self.assertEqual("".join(sections), text)
+        self.assertEqual(len(sections), 4)
+
+    def test_text_starting_with_a_heading_has_no_empty_leading_section(self):
+        sections = hb.split_log_sections("## Run A\na\n## Run B\nb\n")
+        self.assertEqual(sections, ["## Run A\na\n", "## Run B\nb\n"])
+
+    def test_text_without_any_heading_is_one_section(self):
+        self.assertEqual(hb.split_log_sections("just notes\nmore\n"), ["just notes\nmore\n"])
+
+    def test_level_one_heading_and_hash_inside_a_line_do_not_split(self):
+        text = "# Title\nsee issue ## 5 for details\n"
+        self.assertEqual(hb.split_log_sections(text), [text])
+
+
+class RecentLogForPromptTests(unittest.TestCase):
+    def _log(self, count, body="x" * 100):
+        return "".join(f"## Run {i}\n{body}\n" for i in range(count))
+
+    def test_text_under_the_budget_is_returned_unchanged(self):
+        text = self._log(2)
+        self.assertEqual(hb.recent_log_for_prompt(text, 10_000), text)
+
+    def test_keeps_whole_newest_sections_and_marks_the_omission(self):
+        text = self._log(50)
+        result = hb.recent_log_for_prompt(text, 500)
+        self.assertTrue(result.startswith(hb.EARLIER_HISTORY_OMITTED_NOTE))
+        self.assertIn("## Run 49\n", result)
+        self.assertNotIn("## Run 0\n", result)
+        # Whole sections only: every kept section is complete.
+        self.assertEqual(result.count("## Run "), result.count("x" * 100))
+
+    def test_stays_within_the_budget_when_sections_are_small(self):
+        text = self._log(50)
+        result = hb.recent_log_for_prompt(text, 500)
+        body = result[len(hb.EARLIER_HISTORY_OMITTED_NOTE) :].lstrip()
+        self.assertLessEqual(len(body), 500)
+
+    def test_an_oversized_newest_section_falls_back_to_a_character_tail(self):
+        text = "## Old\nold\n## New\n" + ("y" * 5000) + "\nNEWEST_LINE\n"
+        result = hb.recent_log_for_prompt(text, 1000)
+        self.assertIn("NEWEST_LINE", result)
+        self.assertNotIn("old\n", result)
+        self.assertLessEqual(len(result), 1000 + len(hb.EARLIER_HISTORY_OMITTED_NOTE) + 2)
+
+
+class CompactPromptSizeTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
+        hb.HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+
+    def test_compact_prompt_is_much_smaller_than_full_for_a_long_log(self):
+        log = "".join(f"## Run {i}\n" + ("filler line\n" * 40) for i in range(200))
+        hb.CURRENT_FILE.write_text(log, encoding="utf-8")
+        state = {"task": "do the thing", "sessions": {}}
+        compact = hb.build_prompt("claude", state, "hello", reason="quota: x")
+        full = hb.build_prompt("claude", state, "hello", reason="quota: x", full=True)
+        self.assertLess(len(compact), len(full) // 2)
+        self.assertLess(len(compact), 12_000)
+
+    def test_compact_prompt_keeps_the_newest_remaining_and_next_entry(self):
+        log = "".join(f"## Run {i}\n" + ("filler line\n" * 40) for i in range(200))
+        log += "### Handoff\n- Remaining: finish the parser\n- Next: run the tests\n"
+        hb.CURRENT_FILE.write_text(log, encoding="utf-8")
+        prompt = hb.build_prompt("claude", {"task": "t", "sessions": {}}, "hello", reason="quota: x")
+        self.assertIn("Remaining: finish the parser", prompt)
+        self.assertIn("Next: run the tests", prompt)
+
+    def test_full_mode_still_inlines_the_real_docs_when_present(self):
+        Path("docs").mkdir()
+        Path("docs/shared-agent-contract.md").write_text("CUSTOM_CONTRACT_MARKER", encoding="utf-8")
+        state = {"task": "t", "sessions": {}}
+        self.assertIn("CUSTOM_CONTRACT_MARKER", hb.build_prompt("codex", state, "hi", full=True))
+        # A customised doc is sent as written even without --full-prompt.
+        self.assertIn("CUSTOM_CONTRACT_MARKER", hb.build_prompt("codex", state, "hi"))
+
+    def test_workspace_copies_identical_to_the_bundled_docs_stay_compact(self):
+        Path("docs").mkdir()
+        for rel in hb.PROTOCOL_DOC_PATHS:
+            Path(rel).write_text((hb.BRIDGE_ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
+        self.assertFalse(hb.protocol_docs_customized())
+        prompt = hb.build_prompt("codex", {"task": "t", "sessions": {}}, "hi")
+        self.assertIn("## Working Rules", prompt)
+
+    def test_crlf_line_endings_alone_do_not_count_as_customised(self):
+        Path("docs").mkdir()
+        for rel in hb.PROTOCOL_DOC_PATHS:
+            text = (hb.BRIDGE_ROOT / rel).read_text(encoding="utf-8").replace("\n", "\r\n")
+            Path(rel).write_bytes(text.encode("utf-8"))
+        self.assertFalse(hb.protocol_docs_customized())
+
+    def test_a_workspace_without_the_docs_stays_compact(self):
+        self.assertFalse(hb.protocol_docs_customized())
+
+    def test_an_extra_rule_in_the_verification_playbook_switches_to_full(self):
+        Path("docs").mkdir()
+        bundled = (hb.BRIDGE_ROOT / "docs/verification-playbook.md").read_text(encoding="utf-8")
+        Path("docs/verification-playbook.md").write_text(bundled + "\nRun ./company-check.sh before release.\n", encoding="utf-8")
+        self.assertTrue(hb.protocol_docs_customized())
+        prompt = hb.build_prompt("codex", {"task": "t", "sessions": {}}, "hi")
+        self.assertIn("Run ./company-check.sh before release.", prompt)
+        self.assertNotIn("## Working Rules", prompt)
+
+    def test_protocol_summary_names_every_failure_label(self):
+        for label in hb.HANDOFF_LABELS:
+            self.assertIn(label, hb.PROTOCOL_SUMMARY)
+
+    def test_continuation_turn_caps_unseen_entries_to_the_compact_budget(self):
+        hb.CURRENT_FILE.write_text("", encoding="utf-8")
+        state = {"task": "t", "sessions": {"codex": "s1"}}
+        hb.build_prompt("codex", state, "first")
+        burst = "".join(f"## Run {i}\n" + ("z" * 200) + "\n" for i in range(100))
+        hb.CURRENT_FILE.write_text(burst + "## Last\nLAST_ENTRY_MARKER\n", encoding="utf-8")
+        prompt = hb.build_prompt("codex", state, "second")
+        self.assertIn("LAST_ENTRY_MARKER", prompt)
+        self.assertNotIn("## Run 0\n", prompt)
+
+
+class ArchiveOldCurrentEntriesTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._tmp = tempfile.TemporaryDirectory()
+        os.chdir(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(os.chdir, self._orig_cwd)
+        hb.HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+
+    def _big_log(self, count=400):
+        return "".join(f"## Run {i}\n" + ("w" * 300) + "\n" for i in range(count))
+
+    def test_small_file_is_left_alone(self):
+        hb.CURRENT_FILE.write_text("## Run 0\nsmall\n", encoding="utf-8")
+        self.assertEqual(hb.archive_old_current_entries({}), 0)
+        self.assertFalse(hb.ARCHIVE_DIR.exists())
+
+    def test_missing_file_is_a_no_op(self):
+        self.assertEqual(hb.archive_old_current_entries({}), 0)
+
+    def test_large_file_moves_old_entries_and_loses_nothing(self):
+        original = self._big_log()
+        hb.CURRENT_FILE.write_text(original, encoding="utf-8")
+        moved = hb.archive_old_current_entries({})
+        self.assertGreater(moved, 0)
+        live = hb.CURRENT_FILE.read_text(encoding="utf-8")
+        archives = sorted(hb.ARCHIVE_DIR.glob("current-*.md"))
+        self.assertEqual(len(archives), 1)
+        archived = archives[0].read_text(encoding="utf-8")
+        self.assertTrue(live.startswith(hb.CURRENT_ARCHIVE_POINTER))
+        self.assertEqual(archived + live[len(hb.CURRENT_ARCHIVE_POINTER) :], original)
+        self.assertLessEqual(len(live), hb.CURRENT_ARCHIVE_KEEP_CHARS + len(hb.CURRENT_ARCHIVE_POINTER) + 400)
+        self.assertIn("## Run 399\n", live)
+
+    def test_a_second_archive_does_not_stack_pointers_or_overwrite_the_first(self):
+        hb.CURRENT_FILE.write_text(self._big_log(), encoding="utf-8")
+        hb.archive_old_current_entries({})
+        hb.CURRENT_FILE.write_text(
+            hb.CURRENT_FILE.read_text(encoding="utf-8") + self._big_log(400), encoding="utf-8"
+        )
+        hb.archive_old_current_entries({})
+        live = hb.CURRENT_FILE.read_text(encoding="utf-8")
+        self.assertEqual(live.count(hb.CURRENT_ARCHIVE_POINTER), 1)
+        self.assertEqual(len(list(hb.ARCHIVE_DIR.glob("current-*.md"))), 2)
+
+    def test_offsets_shift_so_a_continuation_turn_still_sees_only_new_entries(self):
+        hb.CURRENT_FILE.write_text(self._big_log(), encoding="utf-8")
+        state = {"task": "t", "sessions": {"codex": "s1"}}
+        hb.build_prompt("codex", state, "first")  # records the offset at end-of-file
+        hb.archive_old_current_entries(state)
+        live_len = len(hb.CURRENT_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(state["prompt_context_offsets"]["codex"], live_len)
+        hb.CURRENT_FILE.write_text(
+            hb.CURRENT_FILE.read_text(encoding="utf-8") + "## Fresh\nFRESH_ENTRY_MARKER\n", encoding="utf-8"
+        )
+        prompt = hb.build_prompt("codex", state, "second")
+        self.assertIn("FRESH_ENTRY_MARKER", prompt)
+        self.assertNotIn("## Run 399\n", prompt)
+
+    def test_an_offset_past_the_end_of_the_log_resends_instead_of_skipping_new_entries(self):
+        # Reproduces: archive, then the run is interrupted before state.json
+        # is saved, so the on-disk offset still points into the old, longer log.
+        hb.CURRENT_FILE.write_text("## Fresh\nFRESH_AFTER_INTERRUPT\n", encoding="utf-8")
+        state = {"task": "t", "sessions": {"codex": "s1"}, "prompt_context_offsets": {"codex": 100_000}}
+        prompt = hb.build_prompt("codex", state, "next")
+        self.assertIn("FRESH_AFTER_INTERRUPT", prompt)
+
+    def test_a_negative_or_non_integer_offset_is_treated_as_zero(self):
+        hb.CURRENT_FILE.write_text("## Entry\nENTRY_MARKER\n", encoding="utf-8")
+        for bad in (-5, "12", None):
+            state = {"task": "t", "sessions": {"codex": "s1"}, "prompt_context_offsets": {"codex": bad}}
+            self.assertIn("ENTRY_MARKER", hb.build_prompt("codex", state, "next"))
+
+    def test_run_provider_saves_the_shifted_offsets_before_calling_the_provider(self):
+        hb.CURRENT_FILE.write_text(self._big_log(), encoding="utf-8")
+        old_len = len(hb.CURRENT_FILE.read_text(encoding="utf-8"))
+        state = {"task": "t", "primary_provider": "claude", "status": "ready",
+                 "sessions": {"claude": "s1"}, "prompt_context_offsets": {"claude": old_len}}
+        hb.save_state(state)
+        seen = {}
+
+        def fake_run(command, **kwargs):
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+            # What an interruption right now would leave on disk.
+            seen["offset"] = json.loads(hb.STATE_FILE.read_text(encoding="utf-8"))["prompt_context_offsets"]["claude"]
+            seen["live_len"] = len(hb.CURRENT_FILE.read_text(encoding="utf-8"))
+            raise KeyboardInterrupt
+
+        args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                     timeout_seconds=0, model=None, instruction_type="continue")
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+            hb.subprocess, "run", side_effect=fake_run
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                hb.run_provider("claude", args, state)
+        self.assertLess(seen["offset"], old_len)
+        self.assertLessEqual(seen["offset"], seen["live_len"])
+
+    def test_the_archive_directory_is_not_git_ignored(self):
+        ignore_lines = (hb.BRIDGE_ROOT / ".handoff/.gitignore").read_text(encoding="utf-8").splitlines()
+        self.assertNotIn("archive/", [line.strip() for line in ignore_lines])
+        self.assertNotIn("archive", [line.strip().rstrip("/") for line in ignore_lines])
+
+    def test_an_offset_pointing_into_archived_text_clamps_to_zero(self):
+        hb.CURRENT_FILE.write_text(self._big_log(), encoding="utf-8")
+        state = {"prompt_context_offsets": {"claude": 10}}
+        hb.archive_old_current_entries(state)
+        self.assertEqual(state["prompt_context_offsets"]["claude"], 0)
+
+
+class FullPromptFlagTests(unittest.TestCase):
+    def test_run_accepts_full_prompt_flag(self):
+        args = hb.build_parser().parse_args(["run", "codex", "hi", "--full-prompt"])
+        self.assertTrue(args.full_prompt)
+        self.assertFalse(hb.build_parser().parse_args(["run", "codex", "hi"]).full_prompt)
 
 
 class VersionTests(unittest.TestCase):
