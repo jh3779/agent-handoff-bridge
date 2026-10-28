@@ -1711,6 +1711,32 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(run_spy.call_args.args[-1], False)
 
+    def test_run_marks_an_allow_all_agy_run_in_the_message(self):
+        # run_provider()'s stdout warning never reaches a Web UI user, so the
+        # record's permissions field has to become visible in the message.
+        def record(permissions):
+            return {
+                "provider": "agy",
+                "model": None,
+                "exit_code": 0,
+                "session_id": None,
+                "final_text": "done",
+                "handoff_needed": False,
+                "reason": "none",
+                **({"permissions": permissions} if permissions else {}),
+            }
+
+        with mock.patch("handoff_webui.run_provider_via_bridge", return_value=[record("allow-all")]):
+            status, data = self._post("/api/run", {"provider": "agy", "text": "hi"})
+        self.assertEqual(status, 200)
+        text = data["messages"][0]["text"]
+        self.assertIn("auto-approved", text)
+        self.assertTrue(text.endswith("done"))
+
+        with mock.patch("handoff_webui.run_provider_via_bridge", return_value=[record(None)]):
+            _status, data = self._post("/api/run", {"provider": "agy", "text": "hi"})
+        self.assertEqual(data["messages"][0]["text"], "done")
+
     def test_run_defaults_auto_fallback_to_true_when_omitted(self):
         with mock.patch(
             "handoff_webui.run_provider_via_bridge",

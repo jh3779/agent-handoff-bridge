@@ -2030,6 +2030,10 @@ class ChatSession:
                 self.reported[key] += reported.get(key, 0)
             status = "handoff needed" if record.get("handoff_needed") else "ok"
             out(f"[{record.get('provider')}] exit {record.get('exit_code')} - {status} ({record.get('reason')})")
+            if record.get("permissions") == "allow-all":
+                # run_provider()'s own warning went into `buffer` above and is
+                # dropped when a record exists, so repeat it for every run.
+                out(f"WARNING: {record.get('provider')} ran with every tool call auto-approved ({AGY_ALLOW_WRITES_ENV} / --agy-allow-writes).")
             final_text = (record.get("final_text") or "").strip()
             if final_text:
                 out(final_text)

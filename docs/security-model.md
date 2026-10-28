@@ -331,7 +331,11 @@ What the bridge does about that:
 
 - it prints a warning line on every such run and at the start of `chat`, writes
   `permissions: "allow-all"` into that run's `state.json` record and a
-  "Permissions" line into `current.md`, and `diagnose` states the current mode;
+  "Permissions" line into `current.md`, and `diagnose` states the current mode.
+  The warning also reaches the interactive `chat` on every turn and the Web UI /
+  desktop app as a line at the top of that run's chat message (their subprocess
+  output is not shown to the user, so the record field carries it). There is no
+  pre-run banner in the Web UI yet;
 - the prompt for `agy` carries a caution (stay in the workspace, make only the
   requested changes, no destructive or irreversible commands unless asked);
 - it does **not** add `--sandbox`: that flag's effect ("terminal restrictions")

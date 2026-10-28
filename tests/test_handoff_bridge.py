@@ -1175,6 +1175,20 @@ class ChatReplTests(unittest.TestCase):
         self.assertIn("already in progress", "\n".join(lines))
         self.assertEqual(session.turns, 0)
 
+    def test_an_allow_all_run_warns_on_every_turn(self):
+        # run_provider()'s own warning is swallowed into the turn's stdout
+        # buffer once a record exists, so the chat has to repeat it per run.
+        session = hb.ChatSession("agy", False, False, None, 0)
+        base = {"provider": "agy", "exit_code": 0, "handoff_needed": False, "reason": "none", "final_text": "hi"}
+        cases = [({**base, "permissions": "allow-all"}, True), (dict(base), False)]
+        for record, expect_warning in cases:
+            lines = []
+            with mock.patch.object(hb, "run_command", return_value=0), mock.patch.object(
+                hb, "load_state", side_effect=[{"history": []}, {"history": [record]}]
+            ):
+                session.run_turn("go", lines.append)
+            self.assertEqual(any("auto-approved" in line for line in lines), expect_warning)
+
     def test_full_flag_reaches_the_prompt(self):
         Path("docs").mkdir()
         Path("docs/shared-agent-contract.md").write_text("CUSTOM_CONTRACT_MARKER", encoding="utf-8")
