@@ -1618,6 +1618,7 @@ def append_current(record: dict[str, Any]) -> None:
         f"- Model: {record.get('model') or 'app-selected default'}",
         f"- Instruction type: {record.get('instruction_type') or 'continue'}",
         f"- Exit code: {record['exit_code']}",
+        *([f"- Duration: {record['duration_seconds']}s"] if record.get("duration_seconds") is not None else []),
         f"- Handoff needed: {record['handoff_needed']}",
         f"- Reason: {record['reason']}",
     ]
@@ -1675,6 +1676,18 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
     state["active_provider"] = provider
     state["instruction_type"] = args.instruction_type
     full_prompt = bool(getattr(args, "full_prompt", False))
+    # A run started while the previous run's handoff is still unresolved, on a
+    # different provider, is the bridge's own notion of "taking over" (it is
+    # what choose_auto_provider() and auto-fallback act on). Remember which run
+    # it took over so stats can count real hops instead of adjacent records.
+    handoff_from = None
+    history_so_far = state.get("history") or []
+    if (
+        history_so_far
+        and state.get("status") == "handoff_needed"
+        and state.get("last_provider") not in (None, provider)
+    ):
+        handoff_from = history_so_far[-1].get("run_dir")
     if args.execute:
         moved = archive_old_current_entries(state)
         if moved:
@@ -1712,6 +1725,7 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
     (run_dir / "prompt.md").write_text(prompt, encoding="utf-8")
 
     started_at = utc_now()
+    started_clock = time.monotonic()
     print(f"Running {provider}; logs will be written to {run_dir}")
     try:
         process = subprocess.run(
@@ -1753,6 +1767,7 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         stdout = decode_timeout_output(exc.stdout)
         stderr = decode_timeout_output(exc.stderr) or "provider timed out"
 
+    duration_seconds = round(time.monotonic() - started_clock, 2)
     (run_dir / "stdout.jsonl").write_text(stdout, encoding="utf-8")
     (run_dir / "stderr.log").write_text(stderr, encoding="utf-8")
 
@@ -1776,6 +1791,8 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         "model": state.get("active_model") or "app-selected default",
         "instruction_type": state.get("instruction_type") or "continue",
         "exit_code": exit_code,
+        "duration_seconds": duration_seconds,
+        **({"handoff_from": handoff_from} if handoff_from else {}),
         "session_id": session_id,
         "usage": parsed.get("usage"),
         "cost_usd": parsed.get("cost_usd"),
@@ -1865,6 +1882,7 @@ CHAT_HELP = """Type a message and press Enter to send it. End a line with \\ to 
   /fallback [on|off]                     show or set auto-fallback to another CLI on a limit
   /full [on|off]                         show or set full-prompt mode (inline the docs/ files)
   /tokens                                token totals for this chat session
+  /stats                                 runs, handoffs, tokens and time recorded in this workspace
   /status                                bridge state and installed CLIs
   /help                                  this text
   /exit                                  leave (Ctrl-D also works)
@@ -2013,6 +2031,8 @@ class ChatSession:
             elif rest:
                 out(f"usage: {name} [on|off]")
             out(f"{name[1:]}: {'on' if getattr(self, attribute) else 'off'}")
+        elif name == "/stats":
+            out(format_stats(compute_stats(load_state().get("history", []))))
         elif name == "/tokens":
             out(self.totals_line())
         elif name == "/status":
@@ -2077,6 +2097,139 @@ def chat_command(args: argparse.Namespace, input_fn: "Any" = input, out: "Any" =
                 "(anything it had already started, such as shell commands or edits, may have completed)"
             )
     out(session.totals_line())
+    return 0
+
+
+def compute_stats(history: list[dict[str, Any]]) -> dict[str, Any]:
+    """Per-provider run counts, handoff reasons, reported tokens and wall
+    time from `state["history"]`, plus how often a handed-off turn ended
+    without another handoff.
+
+    "ok" means only that no handoff signal was detected (classify_handoff()
+    returned handoff_needed False) -- it is not a check that the work is
+    correct. Tokens are summed exactly as each CLI reports them and are not
+    comparable across providers (Codex's input count includes cache reads,
+    Claude's does not), and no price is applied: subscription quota and API
+    token prices are different units.
+
+    "per ok run" is computed over the *measured* runs only: the tokens (or
+    seconds) of the runs that reported them, divided by the number of ok runs
+    among those same runs. Dividing measured spend by ALL ok runs would
+    understate the cost whenever some runs (older records, a failed run whose
+    CLI printed no usage) have no figure. `tokens_complete` / `seconds_complete`
+    say whether every run of the provider was measured; when not, the figure is
+    only an estimate from the measured subset. It is None when no ok run is in
+    that subset.
+
+    Handoff hops are the records the bridge itself marked `handoff_from` --
+    a run started while the previous run's handoff was still unresolved and
+    on a different provider. Records written before that field existed are
+    not counted, because adjacent records alone do not show that one run
+    actually took over the other's task."""
+    providers: dict[str, dict[str, Any]] = {}
+    for record in history:
+        name = str(record.get("provider") or "?")
+        entry = providers.setdefault(
+            name,
+            {
+                "runs": 0,
+                "ok": 0,
+                "handoffs": 0,
+                "reasons": {},
+                "tokens": {"input": 0, "output": 0, "cached": 0},
+                "runs_with_usage": 0,
+                "ok_with_usage": 0,
+                "seconds": 0.0,
+                "runs_timed": 0,
+                "ok_timed": 0,
+            },
+        )
+        is_ok = not record.get("handoff_needed")
+        entry["runs"] += 1
+        if is_ok:
+            entry["ok"] += 1
+        else:
+            entry["handoffs"] += 1
+            label = str(record.get("reason") or "unknown").split(":", 1)[0].strip() or "unknown"
+            entry["reasons"][label] = entry["reasons"].get(label, 0) + 1
+        counts = usage_token_counts(record.get("usage"))
+        if counts:
+            entry["runs_with_usage"] += 1
+            entry["ok_with_usage"] += int(is_ok)
+            for key, value in counts.items():
+                entry["tokens"][key] += value
+        duration = record.get("duration_seconds")
+        if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+            entry["seconds"] += float(duration)
+            entry["runs_timed"] += 1
+            entry["ok_timed"] += int(is_ok)
+    for entry in providers.values():
+        billed = entry["tokens"]["input"] + entry["tokens"]["output"]
+        entry["tokens_per_ok_run"] = round(billed / entry["ok_with_usage"]) if entry["ok_with_usage"] else None
+        entry["seconds_per_ok_run"] = round(entry["seconds"] / entry["ok_timed"], 1) if entry["ok_timed"] else None
+        entry["tokens_complete"] = entry["runs_with_usage"] == entry["runs"]
+        entry["seconds_complete"] = entry["runs_timed"] == entry["runs"]
+        entry["seconds"] = round(entry["seconds"], 1)
+    hops = hops_ok = 0
+    for record in history:
+        if record.get("handoff_from"):
+            hops += 1
+            if not record.get("handoff_needed"):
+                hops_ok += 1
+    return {"runs": len(history), "providers": providers, "handoff_hops": hops, "handoff_hops_ok": hops_ok}
+
+
+STATS_NOTE = (
+    "ok = no handoff signal detected, not proof the work is correct. Tokens are as each CLI reports them "
+    "(not comparable across providers; no prices applied). \"per ok run\" uses only the runs that were "
+    "measured; \"partial\" means some runs had no figure, so it is an estimate."
+)
+
+
+def format_stats(stats: dict[str, Any]) -> str:
+    if not stats["runs"]:
+        return "No runs recorded in this workspace yet."
+    lines = [f"Runs recorded: {stats['runs']}"]
+    for name, entry in sorted(stats["providers"].items()):
+        lines.append("")
+        lines.append(f"{name}: {entry['runs']} run(s), {entry['ok']} ok, {entry['handoffs']} handoff")
+        if entry["reasons"]:
+            lines.append("  handoff reasons: " + ", ".join(f"{k} x{v}" for k, v in sorted(entry["reasons"].items())))
+        if entry["runs_with_usage"]:
+            lines.append(
+                f"  tokens ({entry['runs_with_usage']}/{entry['runs']} runs reported): "
+                + format_token_counts({k: v for k, v in entry["tokens"].items() if v})
+            )
+        else:
+            lines.append("  tokens: none reported")
+        if entry["runs_timed"]:
+            lines.append(f"  time ({entry['runs_timed']}/{entry['runs']} runs timed): {entry['seconds']}s total")
+        per = []
+        if entry["tokens_per_ok_run"] is not None:
+            partial = "" if entry["tokens_complete"] else f" (partial: {entry['runs_with_usage']}/{entry['runs']} runs)"
+            per.append(f"{entry['tokens_per_ok_run']:,} in+out tokens{partial}")
+        if entry["seconds_per_ok_run"] is not None:
+            partial = "" if entry["seconds_complete"] else f" (partial: {entry['runs_timed']}/{entry['runs']} runs)"
+            per.append(f"{entry['seconds_per_ok_run']}s{partial}")
+        if per:
+            lines.append("  per ok run (measured runs' spend / their ok runs): " + ", ".join(per))
+    lines.append("")
+    if stats["handoff_hops"]:
+        lines.append(
+            f"Handoffs: {stats['handoff_hops']} linked hop(s), {stats['handoff_hops_ok']} ended without another handoff"
+        )
+    else:
+        lines.append("Handoffs: no linked hops recorded")
+    lines.append(f"Note: {STATS_NOTE}")
+    return "\n".join(lines)
+
+
+def stats_command(args: argparse.Namespace) -> int:
+    stats = compute_stats(load_state().get("history", []))
+    if args.json:
+        print(json.dumps(stats, indent=2, ensure_ascii=False))
+    else:
+        print(format_stats(stats))
     return 0
 
 
@@ -2198,6 +2351,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--timeout-seconds", type=int, default=0, help="Per-provider timeout; 0 means no timeout.")
     p_chat.add_argument("--model", help="Model label to record; exact model strings are also passed to the provider.")
     p_chat.set_defaults(func=chat_command)
+
+    p_stats = sub.add_parser("stats", help="Summarize runs, handoffs, reported tokens and time in this workspace.")
+    p_stats.add_argument("--json", action="store_true", help="Print the figures as JSON.")
+    p_stats.set_defaults(func=stats_command)
 
     p_status = sub.add_parser("status", help="Print bridge state.")
     p_status.set_defaults(func=status)

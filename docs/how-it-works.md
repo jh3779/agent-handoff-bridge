@@ -100,6 +100,15 @@ limit, context 등)에 걸리면 **작업 폴더의 파일**을 통해 다음 CL
       `.handoff/current.md`에 사람이 읽는 블록을 덧붙입니다.
    10. 넘겨야 한다면 자동 전환을 처리합니다(8절).
 
+### 측정: `stats`
+
+`run_provider()`는 매 실행의 소요 시간(`duration_seconds`)을 기록에 남기고,
+`handoff_bridge.py stats`(`compute_stats`)가 `state.json`의 기록을 provider별로 집계합니다:
+실행 수, 핸드오프 없이 끝난 수(ok)와 사유, CLI가 보고한 토큰, 시간, 그리고 **ok 실행 1회당
+토큰·시간**(측정값이 있는 실행만 모아 그중 ok 수로 나눔. 일부 실행에 측정값이 없으면 "partial"로
+표시)과, 핸드오프를 이어받은 실행(`handoff_from`으로 연결된 기록)이 다시 핸드오프 없이 끝난 비율. ok는 "핸드오프 신호가 없었다"는 뜻일 뿐 결과가 맞다는 보증이 아니며, 토큰은 CLI마다
+기준이 달라 provider끼리 비교할 수 없고 가격은 적용하지 않습니다.
+
 ### 대화형 입구: `chat`
 
 `handoff_bridge.py chat`은 입력 한 줄을 `run_command()`에 그대로 넘기는 REPL입니다
