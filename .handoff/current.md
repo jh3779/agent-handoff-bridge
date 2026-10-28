@@ -4403,3 +4403,36 @@ tag" rule by construction rather than by discipline.
   `release-process*.md` / `release-notes*.md` still describe CI in past terms.
 - **Blocked**: GitHub Actions quota. **Next**: complete the release assets when
   Actions is available.
+
+### 2026-10-28 — Token reduction, agy provider, stats, skills link (PRs #89-#95)
+
+- **Target**: Claude Code CLI (Sonnet 5.5), repo-level (PRs only; no release).
+- **Changed**: all squash-merged to `main`: #89 compact cold/handoff prompt
+  (~32.7K -> ~8.8K chars) + `current.md` archiving under `.handoff/archive/`;
+  #90 `chat` REPL; #91 `docs/how-it-works.md`; #92 third provider is now
+  Antigravity `agy` (Gemini CLI removed, `gemini` rejected as a name; verified
+  with tiny real calls: JSON envelope, stdin prompt, `--conversation` resume,
+  print mode auto-denies writes -> `tool_failure`); #93 `duration_seconds`,
+  `handoff_from`, `stats`/`/stats` (ok = no handoff signal, not correctness);
+  #94 opt-in `--agy-allow-writes` / `HANDOFF_AGY_ALLOW_WRITES=1` (passes
+  `--dangerously-skip-permissions`; warning in chat each turn and in the Web UI
+  message); #95 `install` links `.claude/skills/<name>` to `.agents/skills/<name>`
+  (verified with a real `claude -p`: Claude Code does not read `.agents/skills`;
+  copy fallback is marked `.handoff-bridge-managed`). This PR adds the vendor
+  terms section to `docs/security-model.md`.
+- **Verified**: `handoff_bridge.py check` 629 tests OK on the #95 branch before
+  merge. Review-bot findings on #89-#95 were checked against the code and fixed
+  (details in each PR's comments).
+- **Not verified**: real `agy --dangerously-skip-permissions` run (blocked by
+  the permission classifier; command in `docs/research-antigravity-cli.md`),
+  `--sandbox` effect (deliberately not passed), Windows behaviour of the skills
+  copy fallback (mocked only), agy stale-conversation/quota error shapes.
+- **Remaining**: (1) the three v0.5.0 release gaps above are unchanged (installers
+  and `latest.json` need Actions minutes); v0.5.1 not cut. (2) Web UI has no
+  pre-run banner for allow-all agy. (3) `handoff_from` is inferred from "previous
+  status was handoff_needed", not a task id (bot's optional note on #93). (4)
+  OpenCode as a provider was researched and deferred (no Claude/Google login
+  support; JSON event schema undocumented). (5) issue #84, `AGENTS.md` /
+  `CLAUDE.md` dedupe, `release-notes.ko.md` behind.
+- **Blocked**: GitHub Actions quota. **Next**: decide on v0.5.1 once Actions is
+  available; build the stats baseline from real use before any routing work.
