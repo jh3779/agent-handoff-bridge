@@ -73,6 +73,44 @@ python3 handoff_bridge.py --workspace /path/to/project run auto \
 Calls the selected provider and records the result. Use deliberately because it
 may spend provider tokens.
 
+By default the prompt is **compact**: a short rules summary plus the newest
+`.handoff/current.md` entries (see "Prompt Construction" in
+[Architecture](architecture.md)). Add `--full-prompt` to inline the three
+`docs/` protocol files in full and a 20,000-character log tail instead. This
+happens automatically when the workspace has customised any of those files.
+
+### Interactive Chat
+
+```bash
+python3 handoff_bridge.py --workspace /path/to/project chat          # provider: auto
+python3 handoff_bridge.py --workspace /path/to/project chat claude --no-auto-fallback
+```
+
+A terminal REPL over the same path as `run --execute` (state, session
+resumption, auto-fallback, and prompt construction are shared, so a chat turn
+shows up in `.handoff/state.json` like any other run and `auto` hands off to
+the next CLI on a limit). Type a message and press Enter; end a line with `\`
+to continue it on the next line. After each reply it prints a token line:
+`sent ~N` is the bridge's estimate of the prompt it built (characters / 4), and
+`reported ...` is the usage the provider CLI itself returned (shown for Codex
+and Claude Code; Gemini's usage shape is not parsed, so only `sent` appears).
+
+| Command | Effect |
+|---|---|
+| `/provider [auto\|codex\|claude\|gemini]` | show or set the provider for the next turn |
+| `/fallback [on\|off]` | show or set auto-fallback (default on) |
+| `/full [on\|off]` | show or set full-prompt mode (see `run --full-prompt`) |
+| `/tokens` | token totals for this chat session |
+| `/status` | workspace, bridge status, installed CLIs |
+| `/help`, `/exit` | help; leave (Ctrl-D also works) |
+
+A reply is shown when the provider finishes, not streamed — each turn is one
+`--execute` run. Ctrl-C while typing discards the message; Ctrl-C while a
+provider is running stops that provider process and the turn is not recorded
+(anything it had already started, such as edits or shell commands, may have
+completed). Ctrl-D ends the chat, and a half-typed multi-line message is dropped
+rather than sent.
+
 ### Model Labels And Overrides
 
 ```bash

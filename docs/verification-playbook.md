@@ -47,7 +47,8 @@ If a check is unavailable, record `not run` with the reason.
 - Mobile remote workflows are documented in `docs/mobile-app-remote-guide.md`
   when phone-based instructions are part of the setup.
 - The latest task or handoff instruction names the target provider and model.
-- The bridge prompt includes the shared contract, current handoff packet, and
+- The bridge prompt includes the shared contract (as a compact rules summary by
+  default, in full with `run --full-prompt`), the newest handoff entries, and a
   git snapshot.
 - Raw model/provider logs are ignored by git.
 - Secrets or auth tokens are not present in tracked files — enforced by

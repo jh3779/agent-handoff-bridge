@@ -4,6 +4,31 @@
 
 ## Unreleased
 
+- **Smaller prompts for cold starts and handoffs.** The prompt that starts a
+  provider fresh (first turn, or a handoff after a quota/context limit) now
+  carries a short "Working Rules" summary instead of the three protocol docs
+  inlined in full, and the newest few whole `.handoff/current.md` entries
+  (5,000 characters) instead of a 20,000-character tail. Measured on this
+  repository's own log: about 8,200 tokens down to about 2,200. Turns that
+  resume a live session were already small and are unchanged. A workspace that
+  has customised any of the three protocol docs keeps getting them in full
+  automatically; `run --full-prompt` forces full mode.
+- **`.handoff/current.md` is archived when it grows large.** Once it passes
+  60,000 characters, the oldest entries move to `.handoff/archive/` before the
+  next `--execute` run and about 30,000 characters stay in place, so an agent
+  that opens the whole file no longer pays for a 280KB log. Nothing is deleted,
+  and the archive files are not git-ignored, so they are committed and shared
+  along with `current.md`.
+- **New: `handoff_bridge.py chat`, an interactive terminal chat.** Type
+  messages at a prompt instead of composing a `run --execute ...` command each
+  time. It runs through the same code as `run`, so session resumption,
+  auto-fallback between installed CLIs, and `.handoff/state.json` behave the
+  same, and it prints a per-turn token line (`sent ~N` estimated from the
+  prompt the bridge built; `reported ...` when the Codex or Claude Code CLI
+  returns usage). Slash commands: `/provider`, `/fallback`, `/full`, `/tokens`,
+  `/status`, `/help`, `/exit`. Replies appear when a turn finishes (no
+  streaming yet). See [CLI Reference](cli-reference.md).
+
 ## v0.5.0 — 2026-10-27
 
 - **Removed: API-key mode and custom providers.** The Settings panel no
