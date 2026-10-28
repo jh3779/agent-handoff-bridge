@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- **New: `handoff_bridge.py stats` (and `/stats` in `chat`).** Every run now
+  records its wall time (`duration_seconds`, also shown in `.handoff/current.md`),
+  and `stats` summarizes a workspace's history per provider: runs, ok versus
+  handoff (with reason labels), the tokens each CLI reported, time, tokens and
+  seconds per ok run, and how often a handed-off turn ended without another
+  handoff. "ok" means no handoff signal was detected, not that the work is
+  correct, and no price is applied. See [CLI Reference](cli-reference.md).
+
 - **Changed: the third provider is now Antigravity CLI (`agy`); Gemini CLI
   support is removed.** Google stopped serving Gemini CLI to Google AI Pro,
   Ultra and free individual accounts on 2026-06-18 and replaced it with

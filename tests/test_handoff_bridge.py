@@ -1182,6 +1182,142 @@ class ChatReplTests(unittest.TestCase):
         self.assertIn("CUSTOM_CONTRACT_MARKER", self.provider_inputs[0][1])
 
 
+class StatsTests(unittest.TestCase):
+    @staticmethod
+    def _record(provider, handoff, reason=None, usage=None, duration=None):
+        record = {
+            "provider": provider,
+            "handoff_needed": handoff,
+            "reason": reason or ("quota: matched quota signal" if handoff else "none: no handoff signal detected"),
+            "usage": usage,
+        }
+        if duration is not None:
+            record["duration_seconds"] = duration
+        return record
+
+    def test_empty_history(self):
+        stats = hb.compute_stats([])
+        self.assertEqual(stats["runs"], 0)
+        self.assertEqual(stats["providers"], {})
+        self.assertIn("No runs recorded", hb.format_stats(stats))
+
+    def test_counts_reasons_tokens_and_time_per_provider(self):
+        history = [
+            self._record("codex", True, usage={"input_tokens": 1000, "output_tokens": 50}, duration=10.0),
+            self._record("claude", False, usage={"input_tokens": 200, "output_tokens": 30, "cache_read_input_tokens": 900}, duration=20.0),
+            self._record("claude", False, usage={"input_tokens": 100, "output_tokens": 10}, duration=5.0),
+        ]
+        stats = hb.compute_stats(history)
+        codex, claude = stats["providers"]["codex"], stats["providers"]["claude"]
+        self.assertEqual((codex["runs"], codex["ok"], codex["handoffs"]), (1, 0, 1))
+        self.assertEqual(codex["reasons"], {"quota": 1})
+        self.assertEqual((claude["runs"], claude["ok"], claude["handoffs"]), (2, 2, 0))
+        self.assertEqual(claude["tokens"], {"input": 300, "output": 40, "cached": 900})
+        self.assertEqual(claude["seconds"], 25.0)
+
+    def test_per_ok_run_figures_include_the_spend_of_failed_runs(self):
+        history = [
+            self._record("codex", True, usage={"input_tokens": 900, "output_tokens": 100}, duration=30.0),
+            self._record("codex", False, usage={"input_tokens": 80, "output_tokens": 20}, duration=10.0),
+        ]
+        codex = hb.compute_stats(history)["providers"]["codex"]
+        # 1,100 tokens and 40s were spent to get 1 ok run.
+        self.assertEqual(codex["tokens_per_ok_run"], 1100)
+        self.assertEqual(codex["seconds_per_ok_run"], 40.0)
+
+    def test_per_ok_run_is_none_without_an_ok_run_or_without_data(self):
+        only_failed = hb.compute_stats([self._record("codex", True, usage={"input_tokens": 5, "output_tokens": 5}, duration=1.0)])
+        self.assertIsNone(only_failed["providers"]["codex"]["tokens_per_ok_run"])
+        self.assertIsNone(only_failed["providers"]["codex"]["seconds_per_ok_run"])
+        no_data = hb.compute_stats([self._record("codex", False)])
+        self.assertIsNone(no_data["providers"]["codex"]["tokens_per_ok_run"])
+        self.assertIsNone(no_data["providers"]["codex"]["seconds_per_ok_run"])
+
+    def test_records_from_before_duration_existed_do_not_break_the_time_figures(self):
+        history = [self._record("claude", False), self._record("claude", False, duration=4.0)]
+        claude = hb.compute_stats(history)["providers"]["claude"]
+        self.assertEqual(claude["runs_timed"], 1)
+        self.assertEqual(claude["seconds"], 4.0)
+
+    def test_handoff_hops_count_a_different_provider_after_a_handoff(self):
+        history = [
+            self._record("codex", True),
+            self._record("claude", False),   # hop that ended ok
+            self._record("claude", True),
+            self._record("agy", True),       # hop that failed again
+            self._record("codex", False),    # hop that ended ok
+        ]
+        stats = hb.compute_stats(history)
+        self.assertEqual(stats["handoff_hops"], 3)
+        self.assertEqual(stats["handoff_hops_ok"], 2)
+
+    def test_a_retry_by_the_same_provider_is_not_a_hop(self):
+        stats = hb.compute_stats([self._record("codex", True), self._record("codex", False)])
+        self.assertEqual(stats["handoff_hops"], 0)
+
+    def test_text_output_states_what_ok_means_and_applies_no_price(self):
+        text = hb.format_stats(hb.compute_stats([self._record("codex", False, usage={"input_tokens": 10, "output_tokens": 2}, duration=1.0)]))
+        self.assertIn("not proof the work is correct", text)
+        self.assertIn("no prices applied", text)
+        self.assertIn("in 10", text)
+        self.assertNotIn("$", text)
+
+    def test_stats_json_flag_prints_machine_readable_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".handoff").mkdir()
+            state = {"history": [self._record("codex", False, usage={"input_tokens": 3, "output_tokens": 1}, duration=2.5)]}
+            (workspace / ".handoff" / "state.json").write_text(json.dumps(state), encoding="utf-8")
+            bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
+            result = subprocess.run(
+                [sys.executable, str(bridge_script), "--workspace", str(workspace), "stats", "--json"],
+                text=True, capture_output=True, check=False, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["providers"]["codex"]["seconds"], 2.5)
+
+    def test_run_provider_records_the_duration_of_each_run(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                def fake_run(command, **kwargs):
+                    if command[0] == "git":
+                        return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stderr="",
+                        stdout='{"type": "result", "session_id": "s", "result": "ok", "is_error": false}\n',
+                    )
+                args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                             timeout_seconds=0, model=None, instruction_type="continue")
+                state = {"task": "t", "primary_provider": "claude", "status": "ready"}
+                with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+                    hb.subprocess, "run", side_effect=fake_run
+                ):
+                    hb.run_provider("claude", args, state)
+                duration = state["history"][0]["duration_seconds"]
+                self.assertIsInstance(duration, float)
+                self.assertGreaterEqual(duration, 0.0)
+                self.assertIn("- Duration:", hb.CURRENT_FILE.read_text(encoding="utf-8"))
+            finally:
+                os.chdir(orig)
+
+    def test_chat_stats_command_prints_the_summary(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                hb.HANDOFF_DIR.mkdir()
+                hb.save_state({"history": [self._record("claude", False, duration=1.0)]})
+                session = hb.ChatSession("auto", True, False, None, 0)
+                lines = []
+                self.assertTrue(session.handle_command("/stats", lines.append))
+                self.assertIn("claude: 1 run(s), 1 ok, 0 handoff", "\n".join(lines))
+            finally:
+                os.chdir(orig)
+
+
 class VersionTests(unittest.TestCase):
     def test_cli_version_flag_reports_bridge_version(self):
         result = subprocess.run(

@@ -111,6 +111,29 @@ provider is running stops that provider process and the turn is not recorded
 completed). Ctrl-D ends the chat, and a half-typed multi-line message is dropped
 rather than sent.
 
+### Stats
+
+```bash
+python3 handoff_bridge.py --workspace /path/to/project stats          # text
+python3 handoff_bridge.py --workspace /path/to/project stats --json   # machine-readable
+```
+
+Summarizes `.handoff/state.json`'s run history for this workspace, per provider:
+runs, how many ended without a handoff signal ("ok") versus with one (and which
+reason labels), the tokens each CLI reported (in/out/cached), and wall time
+(`duration_seconds`, recorded on every run since v0.5.1). The two figures worth
+comparing are **tokens and seconds per ok run**: the spend of *all* of a
+provider's runs, failed ones included, divided by its ok runs. It also counts
+handoff hops (a different provider running right after a handoff) and how many of
+them ended without handing off again.
+
+What the numbers do and do not mean: "ok" only says no handoff signal was
+detected, not that the work is correct; tokens are summed as each CLI reports
+them and are not comparable across providers (Codex's input count includes cache
+reads, Claude's does not); no price is applied, because subscription quota and
+API token prices are different units. Runs recorded before `duration_seconds`
+existed have no time figures. `chat` has the same summary as `/stats`.
+
 ### Model Labels And Overrides
 
 ```bash
