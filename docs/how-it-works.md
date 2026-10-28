@@ -5,8 +5,8 @@
 금방 어긋나므로 `grep -n "def 이름"`으로 찾으시면 됩니다). 설계 결정의 배경은
 각 절 끝의 링크에 있습니다.
 
-기준 버전은 v0.5.0입니다. 아직 병합 전인 변경은 맨 끝 "진행 중인 변경"에 따로
-적었습니다.
+기준은 v0.5.0 이후의 `main`입니다(프롬프트 압축, `current.md` 아카이브, `chat`
+명령 포함).
 
 ## 1. 한 줄 요약
 
@@ -19,8 +19,8 @@ limit, context 등)에 걸리면 **작업 폴더의 파일**을 통해 다음 CL
 ## 2. 큰 그림
 
 ```text
-  [입구 4개]
-  터미널 CLI        웹 UI(브라우저)       데스크톱 앱(Tauri)      HTTP 원격(선택)
+  [입구]
+  터미널 CLI · chat  웹 UI(브라우저)       데스크톱 앱(Tauri)      HTTP 원격(선택)
   handoff_bridge.py  handoff_webui.py      src-tauri/ + sidecar   remote_handoff_server.py
         \                 |                     |                     /
          \                v                     v                    /
@@ -40,14 +40,14 @@ limit, context 등)에 걸리면 **작업 폴더의 파일**을 통해 다음 CL
 ```
 
 핵심은 **모든 입구가 결국 같은 한 곳(`handoff_bridge.py run`)을 거친다**는
-점입니다. 웹 UI도 데스크톱 앱도 로직을 따로 갖지 않고, 사람이 터미널에서 칠 명령과
+점입니다(`chat`은 서브프로세스 대신 같은 함수 `run_command`를 직접 부릅니다). 웹 UI도 데스크톱 앱도 로직을 따로 갖지 않고, 사람이 터미널에서 칠 명령과
 똑같은 명령을 서브프로세스로 실행합니다. 그래서 동작이 어디서든 같습니다.
 
 ## 3. 파일 지도
 
 | 파일 | 하는 일 |
 |---|---|
-| `handoff_bridge.py` | 핵심. 설치, 작업 패킷 생성, 프롬프트 구성, provider 실행, 결과 분류, 상태 기록 |
+| `handoff_bridge.py` | 핵심. 설치, 작업 패킷 생성, 프롬프트 구성, provider 실행, 결과 분류, 상태 기록, 대화형 `chat` |
 | `handoff_webui.py` | 웹 UI의 HTTP 서버(표준 라이브러리 `ThreadingHTTPServer`)와 API 라우팅 |
 | `webui_common.py` | 웹 UI가 `handoff_bridge.py`를 서브프로세스로 부르는 경계(`bridge_command_prefix`) 등 공용 도구 |
 | `webui_bridge_run.py` | `/api/run`이 실제로 provider를 돌리는 부분 |
@@ -78,7 +78,9 @@ limit, context 등)에 걸리면 **작업 폴더의 파일**을 통해 다음 CL
      `next_available_provider(last_provider)` — 설치된 다음 CLI.
    - 아니면 `primary_provider`(설치돼 있을 때). 없으면 설치된 첫 CLI.
 5. **`run_provider()` 실행**
-   1. `build_prompt()`로 프롬프트를 만듭니다(5절).
+   1. (`--execute`일 때) `current.md`가 60,000자를 넘으면 오래된 항목을
+      `.handoff/archive/`로 옮기고 오프셋을 저장합니다(9절). 그다음 `build_prompt()`로
+      프롬프트를 만듭니다(5절).
    2. `provider_command()`로 실행 명령을 만듭니다(6절).
    3. `--execute`가 없으면 여기서 끝납니다. 프롬프트를 `.handoff/next-prompt.md`에
       쓰고 "토큰을 쓰지 않았다"고 알린 뒤 종료하는 **미리보기**입니다.
@@ -98,6 +100,15 @@ limit, context 등)에 걸리면 **작업 폴더의 파일**을 통해 다음 CL
       `.handoff/current.md`에 사람이 읽는 블록을 덧붙입니다.
    10. 넘겨야 한다면 자동 전환을 처리합니다(8절).
 
+### 대화형 입구: `chat`
+
+`handoff_bridge.py chat`은 입력 한 줄을 `run_command()`에 그대로 넘기는 REPL입니다
+(`ChatSession`). 상태 파일, 세션 재개, 자동 전환, 프롬프트 구성이 `run --execute`와 같고,
+턴마다 토큰 줄을 덧붙입니다. `sent ~N`은 그 턴 `prompt.md` 글자 수 ÷ 4 추정치이고,
+`reported ...`는 provider CLI가 돌려준 `usage`(`usage_token_counts`)입니다. 입력 중
+Ctrl-D·Ctrl-C는 반쯤 쓴 메시지를 버리고, 실행 중 Ctrl-C는 provider 프로세스를 멈추며
+그 턴은 기록되지 않습니다.
+
 ## 5. 프롬프트 만들기 — `build_prompt()`
 
 프롬프트는 세 가지 경우로 나뉩니다.
@@ -105,7 +116,7 @@ limit, context 등)에 걸리면 **작업 폴더의 파일**을 통해 다음 CL
 | 경우 | 조건 | 내용 |
 |---|---|---|
 | **이어서 쓰기** | 그 provider에 살아있는 세션 ID가 있고 넘김 사유가 없음 | 새 메시지, git 상태, 그 provider가 마지막으로 본 뒤 `current.md`에 추가된 부분만 (약 600토큰) |
-| **처음 / 넘겨받기** | 세션이 없거나, 다른 provider가 한도에 걸려 넘어온 경우 | 작업 설명, 사용자 메시지, 넘김 사유, 규약 문서 3개, `current.md` 꼬리 20,000자, git 상태 |
+| **처음 / 넘겨받기** | 세션이 없거나, 다른 provider가 한도에 걸려 넘어온 경우 | 작업 설명, 사용자 메시지, 넘김 사유, 규약 요약("Working Rules"), `current.md` 최신 항목 5,000자, git 상태 (약 1,200~2,200토큰) |
 | **미리보기** | `--execute` 없음 | 위와 같은 프롬프트를 파일로만 저장 |
 
 이어서 쓰기가 작은 이유: 그 provider의 CLI 세션이 이미 첫 턴의 규약·작업을
@@ -113,6 +124,15 @@ limit, context 등)에 걸리면 **작업 폴더의 파일**을 통해 다음 CL
 `state["prompt_context_offsets"][provider]`에 **provider별로** 저장합니다. 중간에 다른
 provider가 한 턴 돌았더라도 이 provider가 못 본 부분을 건너뛰지 않게 하려는
 것입니다.
+
+**컴팩트 모드(기본)와 전체 모드.** 처음/넘겨받기 프롬프트는 규약 문서 3개(약 9,400자)
+전문 대신 짧은 요약(`PROTOCOL_SUMMARY`)을 담고, `current.md`는 `##`/`###` 항목 단위로
+최신 것부터 5,000자까지만 담습니다(`recent_log_for_prompt`). 이 저장소의 실제 로그 기준
+약 8,200토큰이 약 2,200토큰으로 줄었습니다. 워크스페이스가 세 문서 중 하나라도
+번들 원본과 다르게 고쳐 쓴 경우(`protocol_docs_customized`, 줄바꿈 차이는 무시)
+컴팩트 모드가 스스로 전체 모드로 바뀌어 고친 규칙이 빠지지 않습니다.
+`run --full-prompt`로 강제할 수도 있습니다. 전체 모드는 문서 3개 전문과
+20,000자 꼬리를 보냅니다.
 
 항상 들어가는 두 개의 고정 안내문은 실제로 겪은 문제에서 나왔습니다.
 
@@ -190,6 +210,7 @@ provider가 한 턴 돌았더라도 이 provider가 못 본 부분을 건너뛰�
 |---|---|---|
 | `.handoff/state.json` | 브리지만 (세션 ID, 기록, 상태, 오프셋) | 제외 |
 | `.handoff/current.md` | 브리지가 실행 기록을 덧붙이고, 에이전트가 Changed/Verified/Remaining/Blocked/Next를 직접 씀 | 제외하지 않음(프로젝트와 함께 추적 가능) |
+| `.handoff/archive/current-<시각>.md` | 브리지 (`current.md`에서 밀려난 오래된 항목) | 제외하지 않음(`current.md`와 함께 이동) |
 | `.handoff/runs/<id>/` | 브리지 (프롬프트, stdout, stderr 원본) | 제외 |
 | `.handoff/next-prompt.md` | 브리지 (미리보기·다음 프롬프트) | 제외 |
 | `.handoff/shared-context.md` | 사용자 (프로젝트 공통 맥락) | 제외하지 않음 |
@@ -202,6 +223,13 @@ provider가 한 턴 돌았더라도 이 provider가 못 본 부분을 건너뛰�
   프로세스 간 락입니다. `fcntl`/`msvcrt` 대신 이 방식을 쓰는 이유는 macOS·Linux·
   Windows에서 한 구현으로 동작하고, 작업마다 별도 프로세스가 도는 HTTP 원격
   서버에도 적용되기 때문입니다.
+
+**아카이브.** `current.md`는 계속 늘어나는데, "current.md를 읽어라"는 지시를 따르는
+에이전트는 프롬프트와 무관하게 파일 전체를 엽니다(281KB ≈ 7만 토큰). 그래서
+`--execute` 실행 직전 60,000자를 넘으면 가장 오래된 항목부터 `archive/`로 옮기고 약
+30,000자만 남깁니다(`archive_old_current_entries`, 삭제는 하지 않음). `state.json`에
+저장된 provider별 읽기 위치(오프셋)는 옮긴 만큼 같이 이동시켜 provider 호출 전에
+저장하며, 오프셋이 파일 길이를 넘으면 0으로 취급해 새 기록을 건너뛰지 않게 합니다.
 
 한계: 락은 **개별 쓰기**를 보호할 뿐, 읽고-수정하고-쓰는 전체 주기를 보호하지는
 않습니다. 같은 폴더에서 `run` 둘이 겹치지 않게 하는 것은 앞의 `.run.lock`의
@@ -279,15 +307,3 @@ git 훅으로 로컬에서 강제합니다. 자동 CI는 GitHub Actions 한도 �
 4. `choose_auto_provider`, `next_available_provider` (8절)
 5. `webui_bridge_run.py`의 `_run_provider_via_bridge_locked` (10절)
 6. `tests/test_handoff_bridge.py` — 각 동작이 어떤 경우를 보장하는지의 가장 좋은 설명서
-
-## 진행 중인 변경 (병합 전)
-
-이 절은 아래 PR이 병합되면 위 본문(5·8절 일부)에 흡수하고 지웁니다.
-
-- **#89 프롬프트 압축**: 5절의 "처음 / 넘겨받기" 프롬프트가 규약 문서 3개 대신 짧은
-  "Working Rules" 요약과 `current.md`의 최신 항목 5,000자를 담도록 바뀝니다
-  (이 저장소 기준 약 8,200 → 2,200토큰). `run --full-prompt`로 이전 방식을 쓸 수
-  있고, `current.md`가 60,000자를 넘으면 오래된 항목을 `.handoff/archive/`로
-  옮깁니다.
-- **#90 `chat` 명령**: 입구가 하나 늘어납니다. 터미널 대화형 REPL이
-  `run_command`를 그대로 호출하며 턴마다 토큰 사용량을 보여줍니다.
