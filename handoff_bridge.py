@@ -367,14 +367,15 @@ def read_workspace_or_bridge(rel_path: str, default: str = "") -> str:
     return default
 
 
-# What os.open(O_CREAT | O_EXCL) raises while another holder has the lock file.
-# On Windows a lock file that is being deleted (or is still open) by the
-# previous holder reports PermissionError (EACCES), not FileExistsError, so
-# that is a "busy, retry" signal there too. On POSIX PermissionError stays a
-# real error (unwritable directory) and is raised immediately.
-LOCK_BUSY_ERRORS: tuple[type[OSError], ...] = (
-    (FileExistsError, PermissionError) if os.name == "nt" else (FileExistsError,)
-)
+# On Windows, os.open(O_CREAT | O_EXCL) on a lock file the previous holder is
+# still deleting raises PermissionError (EACCES) instead of FileExistsError.
+# That window lasts milliseconds, so PermissionError is retried only briefly
+# (LOCK_PERMISSION_RETRY_SECONDS of *consecutive* PermissionErrors); a lasting
+# one is a real permission problem (e.g. a read-only .handoff) and is raised
+# as it is, not absorbed into a lock timeout that can be an hour (.run.lock).
+# On POSIX PermissionError is never transient.
+TRANSIENT_LOCK_ERRORS: tuple[type[OSError], ...] = (PermissionError,) if os.name == "nt" else ()
+LOCK_PERMISSION_RETRY_SECONDS = 2.0
 
 
 class WriteLock:
@@ -394,14 +395,22 @@ class WriteLock:
     def __enter__(self) -> "WriteLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
         deadline = time.monotonic() + self.timeout
+        permission_since: float | None = None
         while True:
             try:
                 self._fd = os.open(str(self.path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 return self
-            except LOCK_BUSY_ERRORS as exc:
+            except FileExistsError as exc:
+                permission_since = None
                 if time.monotonic() > deadline:
                     raise TimeoutError(f"timed out waiting for handoff write lock: {self.path}") from exc
-                time.sleep(0.05)
+            except TRANSIENT_LOCK_ERRORS:
+                now = time.monotonic()
+                if permission_since is None:
+                    permission_since = now
+                if now - permission_since > LOCK_PERMISSION_RETRY_SECONDS or now > deadline:
+                    raise
+            time.sleep(0.05)
 
     def __exit__(self, *exc_info: Any) -> None:
         if self._fd is not None:
