@@ -66,15 +66,38 @@ for folder selection and mobile prompt generation.
 
 - active provider/model metadata;
 - user prompt for the current turn;
-- `docs/agent-targeting-protocol.md`;
-- `docs/shared-agent-contract.md`;
-- `docs/verification-playbook.md`;
-- `.handoff/current.md`;
+- a short "Working Rules" summary of the three protocol docs
+  (`docs/agent-targeting-protocol.md`, `docs/shared-agent-contract.md`,
+  `docs/verification-playbook.md`) — `PROTOCOL_SUMMARY` in
+  `handoff_bridge.py`;
+- the newest whole entries of `.handoff/current.md`, up to
+  `COMPACT_CURRENT_PROMPT_CHARS` (5,000 characters), newest first;
 - `.handoff/shared-context.md`, when non-empty (DEC-27);
 - `git status --short` and `git diff --stat`.
 
 This gives both models the same source of truth even when their private
-transcripts differ.
+transcripts differ. A turn that resumes a provider's live session sends only
+the new user message, a git snapshot, and the log entries added since that
+provider's last turn.
+
+**Token cost.** This is the default "compact" mode. Measured on this
+repository's own 283KB `current.md`, a handoff/cold-start prompt dropped from
+about 32,700 characters (~8,200 tokens) to about 8,800 (~2,200 tokens).
+`run --full-prompt` restores the previous behavior (the three docs inlined in
+full, plus a 20,000-character tail of the log). Compact mode switches to full
+by itself when the workspace's copy of any of those three docs differs from the
+bundled one (a customised rule set must be sent as written), so the Web UI,
+desktop app, and remote server need no extra flag.
+
+**Log archiving.** `.handoff/current.md` is append-only, and an agent told to
+"read `.handoff/current.md`" opens the whole file regardless of what the prompt
+contains. Before each `--execute` run, once the file passes 60,000 characters
+the oldest entries move to `.handoff/archive/current-<UTC timestamp>.md`
+(not git-ignored: it travels with the project like `current.md` does) and about
+30,000 characters of the newest stay; the live file starts with a one-line
+pointer comment. Per-provider offsets in `state.json` are shifted by the same
+amount and saved before the provider runs, and an offset that points past the end
+of the log is treated as 0, so continuation turns never skip new entries.
 
 ## Provider Selection
 
