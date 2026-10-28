@@ -84,6 +84,15 @@
   `/status`, `/help`, `/exit`. Replies appear when a turn finishes (no
   streaming yet). See [CLI Reference](cli-reference.md).
 
+- **Desktop installers are not signed at the OS level** (the in-app updater's
+  own signature is separate). Expect a warning on first launch: Windows
+  SmartScreen blocks the installer until you click "More info" and then "Run
+  anyway"; macOS Gatekeeper says the app cannot be verified until you
+  control-click it and choose "Open" (or use "Open Anyway" in System Settings,
+  Privacy & Security). This is not a malware detection. Details:
+  [README](https://github.com/jh3779/agent-handoff-bridge#download) and
+  [Security Model](https://github.com/jh3779/agent-handoff-bridge/blob/main/docs/security-model.md).
+
 ## v0.5.0 — 2026-10-27
 
 - **Removed: API-key mode and custom providers.** The Settings panel no
