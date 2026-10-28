@@ -461,6 +461,14 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     for record in records:
                         status = classify_run_status(record["handoff_needed"], record["reason"])
                         agent_text = record.get("final_text") or f"(exit {record['exit_code']}, no output)"
+                        if record.get("permissions") == "allow-all":
+                            # run_provider() prints its warning to the bridge
+                            # subprocess's stdout, which this handler never
+                            # shows -- so the warning has to ride in the
+                            # message itself or a Web UI/desktop user would
+                            # never learn agy ran with every tool call
+                            # auto-approved.
+                            agent_text = f"{ALLOW_ALL_WARNING}\n\n{agent_text}"
                         messages.append(
                             append_chat_message(
                                 workspace,
@@ -616,6 +624,12 @@ def restore_persisted_sessions(state: "AppState") -> None:
             workspace = None
         with state.sessions_lock:
             state.sessions[session_id] = SessionState(workspace)
+
+
+ALLOW_ALL_WARNING = (
+    "⚠ agy ran with every tool call auto-approved (HANDOFF_AGY_ALLOW_WRITES / --agy-allow-writes): "
+    "it could write files and run commands without asking."
+)
 
 
 class SessionState:

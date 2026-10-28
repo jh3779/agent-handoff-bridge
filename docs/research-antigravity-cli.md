@@ -34,8 +34,12 @@ low/medium/high variants. Usage draws on the account's weekly Antigravity quota.
 | Auth | No status subcommand. Headless runs use cached credentials; an unauthenticated run exits with `authentication required` |
 
 `--dangerously-skip-permissions` (with or without `--sandbox`) was **not**
-exercised: it approves every tool with no scoping, and whether `--sandbox`
-actually confines writes to the workspace is unverified.
+exercised: the environment's permission classifier blocked both attempts, so
+nothing below about its effect is Verified. It is Documented as approving all
+tool calls (headless page); whether `--sandbox` actually confines writes to the
+workspace is unverified. To check it yourself, from a scratch directory run
+`printf 'Create inside.txt containing hi, then reply DONE.' | agy --dangerously-skip-permissions --sandbox --output-format json`
+and then the same with a path outside the directory.
 
 ## What the bridge does
 
@@ -60,8 +64,10 @@ actually confines writes to the workspace is unverified.
   `tool_failure` as well (the reply may only propose changes that were not
   applied): the reply is kept for the next provider and a note is added.
 - `diagnose` reports whether `agy` is installed; it does not check auth.
-- The bridge never passes `--dangerously-skip-permissions`. Adding an explicit
-  opt-in for it is a possible follow-up if the default turns out too restrictive.
+- By default the bridge does not pass `--dangerously-skip-permissions`. The user
+  can opt in (`--agy-allow-writes` / `HANDOFF_AGY_ALLOW_WRITES=1`, decision
+  DEC-31), which passes exactly that flag and no `--sandbox`; see
+  [Security Model](security-model.md#agy-write-access-opt-in).
 
 ## Known gaps
 

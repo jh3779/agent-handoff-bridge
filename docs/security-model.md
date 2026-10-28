@@ -34,9 +34,12 @@ Never commit:
 
 The bridge (`handoff_bridge.py`) shells out to `codex`, `claude`, and (as
 of v0.5.1) `agy`; each provider uses its own local auth and
-permission model — this is unchanged. In particular the bridge never passes
+permission model — this is unchanged. By default the bridge does not pass
 `--dangerously-skip-permissions` to `agy`: its headless mode denies file writes
-and shell commands unless the user allows them in `agy`'s own settings.
+and shell commands unless the user allows them in `agy`'s own settings. The user
+can opt in per run (`--agy-allow-writes`) or per environment
+(`HANDOFF_AGY_ALLOW_WRITES=1`); see
+[agy write access](#agy-write-access-opt-in) below.
 `agy` has no free auth-status
 command to check (`docs/research-antigravity-cli.md`), so `diagnose()`
 deliberately does not probe it — see
@@ -307,3 +310,41 @@ If a secret is accidentally written:
 4. Check `git status` and staged content.
 5. Inspect `.handoff/runs/` and delete local raw logs if they contain secrets.
 6. Do not push until the history is clean.
+
+## agy Write Access (Opt-In)
+
+Off by default. In headless mode `agy` auto-denies any file write or shell
+command that needs a permission prompt, so out of the box it can read and
+answer but not change the workspace; a denied call is recorded as a
+`tool_failure` and auto-fallback hands the task to the next CLI.
+
+Turning it on — `run --agy-allow-writes`, `chat --agy-allow-writes`, or
+`HANDOFF_AGY_ALLOW_WRITES=1` in the environment of whatever starts the bridge
+(the Web UI, the desktop app and the remote server only honour the environment
+variable, since they have no flag) — adds `--dangerously-skip-permissions` to
+the `agy` command. **That approves every tool call**: file writes anywhere the
+account can write, any shell command, with no per-path or per-command scoping.
+This is broader than Codex's `workspace-write` sandbox, and nothing in the bridge
+narrows it.
+
+What the bridge does about that:
+
+- it prints a warning line on every such run and at the start of `chat`, writes
+  `permissions: "allow-all"` into that run's `state.json` record and a
+  "Permissions" line into `current.md`, and `diagnose` states the current mode.
+  The warning also reaches the interactive `chat` on every turn and the Web UI /
+  desktop app as a line at the top of that run's chat message (their subprocess
+  output is not shown to the user, so the record field carries it). There is no
+  pre-run banner in the Web UI yet;
+- the prompt for `agy` carries a caution (stay in the workspace, make only the
+  requested changes, no destructive or irreversible commands unless asked);
+- it does **not** add `--sandbox`: that flag's effect ("terminal restrictions")
+  was not verified against a real run, so relying on it would be a guess;
+- the flag was not exercised by the author against a real `agy` run (the
+  environment's permission classifier blocked it), so the behaviour above is the
+  documented one ([headless mode](https://antigravity.google/docs/cli/headless):
+  it "approves all tool calls, including file writes and command execution").
+
+Run it in a workspace that is under version control with a clean tree, and read
+the diff afterwards; prompt injection in files `agy` reads is the main way this
+mode turns into damage.

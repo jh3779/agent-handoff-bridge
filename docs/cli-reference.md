@@ -79,6 +79,12 @@ By default the prompt is **compact**: a short rules summary plus the newest
 `docs/` protocol files in full and a 20,000-character log tail instead. This
 happens automatically when the workspace has customised any of those files.
 
+`run` and `chat` also take `--agy-allow-writes` (same as `HANDOFF_AGY_ALLOW_WRITES=1`):
+by default `agy` cannot write files or run commands in headless mode, and this
+opts in to passing `--dangerously-skip-permissions`, which approves every tool
+call. Read [Security Model § agy write access](security-model.md#agy-write-access-opt-in)
+first.
+
 ### Interactive Chat
 
 ```bash
@@ -101,6 +107,7 @@ and Claude Code; `agy` reports its usage too, as `input_tokens`/`output_tokens`/
 | `/fallback [on\|off]` | show or set auto-fallback (default on) |
 | `/full [on\|off]` | show or set full-prompt mode (see `run --full-prompt`) |
 | `/tokens` | token totals for this chat session |
+| `/stats` | runs, handoffs, tokens and time recorded in this workspace (same as `stats`) |
 | `/status` | workspace, bridge status, installed CLIs |
 | `/help`, `/exit` | help; leave (Ctrl-D also works) |
 
@@ -110,6 +117,32 @@ provider is running stops that provider process and the turn is not recorded
 (anything it had already started, such as edits or shell commands, may have
 completed). Ctrl-D ends the chat, and a half-typed multi-line message is dropped
 rather than sent.
+
+### Stats
+
+```bash
+python3 handoff_bridge.py --workspace /path/to/project stats          # text
+python3 handoff_bridge.py --workspace /path/to/project stats --json   # machine-readable
+```
+
+Summarizes `.handoff/state.json`'s run history for this workspace, per provider:
+runs, how many ended without a handoff signal ("ok") versus with one (and which
+reason labels), the tokens each CLI reported (in/out/cached), and wall time
+(`duration_seconds`, recorded on every run since v0.5.1). The two figures worth
+comparing are **tokens and seconds per ok run**: the spend of the *measured*
+runs (failed ones included) divided by the ok runs among those same runs. If some
+of a provider's runs have no figure (older records, a failed run whose CLI printed
+no usage) the line is marked "partial" and is only an estimate. It also counts
+handoff hops — runs the bridge recorded as taking over an unresolved handoff
+(`handoff_from`, written since v0.5.1; older records are not counted) — and how
+many of them ended without handing off again.
+
+What the numbers do and do not mean: "ok" only says no handoff signal was
+detected, not that the work is correct; tokens are summed as each CLI reports
+them and are not comparable across providers (Codex's input count includes cache
+reads, Claude's does not); no price is applied, because subscription quota and
+API token prices are different units. Runs recorded before `duration_seconds`
+existed have no time figures. `chat` has the same summary as `/stats`.
 
 ### Model Labels And Overrides
 

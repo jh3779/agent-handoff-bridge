@@ -1175,11 +1175,276 @@ class ChatReplTests(unittest.TestCase):
         self.assertIn("already in progress", "\n".join(lines))
         self.assertEqual(session.turns, 0)
 
+    def test_an_allow_all_run_warns_on_every_turn(self):
+        # run_provider()'s own warning is swallowed into the turn's stdout
+        # buffer once a record exists, so the chat has to repeat it per run.
+        session = hb.ChatSession("agy", False, False, None, 0)
+        base = {"provider": "agy", "exit_code": 0, "handoff_needed": False, "reason": "none", "final_text": "hi"}
+        cases = [({**base, "permissions": "allow-all"}, True), (dict(base), False)]
+        for record, expect_warning in cases:
+            lines = []
+            with mock.patch.object(hb, "run_command", return_value=0), mock.patch.object(
+                hb, "load_state", side_effect=[{"history": []}, {"history": [record]}]
+            ):
+                session.run_turn("go", lines.append)
+            self.assertEqual(any("auto-approved" in line for line in lines), expect_warning)
+
     def test_full_flag_reaches_the_prompt(self):
         Path("docs").mkdir()
         Path("docs/shared-agent-contract.md").write_text("CUSTOM_CONTRACT_MARKER", encoding="utf-8")
         self._chat(["hello", "/exit"], full_prompt=True)
         self.assertIn("CUSTOM_CONTRACT_MARKER", self.provider_inputs[0][1])
+
+
+class StatsTests(unittest.TestCase):
+    @staticmethod
+    def _record(provider, handoff, reason=None, usage=None, duration=None):
+        record = {
+            "provider": provider,
+            "handoff_needed": handoff,
+            "reason": reason or ("quota: matched quota signal" if handoff else "none: no handoff signal detected"),
+            "usage": usage,
+        }
+        if duration is not None:
+            record["duration_seconds"] = duration
+        return record
+
+    def test_empty_history(self):
+        stats = hb.compute_stats([])
+        self.assertEqual(stats["runs"], 0)
+        self.assertEqual(stats["providers"], {})
+        self.assertIn("No runs recorded", hb.format_stats(stats))
+
+    def test_counts_reasons_tokens_and_time_per_provider(self):
+        history = [
+            self._record("codex", True, usage={"input_tokens": 1000, "output_tokens": 50}, duration=10.0),
+            self._record("claude", False, usage={"input_tokens": 200, "output_tokens": 30, "cache_read_input_tokens": 900}, duration=20.0),
+            self._record("claude", False, usage={"input_tokens": 100, "output_tokens": 10}, duration=5.0),
+        ]
+        stats = hb.compute_stats(history)
+        codex, claude = stats["providers"]["codex"], stats["providers"]["claude"]
+        self.assertEqual((codex["runs"], codex["ok"], codex["handoffs"]), (1, 0, 1))
+        self.assertEqual(codex["reasons"], {"quota": 1})
+        self.assertEqual((claude["runs"], claude["ok"], claude["handoffs"]), (2, 2, 0))
+        self.assertEqual(claude["tokens"], {"input": 300, "output": 40, "cached": 900})
+        self.assertEqual(claude["seconds"], 25.0)
+
+    def test_per_ok_run_figures_include_the_spend_of_failed_runs(self):
+        history = [
+            self._record("codex", True, usage={"input_tokens": 900, "output_tokens": 100}, duration=30.0),
+            self._record("codex", False, usage={"input_tokens": 80, "output_tokens": 20}, duration=10.0),
+        ]
+        codex = hb.compute_stats(history)["providers"]["codex"]
+        # 1,100 tokens and 40s were spent to get 1 ok run.
+        self.assertEqual(codex["tokens_per_ok_run"], 1100)
+        self.assertEqual(codex["seconds_per_ok_run"], 40.0)
+
+    def test_per_ok_run_is_none_without_an_ok_run_or_without_data(self):
+        only_failed = hb.compute_stats([self._record("codex", True, usage={"input_tokens": 5, "output_tokens": 5}, duration=1.0)])
+        self.assertIsNone(only_failed["providers"]["codex"]["tokens_per_ok_run"])
+        self.assertIsNone(only_failed["providers"]["codex"]["seconds_per_ok_run"])
+        no_data = hb.compute_stats([self._record("codex", False)])
+        self.assertIsNone(no_data["providers"]["codex"]["tokens_per_ok_run"])
+        self.assertIsNone(no_data["providers"]["codex"]["seconds_per_ok_run"])
+
+    def test_records_from_before_duration_existed_do_not_break_the_time_figures(self):
+        history = [self._record("claude", False), self._record("claude", False, duration=4.0)]
+        claude = hb.compute_stats(history)["providers"]["claude"]
+        self.assertEqual(claude["runs_timed"], 1)
+        self.assertEqual(claude["seconds"], 4.0)
+
+    def test_unmeasured_ok_runs_do_not_dilute_the_per_ok_run_figures(self):
+        # Found in review: an old ok record with no duration plus a new ok run
+        # of 4s used to print "2.0s per ok run" -- a number with no
+        # measurement behind it. The figure now uses only measured runs, and
+        # is flagged partial.
+        history = [
+            self._record("claude", False, usage=None),
+            self._record("claude", False, usage={"input_tokens": 100, "output_tokens": 20}, duration=4.0),
+        ]
+        claude = hb.compute_stats(history)["providers"]["claude"]
+        self.assertEqual(claude["seconds_per_ok_run"], 4.0)
+        self.assertEqual(claude["tokens_per_ok_run"], 120)
+        self.assertFalse(claude["seconds_complete"])
+        self.assertFalse(claude["tokens_complete"])
+        text = hb.format_stats(hb.compute_stats(history))
+        self.assertIn("(partial: 1/2 runs)", text)
+
+    def test_complete_data_is_not_marked_partial(self):
+        history = [self._record("codex", False, usage={"input_tokens": 10, "output_tokens": 5}, duration=2.0)]
+        codex = hb.compute_stats(history)["providers"]["codex"]
+        self.assertTrue(codex["tokens_complete"])
+        self.assertTrue(codex["seconds_complete"])
+        self.assertNotIn("(partial:", hb.format_stats(hb.compute_stats(history)))
+
+    def test_a_failed_run_with_no_usage_makes_the_token_figure_partial_not_exact(self):
+        history = [
+            self._record("codex", True, usage=None, duration=30.0),
+            self._record("codex", False, usage={"input_tokens": 80, "output_tokens": 20}, duration=10.0),
+        ]
+        codex = hb.compute_stats(history)["providers"]["codex"]
+        self.assertEqual(codex["tokens_per_ok_run"], 100)
+        self.assertFalse(codex["tokens_complete"])
+        self.assertTrue(codex["seconds_complete"])
+        self.assertEqual(codex["seconds_per_ok_run"], 40.0)
+
+    def test_only_records_linked_by_handoff_from_count_as_hops(self):
+        linked_ok = dict(self._record("claude", False), handoff_from="run-1")
+        linked_failed = dict(self._record("agy", True), handoff_from="run-2")
+        history = [
+            self._record("codex", True),
+            linked_ok,
+            self._record("claude", True),
+            linked_failed,
+            # Adjacent and on a different provider, but never linked: an
+            # unrelated later request, not a takeover.
+            self._record("codex", False),
+        ]
+        stats = hb.compute_stats(history)
+        self.assertEqual(stats["handoff_hops"], 2)
+        self.assertEqual(stats["handoff_hops_ok"], 1)
+
+    def test_records_from_before_handoff_from_existed_are_not_counted_as_hops(self):
+        stats = hb.compute_stats([self._record("codex", True), self._record("claude", False)])
+        self.assertEqual(stats["handoff_hops"], 0)
+        self.assertIn("no linked hops", hb.format_stats(stats))
+
+    def _run_claude(self, state):
+        def fake_run(command, **kwargs):
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(
+                command, returncode=0, stderr="",
+                stdout='{"type": "result", "session_id": "s", "result": "ok", "is_error": false}\n',
+            )
+        args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                     timeout_seconds=0, model=None, instruction_type="continue")
+        with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+            hb.subprocess, "run", side_effect=fake_run
+        ), contextlib.redirect_stdout(io.StringIO()):
+            hb.run_provider("claude", args, state)
+
+    def test_run_provider_links_a_takeover_to_the_run_whose_handoff_it_resolves(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                state = {"task": "t", "status": "handoff_needed", "last_provider": "codex",
+                         "history": [{"provider": "codex", "handoff_needed": True, "run_dir": ".handoff/runs/codex-1"}]}
+                self._run_claude(state)
+                self.assertEqual(state["history"][-1]["handoff_from"], ".handoff/runs/codex-1")
+            finally:
+                os.chdir(orig)
+
+    def test_run_provider_does_not_link_a_retry_by_the_same_provider_or_a_fresh_start(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                retry = {"task": "t", "status": "handoff_needed", "last_provider": "claude",
+                         "history": [{"provider": "claude", "handoff_needed": True, "run_dir": "r"}]}
+                self._run_claude(retry)
+                self.assertNotIn("handoff_from", retry["history"][-1])
+                fresh = {"task": "t", "status": "ready", "last_provider": "codex",
+                         "history": [{"provider": "codex", "handoff_needed": False, "run_dir": "r"}]}
+                self._run_claude(fresh)
+                self.assertNotIn("handoff_from", fresh["history"][-1])
+                empty = {"task": "t", "status": "ready"}
+                self._run_claude(empty)
+                self.assertNotIn("handoff_from", empty["history"][-1])
+            finally:
+                os.chdir(orig)
+
+    def test_auto_fallback_records_the_link_on_the_second_hop(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                def fake_run(command, **kwargs):
+                    if command[0] == "git":
+                        return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+                    if command[0] == "codex":
+                        return subprocess.CompletedProcess(command, returncode=1, stdout="", stderr="Error: 429 too many requests")
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stderr="",
+                        stdout='{"type": "result", "session_id": "s", "result": "ok", "is_error": false}\n',
+                    )
+                args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=True,
+                                             timeout_seconds=0, model=None, instruction_type="continue")
+                state = {"task": "t", "primary_provider": "codex", "status": "ready"}
+                with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+                    hb.subprocess, "run", side_effect=fake_run
+                ), contextlib.redirect_stdout(io.StringIO()):
+                    hb.run_provider("codex", args, state)
+                first, second = state["history"]
+                self.assertNotIn("handoff_from", first)
+                self.assertEqual(second["handoff_from"], first["run_dir"])
+                stats = hb.compute_stats(state["history"])
+                self.assertEqual((stats["handoff_hops"], stats["handoff_hops_ok"]), (1, 1))
+            finally:
+                os.chdir(orig)
+
+    def test_text_output_states_what_ok_means_and_applies_no_price(self):
+        text = hb.format_stats(hb.compute_stats([self._record("codex", False, usage={"input_tokens": 10, "output_tokens": 2}, duration=1.0)]))
+        self.assertIn("not proof the work is correct", text)
+        self.assertIn("no prices applied", text)
+        self.assertIn("in 10", text)
+        self.assertNotIn("$", text)
+
+    def test_stats_json_flag_prints_machine_readable_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".handoff").mkdir()
+            state = {"history": [self._record("codex", False, usage={"input_tokens": 3, "output_tokens": 1}, duration=2.5)]}
+            (workspace / ".handoff" / "state.json").write_text(json.dumps(state), encoding="utf-8")
+            bridge_script = Path(__file__).resolve().parent.parent / "handoff_bridge.py"
+            result = subprocess.run(
+                [sys.executable, str(bridge_script), "--workspace", str(workspace), "stats", "--json"],
+                text=True, capture_output=True, check=False, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(data["providers"]["codex"]["seconds"], 2.5)
+
+    def test_run_provider_records_the_duration_of_each_run(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                def fake_run(command, **kwargs):
+                    if command[0] == "git":
+                        return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stderr="",
+                        stdout='{"type": "result", "session_id": "s", "result": "ok", "is_error": false}\n',
+                    )
+                args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                             timeout_seconds=0, model=None, instruction_type="continue")
+                state = {"task": "t", "primary_provider": "claude", "status": "ready"}
+                with mock.patch.object(hb.shutil, "which", return_value="/usr/bin/x"), mock.patch.object(
+                    hb.subprocess, "run", side_effect=fake_run
+                ):
+                    hb.run_provider("claude", args, state)
+                duration = state["history"][0]["duration_seconds"]
+                self.assertIsInstance(duration, float)
+                self.assertGreaterEqual(duration, 0.0)
+                self.assertIn("- Duration:", hb.CURRENT_FILE.read_text(encoding="utf-8"))
+            finally:
+                os.chdir(orig)
+
+    def test_chat_stats_command_prints_the_summary(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                hb.HANDOFF_DIR.mkdir()
+                hb.save_state({"history": [self._record("claude", False, duration=1.0)]})
+                session = hb.ChatSession("auto", True, False, None, 0)
+                lines = []
+                self.assertTrue(session.handle_command("/stats", lines.append))
+                self.assertIn("claude: 1 run(s), 1 ok, 0 handoff", "\n".join(lines))
+            finally:
+                os.chdir(orig)
 
 
 class VersionTests(unittest.TestCase):
@@ -2027,11 +2292,130 @@ class ProviderCommandAgyTests(unittest.TestCase):
     def test_other_providers_get_no_runtime_note(self):
         self.assertNotIn("Runtime Note", hb.build_prompt("codex", {"task": "t", "sessions": {}}, "hello"))
 
-    def test_no_permission_bypass_flag_is_ever_added(self):
+    def test_no_permission_bypass_flag_by_default(self):
         # --dangerously-skip-permissions approves every tool with no
-        # scoping; the bridge leaves permissions to agy's own settings.
-        command = hb.provider_command("agy", {"sessions": {"agy": "id"}}, model="m")
+        # scoping; unless the user opts in, the bridge leaves permissions to
+        # agy's own settings.
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(hb.AGY_ALLOW_WRITES_ENV, None)
+            command = hb.provider_command("agy", {"sessions": {"agy": "id"}}, model="m")
         self.assertNotIn("--dangerously-skip-permissions", command)
+        self.assertNotIn("--sandbox", command)
+
+    def test_opt_in_adds_the_bypass_flag_and_nothing_else(self):
+        for value in ("1", "true", "YES", " on "):
+            with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: value}):
+                command = hb.provider_command("agy", {"sessions": {"agy": None}})
+            self.assertEqual(command, ["agy", "--output-format", "json", "--dangerously-skip-permissions"], msg=value)
+
+    def test_other_values_do_not_enable_it(self):
+        for value in ("", "0", "false", "no", "off", "maybe"):
+            with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: value}):
+                self.assertFalse(hb.agy_allow_writes_enabled(), msg=value)
+                self.assertNotIn(
+                    "--dangerously-skip-permissions", hb.provider_command("agy", {"sessions": {"agy": None}})
+                )
+
+    def test_the_opt_in_only_affects_agy(self):
+        with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: "1"}):
+            for provider in ("codex", "claude"):
+                self.assertNotIn(
+                    "--dangerously-skip-permissions",
+                    hb.provider_command(provider, {"sessions": {provider: None}}),
+                )
+
+    def test_cli_flag_sets_the_environment_variable_for_the_process(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(hb.AGY_ALLOW_WRITES_ENV, None)
+            with tempfile.TemporaryDirectory() as tmp:
+                orig = os.getcwd()
+                try:
+                    hb.main(["--workspace", tmp, "run", "agy", "--agy-allow-writes", "preview"])
+                finally:
+                    os.chdir(orig)
+            self.assertTrue(hb.agy_allow_writes_enabled())
+
+    def test_without_the_flag_main_leaves_the_environment_alone(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(hb.AGY_ALLOW_WRITES_ENV, None)
+            with tempfile.TemporaryDirectory() as tmp:
+                orig = os.getcwd()
+                try:
+                    hb.main(["--workspace", tmp, "run", "agy", "preview"])
+                finally:
+                    os.chdir(orig)
+            self.assertFalse(hb.agy_allow_writes_enabled())
+
+    def test_runtime_note_switches_to_a_caution_when_everything_is_pre_approved(self):
+        with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: "1"}):
+            prompt = hb.build_prompt("agy", {"task": "t", "sessions": {}}, "hello")
+        self.assertIn("pre-approved", prompt)
+        self.assertIn("destructive or irreversible", prompt)
+        self.assertNotIn("is denied without a prompt", prompt)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(hb.AGY_ALLOW_WRITES_ENV, None)
+            default_prompt = hb.build_prompt("agy", {"task": "t", "sessions": {}}, "hello")
+        self.assertIn("is denied without a prompt", default_prompt)
+
+    def test_run_records_and_announces_the_elevated_permissions(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                def fake_run(command, **kwargs):
+                    if command[0] == "git":
+                        return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+                    self.assertIn("--dangerously-skip-permissions", command)
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stderr="",
+                        stdout='{"conversation_id": "c", "status": "SUCCESS", "response": "done"}',
+                    )
+                args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                             timeout_seconds=0, model=None, instruction_type="continue")
+                state = {"task": "t", "primary_provider": "agy", "status": "ready"}
+                buffer = io.StringIO()
+                with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: "1"}), mock.patch.object(
+                    hb.shutil, "which", return_value="/usr/bin/x"
+                ), mock.patch.object(hb.subprocess, "run", side_effect=fake_run), contextlib.redirect_stdout(buffer):
+                    hb.run_provider("agy", args, state)
+                self.assertIn("WARNING: agy runs with every tool call auto-approved", buffer.getvalue())
+                self.assertEqual(state["history"][0]["permissions"], "allow-all")
+                self.assertIn("- Permissions: all tool calls auto-approved", hb.CURRENT_FILE.read_text(encoding="utf-8"))
+            finally:
+                os.chdir(orig)
+
+    def test_default_runs_carry_no_permissions_field(self):
+        orig = os.getcwd()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                def fake_run(command, **kwargs):
+                    if command[0] == "git":
+                        return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stderr="",
+                        stdout='{"conversation_id": "c", "status": "SUCCESS", "response": "done"}',
+                    )
+                args = hb.argparse.Namespace(prompt="hi", prompt_file=None, execute=True, auto_fallback=False,
+                                             timeout_seconds=0, model=None, instruction_type="continue")
+                state = {"task": "t", "primary_provider": "agy", "status": "ready"}
+                with mock.patch.dict(os.environ, {}, clear=False), mock.patch.object(
+                    hb.shutil, "which", return_value="/usr/bin/x"
+                ), mock.patch.object(hb.subprocess, "run", side_effect=fake_run), contextlib.redirect_stdout(io.StringIO()):
+                    os.environ.pop(hb.AGY_ALLOW_WRITES_ENV, None)
+                    hb.run_provider("agy", args, state)
+                self.assertNotIn("permissions", state["history"][0])
+            finally:
+                os.chdir(orig)
+
+    def test_chat_banner_warns_when_enabled(self):
+        args = hb.build_parser().parse_args(["chat", "agy"])
+        out = []
+        with mock.patch.dict(os.environ, {hb.AGY_ALLOW_WRITES_ENV: "1"}), mock.patch.object(
+            hb.shutil, "which", return_value="/usr/bin/x"
+        ):
+            hb.chat_command(args, input_fn=lambda prompt: (_ for _ in ()).throw(EOFError), out=out.append)
+        self.assertIn("WARNING: agy will run with every tool call auto-approved", "\n".join(out))
 
 
 class SummarizeAgyTests(unittest.TestCase):
