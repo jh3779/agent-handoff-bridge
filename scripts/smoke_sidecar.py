@@ -8,7 +8,9 @@ fails to read stdin, or that opens a port, would pass all of them. This starts
 the real thing the way the app does, sends it requests and checks the answers.
 
 Usage:
-  python3 scripts/smoke_sidecar.py <server-command> [args...]
+  python3 scripts/smoke_sidecar.py [--require-port-check] <server-command> [args...]
+    --require-port-check: also fail when this machine cannot check for listening
+    ports (installer-build passes it, so a release build never skips that check)
   python3 scripts/smoke_sidecar.py src-tauri/binaries/agent-handoff-bridge-server-<triple>[.exe]
   python3 scripts/smoke_sidecar.py python3 handoff_webui.py          # the source, for a quick check
 
@@ -218,6 +220,9 @@ def run(command: list[str]) -> tuple[list[str], bool]:
 
 
 def main(argv: list[str]) -> int:
+    strict = False
+    if argv and argv[0] == "--require-port-check":
+        strict, argv = True, argv[1:]
     if not argv:
         print(__doc__)
         return 2
@@ -227,6 +232,9 @@ def main(argv: list[str]) -> int:
             print("ok:", line)
     except SmokeFailure as exc:
         print("FAIL:", exc)
+        return 1
+    if strict and not port_checked:
+        print("FAIL: --require-port-check was given but this machine could not check for listening ports")
         return 1
     if port_checked:
         print("PASS: the sidecar answers over stdin/stdout and opens no port")

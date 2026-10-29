@@ -60,7 +60,9 @@ CI was removed once and has been partly restored:
   the sidecars, so a sidecar that cannot read stdin or that opens a port fails
   the release build instead of reaching users. The no-port part uses `lsof` on
   macOS/Linux and PowerShell (`Get-NetTCPConnection`) on Windows; if a machine
-  has neither, the script says the port was not checked instead of claiming it.
+  has neither, the script says the port was not checked instead of claiming it
+  (`installer-build` passes `--require-port-check`, which turns "could not check"
+  into a failure, so a release build never skips it).
   It does not exercise the Tauri shell itself (a Python process stands in for it). The unit tests cannot catch that:
   they run the Python source, not the shipped binary.
 

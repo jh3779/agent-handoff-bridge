@@ -99,7 +99,7 @@ jobs:
         run: |
           suffix=""
           if [ "${{ runner.os }}" = "Windows" ]; then suffix=".exe"; fi
-          python scripts/smoke_sidecar.py "src-tauri/binaries/agent-handoff-bridge-server-${{ matrix.target-triple }}${suffix}"
+          python scripts/smoke_sidecar.py --require-port-check "src-tauri/binaries/agent-handoff-bridge-server-${{ matrix.target-triple }}${suffix}"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

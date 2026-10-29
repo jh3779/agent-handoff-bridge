@@ -264,6 +264,20 @@ class SmokeScriptTests(unittest.TestCase):
         self.assertIn("NOT checked", out.getvalue())
         self.assertNotIn("opens no port", out.getvalue().replace("whether it opens a port was NOT checked", ""))
 
+    def test_require_port_check_turns_an_unchecked_port_into_a_failure(self):
+        module = self.load_script()
+        server = [sys.executable, str(ROOT / "handoff_webui.py")]
+        for listening, strict, expected in (
+            (None, True, 1),  # could not check, release mode: fail
+            (None, False, 0),  # could not check, local run: say so, pass
+            ("", True, 0),  # checked, nothing listening: pass
+        ):
+            with mock.patch.object(module, "_listening_sockets", return_value=listening), mock.patch(
+                "sys.stdout", io.StringIO()
+            ):
+                code = module.main((["--require-port-check"] if strict else []) + server)
+            self.assertEqual(code, expected, (listening, strict))
+
     def test_a_listening_socket_fails_the_run(self):
         module = self.load_script()
         with mock.patch.object(module, "_listening_sockets", return_value="127.0.0.1:8787 pid=1"):
