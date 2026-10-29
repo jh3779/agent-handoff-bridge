@@ -818,8 +818,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--stdio",
         action="store_true",
         help="Serve the same routes over stdin/stdout (one JSON request per line in, one JSON response per line "
-        "out) instead of a TCP port. This is how the desktop app talks to its bundled server: nothing listens "
-        "on the network. --host/--port/--browser/--no-browser are ignored.",
+        "out) instead of a TCP port; nothing listens on the network. This is the transport the desktop app is "
+        "being switched to -- until then the app still uses its localhost port. "
+        "--host/--port/--browser/--no-browser are ignored.",
     )
     return parser
 

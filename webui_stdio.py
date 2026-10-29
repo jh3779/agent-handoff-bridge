@@ -119,6 +119,15 @@ def dispatch(handler_class: type, frame: dict[str, Any]) -> dict[str, Any]:
     return _parse_http_response(handler.wfile.getvalue())
 
 
+def _wait_for_workers(workers: list, wait_for_in_flight: float | None, monotonic=time.monotonic) -> None:
+    """Join `workers`. `wait_for_in_flight=None` joins without any time limit; a
+    number caps the total wait. Split out so the no-limit default is testable
+    without real waiting (a regression here once looked fine in a 0.4s test)."""
+    deadline = None if wait_for_in_flight is None else monotonic() + wait_for_in_flight
+    for worker in workers:
+        worker.join(None if deadline is None else max(0.0, deadline - monotonic()))
+
+
 def serve(
     handler_class: type,
     stdin: TextIO,
@@ -168,9 +177,7 @@ def serve(
     running = [w for w in workers if w.is_alive()]
     if running:
         print(f"[stdio] input closed; waiting for {len(running)} running request(s) to finish", file=sys.stderr)
-    deadline = None if wait_for_in_flight is None else time.monotonic() + wait_for_in_flight
-    for worker in running:
-        worker.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+    _wait_for_workers(running, wait_for_in_flight)
     return 0
 
 

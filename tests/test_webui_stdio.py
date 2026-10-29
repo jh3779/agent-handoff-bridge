@@ -131,11 +131,13 @@ class _FakeHandler(BaseHTTPRequestHandler):
     """Stands in for the real handler to test transport behavior in isolation."""
 
     gate = threading.Event()
+    entered = threading.Event()
 
     def do_GET(self):  # noqa: N802
         if self.path == "/boom":
             raise RuntimeError("handler bug")
         if self.path == "/slow":
+            self.entered.set()
             self.gate.wait(10)
         if self.path == "/binary":
             payload = bytes(range(256))
@@ -168,39 +170,74 @@ class DispatchBehaviorTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(response["body"]), bytes(range(256)))
 
 
+class _FakeWorker:
+    def __init__(self):
+        self.joins = []
+
+    def join(self, timeout=None):
+        self.joins.append(timeout)
+
+
+class WaitForWorkersTests(unittest.TestCase):
+    """The no-limit default, checked without any real waiting: a clock that races
+    far past the old 5-second grace must not make the default give up."""
+
+    @staticmethod
+    def racing_clock():
+        ticks = iter(range(0, 10_000, 100))  # +100s on every reading
+        return lambda: next(ticks)
+
+    def test_by_default_every_worker_is_joined_without_a_time_limit(self):
+        workers = [_FakeWorker(), _FakeWorker()]
+        webui_stdio._wait_for_workers(workers, webui_stdio.WAIT_FOR_IN_FLIGHT, monotonic=self.racing_clock())
+        self.assertEqual([w.joins for w in workers], [[None], [None]])
+
+    def test_the_module_default_is_no_limit(self):
+        self.assertIsNone(webui_stdio.WAIT_FOR_IN_FLIGHT)
+        self.assertIsNone(
+            __import__("inspect").signature(webui_stdio.serve).parameters["wait_for_in_flight"].default
+        )
+
+    def test_a_cap_stops_waiting_once_it_has_passed(self):
+        workers = [_FakeWorker(), _FakeWorker()]
+        webui_stdio._wait_for_workers(workers, 5.0, monotonic=self.racing_clock())
+        self.assertEqual([w.joins for w in workers], [[0.0], [0.0]])
+
+
 class ShutdownTests(unittest.TestCase):
     """EOF on stdin means the shell is gone. A request that is still running has a
     provider CLI under it, so it is finished, not abandoned."""
 
     def serve_slow_then_eof(self, **kwargs):
         _FakeHandler.gate.clear()
+        _FakeHandler.entered.clear()
         out = io.StringIO()
-        returned = []
         stdin = io.StringIO(json.dumps({"id": "slow", "method": "GET", "path": "/slow"}) + "\n")
-
-        def run():
-            webui_stdio.serve(_FakeHandler, stdin, out, "x", **kwargs)
-            returned.append(time.monotonic())
-
-        thread = threading.Thread(target=run, daemon=True)
+        thread = threading.Thread(
+            target=lambda: webui_stdio.serve(_FakeHandler, stdin, out, "x", **kwargs), daemon=True
+        )
         thread.start()
-        time.sleep(0.4)  # EOF has been read by now; the request is still running
-        still_waiting = not returned
-        released_at = time.monotonic()
-        _FakeHandler.gate.set()
-        thread.join(10)
-        return out, still_waiting, returned, released_at
+        self.assertTrue(_FakeHandler.entered.wait(10), "the request never reached the handler")
+        thread.join(0.3)  # EOF was already read; the handler is blocked on the gate
+        return thread, out
 
     def test_serve_waits_for_a_running_request_after_eof(self):
-        out, still_waiting, returned, released_at = self.serve_slow_then_eof()
-        self.assertTrue(still_waiting, "serve() returned while a request was still running")
-        self.assertTrue(returned and returned[0] >= released_at)
+        thread, out = self.serve_slow_then_eof()
+        try:
+            self.assertTrue(thread.is_alive(), "serve() returned while a request was still running")
+        finally:
+            _FakeHandler.gate.set()
+        thread.join(10)
+        self.assertFalse(thread.is_alive())
         ids = [json.loads(line).get("id") for line in out.getvalue().splitlines()]
         self.assertIn("slow", ids)  # its answer was still written
 
     def test_a_cap_can_still_be_set(self):
-        out, still_waiting, returned, released_at = self.serve_slow_then_eof(wait_for_in_flight=0.05)
-        self.assertFalse(still_waiting)  # gave up after the cap
+        thread, out = self.serve_slow_then_eof(wait_for_in_flight=0.05)
+        try:
+            self.assertFalse(thread.is_alive())  # gave up after the cap
+        finally:
+            _FakeHandler.gate.set()
 
     def test_a_closed_output_pipe_does_not_raise(self):
         class Closed(io.StringIO):
