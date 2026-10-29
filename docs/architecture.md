@@ -32,6 +32,13 @@ earlier code actually generalized — see
 to change (`other_provider()` → `next_provider()`) and what didn't
 (`classify_handoff()`).
 
+The packaged desktop app (`src-tauri/`) is a thin Tauri shell around the same web
+UI: it starts the server sidecar as `handoff_webui.py --stdio`, loads the page
+bundled in the app, and forwards each request the page makes to the sidecar over
+stdin/stdout (`api_request` command, `src-tauri/src/ipc.rs`, `webui_stdio.py`),
+so no port is opened. `AHB_TRANSPORT=http` selects the older mode with the
+server on `127.0.0.1:8787`.
+
 `handoff_desktop.py` provides the same control flow with a macOS/Windows GUI
 for folder selection and mobile prompt generation.
 

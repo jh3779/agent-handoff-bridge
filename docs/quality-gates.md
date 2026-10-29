@@ -49,7 +49,22 @@ CI was removed once and has been partly restored:
   python scripts/build_sidecars.py --target-triple <triple>
   # was: rust-build -- needs the files from the step above, so run it second
   cargo build --manifest-path src-tauri/Cargo.toml
+  # Rust unit tests (src-tauri/src/ipc.rs); `--include-ignored` also runs the one
+  # that starts the real `python3 handoff_webui.py --stdio` and talks to it
+  cargo test --manifest-path src-tauri/Cargo.toml -- --include-ignored
+  # start the *built* PyInstaller server the way the app does and send it requests
+  python scripts/smoke_sidecar.py src-tauri/binaries/agent-handoff-bridge-server-<triple>
   ```
+
+  `installer-build` runs that last smoke test on every OS right after it builds
+  the sidecars, so a sidecar that cannot read stdin or that opens a port fails
+  the release build instead of reaching users. The no-port part uses `lsof` on
+  macOS/Linux and PowerShell (`Get-NetTCPConnection`) on Windows; if a machine
+  has neither, the script says the port was not checked instead of claiming it
+  (`installer-build` passes `--require-port-check`, which turns "could not check"
+  into a failure, so a release build never skips it).
+  It does not exercise the Tauri shell itself (a Python process stands in for it). The unit tests cannot catch that:
+  they run the Python source, not the shipped binary.
 
 - **Branch protection on `main`** (pull request required, enforced for admins,
   no force-push or deletion) requires these status checks again as of

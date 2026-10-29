@@ -118,6 +118,19 @@ class RealHandlerTests(unittest.TestCase):
         self.assertIn("text/html", response["headers"]["content-type"])
         self.assertIn("<title>", response["body"])
 
+    def test_every_asset_the_page_references_is_served(self):
+        # The page now loads /theme-init.js instead of an inline script; a missing
+        # route would silently drop the saved-theme step.
+        import re
+
+        index = self.request("GET", "/")["body"]
+        refs = re.findall(r'(?:src|href)="(/[^"]+)"', index)
+        self.assertIn("/theme-init.js", refs)
+        for ref in refs:
+            response = self.request("GET", ref)
+            self.assertEqual(response["status"], 200, ref)
+            self.assertTrue(response["body"].strip(), ref)
+
     def test_unsupported_methods_and_malformed_frames_are_rejected(self):
         self.assertEqual(self.request("PUT", "/api/info")["status"], 405)
         self.assertEqual(webui_stdio.dispatch(self.handler, {"method": "GET", "path": "api/info"})["status"], 400)
@@ -202,6 +215,116 @@ class WaitForWorkersTests(unittest.TestCase):
         workers = [_FakeWorker(), _FakeWorker()]
         webui_stdio._wait_for_workers(workers, 5.0, monotonic=self.racing_clock())
         self.assertEqual([w.joins for w in workers], [[0.0], [0.0]])
+
+
+class SmokeScriptTests(unittest.TestCase):
+    """scripts/smoke_sidecar.py is what installer-build runs against the built
+    binary on every OS; running it against the source here keeps it correct."""
+
+    def test_it_passes_against_the_source_server(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "smoke_sidecar.py"), sys.executable, str(ROOT / "handoff_webui.py")],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            cwd=str(ROOT),
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    @staticmethod
+    def load_script():
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("smoke_sidecar_under_test", ROOT / "scripts" / "smoke_sidecar.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def run_with_port_result(self, listening):
+        module = self.load_script()
+        with mock.patch.object(module, "_listening_sockets", return_value=listening):
+            return module.run([sys.executable, str(ROOT / "handoff_webui.py")]), module
+
+    def test_no_listener_means_the_port_check_ran_and_passed(self):
+        (report, port_checked), _ = self.run_with_port_result("")
+        self.assertTrue(port_checked)
+        self.assertTrue(any("none" in line for line in report))
+
+    def test_a_machine_that_cannot_check_ports_says_so_instead_of_claiming_it(self):
+        (report, port_checked), module = self.run_with_port_result(None)
+        self.assertFalse(port_checked)
+        self.assertTrue(any("NOT checked" in line for line in report))
+        out = io.StringIO()
+        with mock.patch.object(module, "_listening_sockets", return_value=None), mock.patch(
+            "sys.stdout", out
+        ):
+            self.assertEqual(module.main([sys.executable, str(ROOT / "handoff_webui.py")]), 0)
+        self.assertIn("NOT checked", out.getvalue())
+        self.assertNotIn("opens no port", out.getvalue().replace("whether it opens a port was NOT checked", ""))
+
+    def test_require_port_check_turns_an_unchecked_port_into_a_failure(self):
+        module = self.load_script()
+        server = [sys.executable, str(ROOT / "handoff_webui.py")]
+        for listening, strict, expected in (
+            (None, True, 1),  # could not check, release mode: fail
+            (None, False, 0),  # could not check, local run: say so, pass
+            ("", True, 0),  # checked, nothing listening: pass
+        ):
+            with mock.patch.object(module, "_listening_sockets", return_value=listening), mock.patch(
+                "sys.stdout", io.StringIO()
+            ):
+                code = module.main((["--require-port-check"] if strict else []) + server)
+            self.assertEqual(code, expected, (listening, strict))
+
+    def test_lsof_results_are_read_without_mistaking_a_failure_for_no_listeners(self):
+        module = self.load_script()
+
+        def done(code, out="", err=""):
+            return subprocess.CompletedProcess(args=[], returncode=code, stdout=out, stderr=err)
+
+        self.assertEqual(module._lsof_listeners(done(1)), "")  # no matches: checked, none
+        self.assertEqual(module._lsof_listeners(done(0, "COMMAND PID\npython 5 u 4u IPv4 TCP *:8787 (LISTEN)\n")).split()[0], "COMMAND")
+        self.assertEqual(module._lsof_listeners(done(1, "", "lsof: WARNING: can't stat() fuse.portal file system /run/user/1001/doc\n")), "")
+        self.assertIsNone(module._lsof_listeners(done(2, "", "")))  # lsof failed outright
+        self.assertIsNone(module._lsof_listeners(done(1, "", "lsof: permission denied\n")))  # a real diagnostic
+        self.assertIsNone(module._lsof_listeners(done(127, "", "")))
+
+    def test_a_listening_socket_fails_the_run(self):
+        module = self.load_script()
+        with mock.patch.object(module, "_listening_sockets", return_value="127.0.0.1:8787 pid=1"):
+            with self.assertRaises(module.SmokeFailure) as raised:
+                module.run([sys.executable, str(ROOT / "handoff_webui.py")])
+        self.assertIn("listening TCP socket", str(raised.exception))
+
+    def test_the_windows_check_reports_listeners_and_never_guesses_when_it_cannot_run(self):
+        module = self.load_script()
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="127.0.0.1:8787 pid=42\n", stderr="")
+        clean = subprocess.CompletedProcess(args=[], returncode=0, stdout="\n", stderr="")
+        broken = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+        with mock.patch.object(module.shutil, "which", return_value="powershell.exe"):
+            with mock.patch.object(module.subprocess, "run", return_value=ok) as run:
+                self.assertEqual(module._listening_sockets_windows(7), "127.0.0.1:8787 pid=42")
+                self.assertIn("Get-Tree 7", run.call_args.args[0][-1].replace("$ids = @(Get-Tree 7)", "Get-Tree 7"))
+            with mock.patch.object(module.subprocess, "run", return_value=clean):
+                self.assertEqual(module._listening_sockets_windows(7), "")  # checked, none found
+            with mock.patch.object(module.subprocess, "run", return_value=broken):
+                self.assertIsNone(module._listening_sockets_windows(7))  # could not check: not a pass, not a fail
+        with mock.patch.object(module.shutil, "which", return_value=None):
+            self.assertIsNone(module._listening_sockets_windows(7))
+
+    def test_it_fails_when_the_command_is_not_a_server(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "smoke_sidecar.py"), sys.executable, "-c", "import sys; sys.exit(3)"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            cwd=str(ROOT),
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FAIL", result.stdout)
 
 
 class ShutdownTests(unittest.TestCase):

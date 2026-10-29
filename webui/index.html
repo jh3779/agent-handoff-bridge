@@ -5,25 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent Handoff Bridge — Web UI (MVP)</title>
 <link rel="stylesheet" href="/app.css">
-<script>
-  // Applies a saved manual theme choice before first paint (a flash of the
-  // wrong theme, however brief, would otherwise be visible every launch) --
-  // must run synchronously here, not from app.js, which only loads/executes
-  // after the page has already rendered once. "system" (default) leaves no
-  // attribute, so app.css's @media (prefers-color-scheme) block alone
-  // decides -- matches this having no saved preference yet.
-  (function () {
-    try {
-      var saved = localStorage.getItem("ahb-theme");
-      if (saved === "light" || saved === "dark") {
-        document.documentElement.setAttribute("data-theme", saved);
-      }
-    } catch (err) {
-      // localStorage can throw (private mode, disabled storage) -- fall
-      // back to the system theme silently rather than breaking the page.
-    }
-  })();
-</script>
+<script src="/theme-init.js"></script>
 </head>
 <body>
   <div class="app">
@@ -71,7 +53,7 @@
           <div class="composer-attachments" id="composer-attachments"></div>
           <div class="composer-row">
             <button class="iconbtn" id="attach-btn" data-i18n-title="composer.attach.title" type="button">📎</button>
-            <input type="file" id="file-input" multiple style="display:none">
+            <input type="file" id="file-input" multiple hidden>
             <textarea id="composer-input" data-i18n-placeholder="composer.placeholder.hasWorkspace" placeholder="메시지를 입력하세요…" rows="1"></textarea>
             <button class="send" id="send-btn" type="button" disabled>➤</button>
           </div>
@@ -88,7 +70,7 @@
   <div class="toast" id="toast"></div>
 
   <div class="folder-prompt-overlay" id="settings-panel-overlay">
-    <div class="folder-prompt settings-panel" id="settings-panel" style="width:520px">
+    <div class="folder-prompt settings-panel" id="settings-panel">
       <h3 data-i18n="settings.title">설정</h3>
 
       <div class="settings-section">
@@ -148,10 +130,10 @@
         <div class="settings-section-title" data-i18n="settings.instructions.title">지침</div>
         <p data-i18n-html="settings.instructions.intro_html">이 프로젝트에서 어떤 provider를 쓰든 항상 함께 전달되는 지침입니다.
            프로젝트별로 저장되며, <code>.handoff/shared-context.md</code>로 워크스페이스에 남습니다.</p>
-        <textarea id="context-textarea" rows="8" data-i18n-placeholder="settings.instructions.placeholder" placeholder="예: legacy/ 폴더는 절대 수정하지 마세요. 이 프로젝트는 4-space indent를 씁니다…" style="width:100%;box-sizing:border-box;resize:vertical"></textarea>
+        <textarea id="context-textarea" rows="8" data-i18n-placeholder="settings.instructions.placeholder" placeholder="예: legacy/ 폴더는 절대 수정하지 마세요. 이 프로젝트는 4-space indent를 씁니다…"></textarea>
       </div>
 
-      <div class="row" style="justify-content:flex-end;margin-top:14px;gap:8px">
+      <div class="row" id="settings-panel-actions">
         <button type="button" id="settings-panel-close" data-i18n="settings.close">닫기</button>
         <button type="button" id="context-panel-save" class="primary" data-i18n="settings.instructions.save">지침 저장</button>
       </div>
@@ -160,8 +142,8 @@
 
   <div class="update-popover" id="update-popover">
     <div class="pp-title"><span>🆕</span> <span id="update-popover-version">v0.0.0 사용 가능</span></div>
-    <div class="note" id="update-popover-note" style="margin-top:6px"></div>
-    <div class="row" style="margin-top:10px;gap:8px;justify-content:flex-end">
+    <div class="note" id="update-popover-note"></div>
+    <div class="row" id="update-popover-actions">
       <button type="button" id="update-later-btn" data-i18n="update.later">나중에</button>
       <button type="button" id="update-release-notes-btn" class="primary" data-i18n="update.viewReleaseNotes">릴리즈 노트 보기</button>
     </div>

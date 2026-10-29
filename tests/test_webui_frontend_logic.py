@@ -39,7 +39,7 @@ def _run_node(expression: str):
             f"process.stdout.write(JSON.stringify({expression}));",
         ]
     )
-    result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return json.loads(result.stdout)
@@ -54,7 +54,7 @@ def _run_node_script(body: str, result_var: str):
             f"process.stdout.write(JSON.stringify({result_var}));",
         ]
     )
-    result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return json.loads(result.stdout)
@@ -142,6 +142,152 @@ class StaleWarningTests(unittest.TestCase):
     def test_a_provider_without_a_row_is_skipped(self):
         out = self.run_warnings([{"provider": "agy", "cli_model": "x", "model_stale": True}], [])
         self.assertEqual(out, {})
+
+
+def _run_node_with(functions, body: str, result_var: str = "out"):
+    script = "\n".join(
+        [_function_source(name) for name in functions]
+        + [body, f"Promise.resolve({result_var}).then((v) => process.stdout.write(JSON.stringify(v)));"]
+    )
+    result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return json.loads(result.stdout)
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class ApiTransportTests(unittest.TestCase):
+    """In the desktop app the page's requests go through the shell's api_request
+    command instead of fetch (no network port); in a browser they stay fetches."""
+
+    FUNCTIONS = ("decodeBase64Utf8", "createApiFetch")
+
+    def run_ipc(self, response, init="{}", url='"/api/x"'):
+        body = f"""
+        const calls = [];
+        const invoke = async (command, args) => {{ calls.push({{ command, args }}); return {json.dumps(response)}; }};
+        const apiFetch = createApiFetch(invoke, () => {{ throw new Error("plain fetch used"); }});
+        const out = (async () => {{
+          const res = await apiFetch({url}, {init});
+          let json = null, text = null;
+          try {{ json = await res.json(); }} catch (e) {{ json = "unparseable"; }}
+          text = await res.text();
+          return {{ calls, ok: res.ok, status: res.status, json, text }};
+        }})();
+        """
+        return _run_node_with(self.FUNCTIONS, body)
+
+    def test_a_get_becomes_an_api_request_command(self):
+        out = self.run_ipc({"status": 200, "headers": {}, "body": '{"a": 1}', "encoding": "utf-8"})
+        self.assertEqual(out["calls"][0]["command"], "api_request")
+        self.assertEqual(
+            out["calls"][0]["args"],
+            {"request": {"method": "GET", "path": "/api/x", "headers": {}, "body": None}},
+        )
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["json"], {"a": 1})
+
+    def test_a_post_carries_its_headers_and_body(self):
+        init = '{ method: "POST", headers: { "X-AHB-Session": "s1", "Content-Type": "application/json" }, body: "{\\"text\\":\\"hi\\"}" }'
+        out = self.run_ipc({"status": 200, "body": "{}", "encoding": "utf-8"}, init=init)
+        request = out["calls"][0]["args"]["request"]
+        self.assertEqual(request["method"], "POST")
+        self.assertEqual(request["headers"]["X-AHB-Session"], "s1")
+        self.assertEqual(request["body"], '{"text":"hi"}')
+
+    def test_error_statuses_are_not_ok_but_their_json_is_still_readable(self):
+        # The page does `if (!res.ok) throw new Error(data.error ...)`.
+        out = self.run_ipc({"status": 409, "body": '{"error": "run in progress"}', "encoding": "utf-8"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["status"], 409)
+        self.assertEqual(out["json"], {"error": "run in progress"})
+
+    def test_base64_bodies_decode_as_utf8(self):
+        import base64
+
+        encoded = base64.b64encode("한글 ✓".encode("utf-8")).decode("ascii")
+        out = self.run_ipc({"status": 200, "body": encoded, "encoding": "base64"})
+        self.assertEqual(out["text"], "한글 ✓")
+
+    def test_without_the_shell_the_plain_fetch_is_used_untouched(self):
+        out = _run_node_with(
+            self.FUNCTIONS,
+            """
+            const plain = () => "plain";
+            const out = createApiFetch(null, plain) === plain;
+            """,
+        )
+        self.assertTrue(out)
+
+
+class TransportWiringTests(unittest.TestCase):
+    def test_the_page_makes_no_direct_fetch_calls(self):
+        # Every request must go through apiFetch so the desktop app's portless
+        # transport covers it; a stray fetch() would silently hit a port that no
+        # longer exists. The one plain fetch is the browser fallback.
+        text = APP_JS.read_text(encoding="utf-8")
+        direct = [
+            line.strip()
+            for line in text.splitlines()
+            if "fetch(" in line and "apiFetch" not in line and "createApiFetch" not in line and not line.strip().startswith("//")
+        ]
+        self.assertEqual(direct, ["(url, init) => fetch(url, init)"])
+
+    def test_the_update_link_uses_the_external_opener(self):
+        text = APP_JS.read_text(encoding="utf-8")
+        self.assertIn("openExternal(latestUpdateInfo.url)", text)
+        self.assertNotIn("window.open(latestUpdateInfo.url", text)
+
+
+class ContentSecurityPolicyTests(unittest.TestCase):
+    """The desktop app loads webui/ under a Content-Security-Policy that has no
+    'unsafe-inline' (src-tauri/tauri.conf.json). These pin what makes that
+    possible, so a later edit cannot silently break the app's page."""
+
+    ROOT = Path(__file__).resolve().parent.parent
+    INDEX = (ROOT / "webui" / "index.html").read_text(encoding="utf-8")
+
+    def csp(self):
+        config = json.loads((self.ROOT / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
+        return config["app"]["security"]["csp"]
+
+    def test_the_page_has_no_inline_script_style_or_event_handlers(self):
+        self.assertEqual(re.findall(r"<script(?![^>]*\bsrc=)[^>]*>", self.INDEX), [], "inline <script>")
+        self.assertEqual(re.findall(r'\sstyle="', self.INDEX), [], "inline style attribute")
+        self.assertEqual(re.findall(r"<style\b", self.INDEX), [], "inline <style>")
+        self.assertEqual(re.findall(r'\son[a-z]+="', self.INDEX), [], "inline event handler")
+
+    def test_the_javascript_never_sets_a_style_attribute_as_text(self):
+        for name in ("app.js", "i18n.js", "theme-init.js"):
+            text = (self.ROOT / "webui" / name).read_text(encoding="utf-8")
+            self.assertNotIn('setAttribute("style"', text, name)
+            self.assertNotIn("cssText", text, name)
+            self.assertNotIn("eval(", text, name)
+
+    def test_the_tauri_csp_has_no_inline_or_eval_allowance(self):
+        csp = self.csp()
+        self.assertIsInstance(csp, str, "csp must be set (it used to be null)")
+        directives = {part.split()[0]: part.split()[1:] for part in csp.split(";") if part.strip()}
+        for name in ("script-src", "style-src", "default-src"):
+            self.assertNotIn("'unsafe-inline'", directives.get(name, []), name)
+            self.assertNotIn("'unsafe-eval'", directives.get(name, []), name)
+        self.assertEqual(directives["script-src"], ["'self'"])
+        self.assertNotIn("*", csp.replace("'self'", ""))
+        self.assertEqual(directives["object-src"], ["'none'"])
+
+    def test_the_tauri_csp_still_lets_the_page_reach_the_ipc_and_its_fonts(self):
+        directives = {part.split()[0]: part.split()[1:] for part in self.csp().split(";") if part.strip()}
+        self.assertIn("ipc:", directives["connect-src"])
+        self.assertIn("http://ipc.localhost", directives["connect-src"])  # the same channel on Windows
+        # app.css @imports these two stylesheets (which pull in their font files).
+        css = (self.ROOT / "webui" / "app.css").read_text(encoding="utf-8")
+        for host in re.findall(r"@import url\(\"(https://[^/]+)", css):
+            self.assertIn(host, directives["style-src"], host)
+        self.assertTrue(any(h.startswith("https://") for h in directives["font-src"]))
+
+    def test_every_local_script_and_stylesheet_exists_in_webui(self):
+        for ref in re.findall(r'(?:src|href)="(/[^"]+)"', self.INDEX):
+            self.assertTrue((self.ROOT / "webui" / ref.lstrip("/")).is_file(), ref)
 
 
 class ProvidersLoaderWiringTests(unittest.TestCase):

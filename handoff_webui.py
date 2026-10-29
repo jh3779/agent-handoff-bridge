@@ -173,7 +173,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
 
             if parsed.path == "/":
                 self._send_static("index.html")
-            elif parsed.path in ("/app.css", "/app.js", "/i18n.js"):
+            elif parsed.path in ("/app.css", "/app.js", "/i18n.js", "/theme-init.js"):
                 self._send_static(parsed.path.lstrip("/"))
             elif parsed.path == "/api/info":
                 if workspace is None:
@@ -818,8 +818,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--stdio",
         action="store_true",
         help="Serve the same routes over stdin/stdout (one JSON request per line in, one JSON response per line "
-        "out) instead of a TCP port; nothing listens on the network. This is the transport the desktop app is "
-        "being switched to -- until then the app still uses its localhost port. "
+        "out) instead of a TCP port; nothing listens on the network. This is the desktop app's default transport "
+        "(launch the app with AHB_TRANSPORT=http to use the older localhost-port mode instead). "
         "--host/--port/--browser/--no-browser are ignored.",
     )
     return parser

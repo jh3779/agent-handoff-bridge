@@ -214,12 +214,23 @@ def _agy_cache_view() -> dict:
     return {"models": list(cache["models"]), "fresh": fresh, "refreshing": bool(cache.get("refreshing"))}
 
 
+def _agy_lookups_disabled() -> bool:
+    """AHB_NO_MODEL_PREWARM=1 turns off every background `agy models` lookup, the
+    one at startup and the one the first /api/providers call would start. For
+    tests and tooling that run the server on a machine with agy installed: they
+    must not spawn the real agy, which opens local sockets of its own."""
+    return os.environ.get("AHB_NO_MODEL_PREWARM", "").strip().lower() in ("1", "true", "yes")
+
+
 def _agy_live_models(wait: bool = False) -> dict:
     """The `agy models` list, cached: {"models", "fresh", "refreshing"}.
     Stale-while-revalidate: by default this never blocks -- an expired or empty
     cache returns what it has (possibly [], and then fresh is False) and
     refreshes in the background, so opening the Settings panel is never held up
     by the CLI's network call. `wait=True` refreshes inline instead."""
+    if _agy_lookups_disabled():
+        with _AGY_MODELS_LOCK:
+            return _agy_cache_view()
     now = time.monotonic()
     with _AGY_MODELS_LOCK:
         cache = _agy_models_cache
@@ -241,7 +252,10 @@ def _agy_live_models(wait: bool = False) -> dict:
 
 def prewarm_agy_models() -> None:
     """Start the first `agy models` lookup at app startup (no-op without agy),
-    so the list is usually ready before the Settings panel is opened."""
+    so the list is usually ready before the Settings panel is opened (see
+    _agy_lookups_disabled for the switch that turns lookups off)."""
+    if _agy_lookups_disabled():
+        return
     if cli_available("agy"):
         _agy_live_models()
 

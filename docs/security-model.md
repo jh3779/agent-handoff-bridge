@@ -97,9 +97,24 @@ already-documented posture applies unchanged: loopback-only HTTP with no
 authentication. This section covers only what's new because a native shell
 now exists.
 
-- **The main window always loads the sidecar's real
+- **No localhost port by default (Ipc transport).** The desktop app now runs
+  the sidecar as `handoff_webui.py --stdio` and loads the page bundled in the
+  app; every request the page makes goes through the shell's `api_request`
+  command to the sidecar's stdin/stdout (`src-tauri/src/ipc.rs`,
+  `webui_stdio.py`). Nothing listens on the network, so a web page open in the
+  user's browser has no address to send requests to, and port 8787 can no
+  longer be taken by another program or left held by an orphaned sidecar. Frame
+  contents carry chat text and file contents and are never written to the app
+  log. Setting `AHB_TRANSPORT=http` before launching restores the previous
+  behavior (sidecar on `127.0.0.1:8787`, window pointed at it), kept as a
+  fallback until the portless path is confirmed on installed builds; **in that
+  mode everything below about the localhost URL still applies, and so does the
+  absence of Origin/Host checks on that HTTP server.** The `shell:allow-open`
+  grant exists only to open the update link in the user's own browser.
+- **In Http mode the main window loads the sidecar's real
   `http://127.0.0.1:8787/` URL, never Tauri's own bundled/asset-protocol
-  content.** `src-tauri/capabilities/default.json` originally granted no
+  content.** (The paragraph below predates the Ipc transport and describes
+  that mode.) `src-tauri/capabilities/default.json` originally granted no
   permissions beyond `core:default` -- an earlier draft also granted
   `shell:allow-execute` for window `"main"`, matching Tauri's own
   scaffolding convention, but a review round pointed out that leaving an
@@ -123,14 +138,27 @@ now exists.
   directly). Any *further* permission beyond this one should still be
   added deliberately and scoped to exactly what it's for, not bulk-
   granted from here.
-- **`tauri.conf.json`'s `"security": {"csp": null}` is similarly a
-  no-op today**, not a deliberately widened attack surface: Tauri's CSP
-  injection applies to responses served through its own asset/IPC
-  protocol, not to arbitrary external `http://` content the window
-  navigates to. Revisit this the same time the capability grant above
-  gets revisited -- both assumptions hold only as long as the window's
-  content is exactly "the same local Python server this project already
-  runs and has already reasoned about," and no more.
+- **The page now runs under a Content-Security-Policy** (`tauri.conf.json`
+  `app.security.csp`; it was `null`, which was only harmless while the window
+  showed external `http://` content that Tauri's CSP does not govern). Since the
+  window shows the page bundled in the app, and that page can call privileged
+  APIs (`window.__TAURI__`: the `api_request` command, the folder dialog, opening
+  links), a single injected script would reach all of them, so the policy limits
+  what the page may run and load: `script-src 'self'` and `style-src 'self'`
+  plus the two stylesheet hosts `app.css` imports (Pretendard on jsDelivr,
+  Google Fonts), `connect-src ipc: http://ipc.localhost` (Tauri's own channel,
+  nothing else), `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`.
+  There is no `'unsafe-inline'` and no `'unsafe-eval'`: the page's former inline
+  `<script>` is `webui/theme-init.js`, its inline `style=""` attributes are
+  rules in `app.css`, and tests pin both. The policy was checked in headless
+  Chrome (no violations, identical rendering to no policy; a deliberately
+  stricter policy did produce violations, so the check can see them), and the
+  built app was launched once (macOS arm64, 2026-10-29) and observed to load
+  the page and make its requests through the IPC command under the policy. Not
+  exercised: clicking the folder picker or the update link (they need a person),
+  how the window looks, and Windows/Linux GUIs. Chat text is rendered with `textContent`, so there is no known HTML
+  injection path; the policy is the backstop for a future one. The two external
+  stylesheet hosts mean the page contacts those CDNs for fonts, as it did before.
 - `tauri-plugin-dialog` was originally registered only for a
   fatal-startup-error path and the DEC-28 update-confirm dialog (both
   Rust-initiated, not reachable from the frontend). As of 2026-09-02 it

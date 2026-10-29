@@ -4,12 +4,18 @@
 
 ## Unreleased
 
-- **New: `handoff_webui.py --stdio`, the Web UI server without a network port.**
-  It answers the same requests over stdin/stdout (one JSON line each way), so a
-  desktop shell can talk to it without opening 127.0.0.1:8787. This is the first
-  step of making the desktop app a single self-contained program; **the app
-  itself still uses the port** until the shell and the page are switched over. See
-  [CLI Reference](cli-reference.md).
+- **Changed: the desktop app no longer opens a localhost port.** It now loads
+  the page bundled inside the app and talks to its bundled server over
+  stdin/stdout (`handoff_webui.py --stdio`, which answers the same requests with
+  one JSON line each way), so it behaves as one program instead of a window onto
+  a server on `127.0.0.1:8787`. This also removes the port-in-use failure mode
+  and the local-HTTP exposure noted in the Security Model. If something is wrong
+  with the new path on your machine, launch the app with `AHB_TRANSPORT=http` to
+  get the previous behavior back, and please report it. The app's page now also
+  runs under a Content-Security-Policy (the inline script and inline styles moved
+  into `theme-init.js` and `app.css`), and the update link opens in your default
+  browser. See [CLI Reference](cli-reference.md) and
+  [Security Model](security-model.md).
 - **Fixed: a successful run could be reported as a handoff because a tool printed
   a trigger word.** The classifier used to cut the answer and tool output out of
   the raw output by string replacement and then look for words like "quota". That
