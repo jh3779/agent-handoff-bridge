@@ -50,10 +50,38 @@ def _descendants(pid: int) -> list[int]:
     return found
 
 
+# Windows: the process tree and its listening TCP sockets, via PowerShell (present
+# on every supported Windows). Prints one "address:port pid=N" line per listener.
+_WINDOWS_LISTENERS_SCRIPT = """
+$ErrorActionPreference = 'Stop'
+function Get-Tree($p) { $p; Get-CimInstance Win32_Process -Filter "ParentProcessId=$p" | ForEach-Object { Get-Tree $_.ProcessId } }
+$ids = @(Get-Tree {PID})
+Get-NetTCPConnection -State Listen | Where-Object { $ids -contains $_.OwningProcess } |
+  ForEach-Object { "$($_.LocalAddress):$($_.LocalPort) pid=$($_.OwningProcess)" }
+"""
+
+
+def _listening_sockets_windows(pid: int) -> str | None:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        return None
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", _WINDOWS_LISTENERS_SCRIPT.replace("{PID}", str(pid))],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        return None  # the check itself could not run: say so rather than pass or fail on it
+    return result.stdout.strip()
+
+
 def _listening_sockets(pid: int) -> str | None:
     """The TCP sockets listening in `pid`'s process tree, "" for none, or None if
-    this machine has no way to tell (Windows, or no pgrep/lsof)."""
-    if os.name == "nt" or not (shutil.which("pgrep") and shutil.which("lsof")):
+    this machine has no way to tell (the tools are missing)."""
+    if os.name == "nt":
+        return _listening_sockets_windows(pid)
+    if not (shutil.which("pgrep") and shutil.which("lsof")):
         return None
     tree = [pid] + _descendants(pid)
     result = subprocess.run(
@@ -64,9 +92,11 @@ def _listening_sockets(pid: int) -> str | None:
     return result.stdout.strip()
 
 
-def run(command: list[str]) -> list[str]:
-    """Runs every check; returns the report lines. Raises SmokeFailure."""
+def run(command: list[str]) -> tuple[list[str], bool]:
+    """Runs every check; returns (report lines, whether the no-listening-port
+    check actually ran on this machine). Raises SmokeFailure."""
     report: list[str] = []
+    port_checked = False
     # The sidecar runs with a temp dir as its cwd, so a path the caller gave
     # relative to *their* cwd (a script, a binary) must be made absolute first.
     command = [os.path.abspath(part) if os.path.exists(part) else part for part in command]
@@ -162,10 +192,11 @@ def run(command: list[str]) -> list[str]:
 
         listening = _listening_sockets(proc.pid)
         if listening is None:
-            report.append("listening sockets: not checked on this OS")
+            report.append("listening sockets: NOT checked (this machine has no tool to list them)")
         elif listening:
             raise fail(f"the sidecar opened a listening TCP socket:\n{listening}")
         else:
+            port_checked = True
             report.append("listening TCP sockets in the sidecar's process tree: none")
 
         proc.stdin.close()  # end of input: the sidecar must exit on its own
@@ -178,7 +209,7 @@ def run(command: list[str]) -> list[str]:
         report.append("exited by itself, code 0, when stdin closed")
         if "Traceback" in "".join(stderr_lines):
             raise fail("the sidecar printed a Python traceback")
-        return report
+        return report, port_checked
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -191,12 +222,16 @@ def main(argv: list[str]) -> int:
         print(__doc__)
         return 2
     try:
-        for line in run(argv):
+        report, port_checked = run(argv)
+        for line in report:
             print("ok:", line)
     except SmokeFailure as exc:
         print("FAIL:", exc)
         return 1
-    print("PASS: the sidecar answers over stdin/stdout and opens no port")
+    if port_checked:
+        print("PASS: the sidecar answers over stdin/stdout and opens no port")
+    else:
+        print("PASS: the sidecar answers over stdin/stdout (whether it opens a port was NOT checked here)")
     return 0
 
 

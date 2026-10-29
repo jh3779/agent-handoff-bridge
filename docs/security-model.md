@@ -153,8 +153,10 @@ now exists.
   rules in `app.css`, and tests pin both. The policy was checked in headless
   Chrome (no violations, identical rendering to no policy; a deliberately
   stricter policy did produce violations, so the check can see them), and the
-  built app was launched once to see the page load and call the server under
-  it. Chat text is rendered with `textContent`, so there is no known HTML
+  built app was launched once (macOS arm64, 2026-10-29) and observed to load
+  the page and make its requests through the IPC command under the policy. Not
+  exercised: clicking the folder picker or the update link (they need a person),
+  how the window looks, and Windows/Linux GUIs. Chat text is rendered with `textContent`, so there is no known HTML
   injection path; the policy is the backstop for a future one. The two external
   stylesheet hosts mean the page contacts those CDNs for fonts, as it did before.
 - `tauri-plugin-dialog` was originally registered only for a
