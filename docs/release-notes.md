@@ -7,8 +7,10 @@
 - **Changed: the app fills its window.** The page used to be a card of at most
   1600x1000 pixels centered on a grey page, with a border, rounded corners and a
   shadow, so in a larger window it looked like a block floating in the middle.
-  It now uses the whole window edge to edge (the desktop window is the frame).
-  Smaller windows are unchanged (checked down to the app's 720x480 minimum).
+  It now uses the whole window edge to edge (the desktop window is the frame),
+  at every window size, so the former margin around the app is gone even in a
+  small window. The layout was checked down to the app's 720x480 minimum without
+  anything being clipped.
 - **Changed: the desktop app no longer opens a localhost port.** It now loads
   the page bundled inside the app and talks to its bundled server over
   stdin/stdout (`handoff_webui.py --stdio`, which answers the same requests with
