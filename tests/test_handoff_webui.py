@@ -26,7 +26,6 @@ import urllib.error
 import urllib.request
 from unittest import mock
 from datetime import datetime, timezone
-from http.server import ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -176,7 +175,7 @@ class MainNoWorkspaceStartupBannerTests(unittest.TestCase):
             os.chdir(tmp.name)  # no .handoff marker here -> "no workspace yet"
             with mock.patch.object(webui_common, "AUTO_WORKSPACE_BASE_DIR", fake_base_dir), mock.patch.object(
                 webui, "_bridge_check_for_update", return_value={"status": "unavailable"}
-            ), mock.patch.object(webui, "ThreadingHTTPServer", return_value=mock.Mock()), mock.patch.object(
+            ), mock.patch.object(webui, "WebUIServer", return_value=mock.Mock()), mock.patch.object(
                 webui, "prewarm_agy_models"
             ), mock.patch("builtins.print") as print_spy:
                 exit_code = webui.main(["--no-browser"])
@@ -357,7 +356,7 @@ class LiveServerTests(unittest.TestCase):
 
         cls.state = webui.AppState(root)
         handler = webui.build_handler(cls.state)
-        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        cls.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
         cls.thread.start()
@@ -732,6 +731,18 @@ class CreateWorkspaceForFirstMessageTests(unittest.TestCase):
         self.assertEqual(run_spy.call_args.kwargs["errors"], "replace")
 
 
+class WebUIServerBacklogTests(unittest.TestCase):
+    def test_the_listen_backlog_is_larger_than_socketservers_default_of_5(self):
+        # With the default, 8 simultaneous clients got "Connection reset by
+        # peer" on macOS / "Remote end closed connection" on Windows.
+        self.assertGreaterEqual(webui.WebUIServer.request_queue_size, 64)
+
+    def test_it_is_still_a_threading_http_server(self):
+        from http.server import ThreadingHTTPServer
+
+        self.assertTrue(issubclass(webui.WebUIServer, ThreadingHTTPServer))
+
+
 class CreateWorkspaceConcurrencyTests(unittest.TestCase):
     """A real live server + real concurrent HTTP requests -- verifies the
     exact race an adversarial review reproduced: two near-simultaneous
@@ -754,7 +765,7 @@ class CreateWorkspaceConcurrencyTests(unittest.TestCase):
 
         self.state = webui.AppState(None)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -1649,7 +1660,7 @@ class ApiRunLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         self.addCleanup(self.patcher.stop)
         self.state = webui.AppState(self.root)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -1979,7 +1990,7 @@ class MultiSessionLiveServerTests(FakeProviderPathMixin, unittest.TestCase):
         self.addCleanup(self.patcher.stop)
         self.state = webui.AppState(self.root)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -2222,7 +2233,7 @@ class RealConcurrentExecutionTests(FakeProviderPathMixin, unittest.TestCase):
         self.addCleanup(self.patcher.stop)
         self.state = webui.AppState(self.root)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -2442,7 +2453,7 @@ class MutableStateLiveServerTests(unittest.TestCase):
 
         self.state = webui.AppState(self.root)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -2567,7 +2578,7 @@ class NoWorkspaceLiveServerTests(unittest.TestCase):
 
         self.state = webui.AppState(None)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -2720,7 +2731,7 @@ class HistoryDrawerLiveServerTests(unittest.TestCase):
 
         self.state = webui.AppState(self.root)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -3171,7 +3182,7 @@ class CliProviderModelLiveServerTests(unittest.TestCase):
 
         self.state = webui.AppState(None)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -3326,7 +3337,7 @@ class SharedContextLiveServerTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.state = webui.AppState(self.root)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -3377,7 +3388,7 @@ class NoWorkspaceSharedContextLiveServerTests(unittest.TestCase):
     def setUp(self):
         self.state = webui.AppState(None)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -3454,7 +3465,7 @@ class UpdateCheckLiveServerTests(unittest.TestCase):
     def setUp(self):
         self.state = webui.AppState(None)
         handler = webui.build_handler(self.state)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.httpd = webui.WebUIServer(("127.0.0.1", 0), handler)
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
