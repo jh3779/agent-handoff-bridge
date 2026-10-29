@@ -240,8 +240,9 @@ class TransportWiringTests(unittest.TestCase):
 
 
 # The source zips carry webui/ but not the Tauri shell, so the checks that read
-# src-tauri/ run only in a full checkout.
-HAS_TAURI_SOURCES = (Path(__file__).resolve().parent.parent / "src-tauri" / "tauri.conf.json").is_file()
+# src-tauri/ run only in a full checkout. The test is skipped only when the whole
+# directory is absent: a checkout that lost one file in it still fails loudly.
+HAS_TAURI_SOURCES = (Path(__file__).resolve().parent.parent / "src-tauri").is_dir()
 needs_tauri_sources = unittest.skipUnless(HAS_TAURI_SOURCES, "src-tauri/ is not part of this copy")
 
 
