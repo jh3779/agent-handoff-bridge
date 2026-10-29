@@ -239,6 +239,13 @@ class TransportWiringTests(unittest.TestCase):
         self.assertNotIn("window.open(latestUpdateInfo.url", text)
 
 
+# The source zips carry webui/ but not the Tauri shell, so the checks that read
+# src-tauri/ run only in a full checkout. The test is skipped only when the whole
+# directory is absent: a checkout that lost one file in it still fails loudly.
+HAS_TAURI_SOURCES = (Path(__file__).resolve().parent.parent / "src-tauri").is_dir()
+needs_tauri_sources = unittest.skipUnless(HAS_TAURI_SOURCES, "src-tauri/ is not part of this copy")
+
+
 class ContentSecurityPolicyTests(unittest.TestCase):
     """The desktop app loads webui/ under a Content-Security-Policy that has no
     'unsafe-inline' (src-tauri/tauri.conf.json). These pin what makes that
@@ -264,6 +271,7 @@ class ContentSecurityPolicyTests(unittest.TestCase):
             self.assertNotIn("cssText", text, name)
             self.assertNotIn("eval(", text, name)
 
+    @needs_tauri_sources
     def test_the_tauri_csp_has_no_inline_or_eval_allowance(self):
         csp = self.csp()
         self.assertIsInstance(csp, str, "csp must be set (it used to be null)")
@@ -275,6 +283,7 @@ class ContentSecurityPolicyTests(unittest.TestCase):
         self.assertNotIn("*", csp.replace("'self'", ""))
         self.assertEqual(directives["object-src"], ["'none'"])
 
+    @needs_tauri_sources
     def test_the_tauri_csp_still_lets_the_page_reach_the_ipc_and_its_fonts(self):
         directives = {part.split()[0]: part.split()[1:] for part in self.csp().split(";") if part.strip()}
         self.assertIn("ipc:", directives["connect-src"])
@@ -285,6 +294,7 @@ class ContentSecurityPolicyTests(unittest.TestCase):
             self.assertIn(host, directives["style-src"], host)
         self.assertTrue(any(h.startswith("https://") for h in directives["font-src"]))
 
+    @needs_tauri_sources
     def test_the_desktop_shell_has_no_http_mode_left(self):
         # The window shows only the bundled page and talks to the sidecar over
         # stdin/stdout. A `remote` capability entry or an External window URL would

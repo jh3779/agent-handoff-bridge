@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.5.2 — 2026-10-29
+
 - **Changed: the app fills its window.** The page used to be a card of at most
   1600x1000 pixels centered on a grey page, with a border, rounded corners and a
   shadow, so in a larger window it looked like a block floating in the middle.
@@ -43,6 +45,16 @@
   Antigravity model is no longer in that CLI's current list (for example a
   retired one), with a **Use automatic** button. Leaving the field empty is
   still the way to always follow the newest default.
+
+- **Desktop installers are not signed at the OS level** (the in-app updater's
+  own signature is separate). Expect a warning on first launch: Windows
+  SmartScreen blocks the installer until you click "More info" and then "Run
+  anyway"; macOS Gatekeeper says the app cannot be verified until you
+  control-click it and choose "Open" (or use "Open Anyway" in System Settings,
+  Privacy & Security). This is not a malware detection. Details:
+  [README](https://github.com/jh3779/agent-handoff-bridge#download) and
+  [Security Model](https://github.com/jh3779/agent-handoff-bridge/blob/main/docs/security-model.md).
+
 ## v0.5.1 — 2026-10-28
 
 - **Fixed: `run <provider> --execute "text"` failed on Python 3.11.** Python
