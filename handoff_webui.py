@@ -895,6 +895,16 @@ def augment_path_for_gui_launch() -> None:
     os.environ["PATH"] = os.pathsep.join(merged)
 
 
+class WebUIServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a real listen backlog. socketserver's default
+    request_queue_size is 5, so a burst of simultaneous connections (a browser
+    firing its startup requests in parallel; 8 clients in the concurrency test)
+    overflows the queue and the OS resets the extras -- "Connection reset by
+    peer" on macOS, "Remote end closed connection" on Windows."""
+
+    request_queue_size = 128
+
+
 def main(argv: list[str] | None = None) -> int:
     # Phase 7a (DEC-22): when this process is spawned as a Tauri sidecar
     # (src-tauri/src/lib.rs), the caller waits for a specific line on
@@ -933,7 +943,7 @@ def main(argv: list[str] | None = None) -> int:
 
     handler = build_handler(state)
     try:
-        httpd = ThreadingHTTPServer((args.host, args.port), handler)
+        httpd = WebUIServer((args.host, args.port), handler)
     except OSError as exc:
         if exc.errno in (48, 98, 10048):  # EADDRINUSE: macOS, Linux, Windows
             print(PORT_CONFLICT_MARKER, file=sys.stderr)
