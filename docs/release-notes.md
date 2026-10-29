@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- **Model lists follow the CLIs; "automatic" is now explicit.** Antigravity's
+  model suggestions come from `agy models` (cached for 10 minutes and refreshed
+  in the background, so opening Settings never waits; the built-in list is only
+  the fallback). Codex's list was already read from the CLI's own catalog, and
+  Claude's aliases (`sonnet`, `opus`, `fable`) always mean the newest model. The
+  Settings panel now says whether a CLI's default model is "automatic" (the CLI
+  picks its newest default) or pinned, and warns when a pinned Codex or
+  Antigravity model is no longer in that CLI's current list (for example a
+  retired one), with a **Use automatic** button. Leaving the field empty is
+  still the way to always follow the newest default.
 ## v0.5.1 — 2026-10-28
 
 - **Fixed: `run <provider> --execute "text"` failed on Python 3.11.** Python

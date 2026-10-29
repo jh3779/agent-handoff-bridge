@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import subprocess
 import threading
+import time
 from pathlib import Path
 
 from handoff_bridge import PROVIDERS, atomic_write_text
@@ -84,12 +87,14 @@ _CLAUDE_KNOWN_MODELS = [
     {"id": "fable", "label": "Fable (latest)"},
 ]
 
-# Copied from `agy models` (agy 1.4.8, 2026-10-28), so these are the ids the
-# CLI itself accepts for --model today -- including non-Google models, since
+# Fallback copy of `agy models` (agy 1.4.8, 2026-10-28), used only when the
+# live lookup (_agy_live_models) has nothing yet or fails. These were the ids
+# the CLI accepted for --model then -- including non-Google models, since
 # Antigravity runs Claude and open-weight models as well as Gemini. The CLI's
-# own list is authoritative and changes over time; this is still a
-# <datalist>, not a closed <select>, so a stale/renamed entry here degrades to
-# "one suggestion doesn't autofill" rather than "the only options are wrong."
+# own list is authoritative and changes over time, so this copy is never
+# treated as proof that a saved model is wrong; it is still a <datalist>, not
+# a closed <select>, so a stale entry here degrades to "one suggestion
+# doesn't autofill" rather than "the only options are wrong."
 _AGY_KNOWN_MODELS = [
     {"id": "gemini-4-argon-medium", "label": "Gemini 4 Argon (Medium)"},
     {"id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)"},
@@ -141,6 +146,130 @@ def _codex_known_models() -> list[dict]:
     return result
 
 
+# `agy models` prints "Fetching available models..." and then one
+# "<id><TAB><label>" line per model (agy 1.4.8). It asks Google's servers, so it
+# is cached: the Settings panel polls /api/providers, and a slow or failed call
+# must not stall every poll.
+_AGY_MODELS_TTL_SECONDS = 600
+_AGY_MODELS_FAILURE_BACKOFF_SECONDS = 60
+_AGY_MODELS_TIMEOUT_SECONDS = 8
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
+_AGY_MODELS_LOCK = threading.Lock()
+_agy_models_cache: dict = {"models": [], "ok_at": None, "failed_at": None, "refreshing": False}
+
+
+def _parse_agy_models(output: str) -> list[dict]:
+    models = []
+    seen = set()
+    for line in output.splitlines():
+        model_id, sep, label = line.partition("\t")
+        model_id = model_id.strip()
+        if not sep or not _MODEL_ID_RE.match(model_id) or model_id in seen:
+            continue  # "Fetching available models...", blank lines, anything unexpected
+        seen.add(model_id)
+        models.append({"id": model_id, "label": label.strip() or model_id})
+    return models
+
+
+def _fetch_agy_models() -> list[dict]:
+    try:
+        result = subprocess.run(
+            ["agy", "models"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_AGY_MODELS_TIMEOUT_SECONDS,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    return _parse_agy_models(result.stdout or "")
+
+
+def _refresh_agy_models() -> None:
+    """Ask the CLI and store the outcome. A failed call keeps the last good list
+    and is not retried for a minute."""
+    models = _fetch_agy_models()  # seconds (~5s measured); never under the lock
+    with _AGY_MODELS_LOCK:
+        if models:
+            _agy_models_cache.update(models=models, ok_at=time.monotonic(), failed_at=None)
+        else:
+            _agy_models_cache["failed_at"] = time.monotonic()
+        _agy_models_cache["refreshing"] = False
+
+
+def _start_agy_refresh() -> None:
+    threading.Thread(target=_refresh_agy_models, name="agy-models-refresh", daemon=True).start()
+
+
+def _agy_live_models(wait: bool = False) -> list[dict]:
+    """The model list `agy models` reports, cached. Stale-while-revalidate:
+    by default this never blocks -- an expired or empty cache returns what it
+    has (possibly []) and refreshes in the background, so opening the Settings
+    panel is never held up by the CLI's network call. `wait=True` refreshes
+    inline instead."""
+    now = time.monotonic()
+    with _AGY_MODELS_LOCK:
+        cache = _agy_models_cache
+        if cache["ok_at"] is not None and now - cache["ok_at"] < _AGY_MODELS_TTL_SECONDS:
+            return list(cache["models"])
+        if cache["failed_at"] is not None and now - cache["failed_at"] < _AGY_MODELS_FAILURE_BACKOFF_SECONDS:
+            return list(cache["models"])
+        if not wait:
+            if not cache.get("refreshing"):
+                cache["refreshing"] = True
+                _start_agy_refresh()
+            return list(cache["models"])
+        cache["refreshing"] = True
+    _refresh_agy_models()
+    with _AGY_MODELS_LOCK:
+        return list(_agy_models_cache["models"])
+
+
+def prewarm_agy_models() -> None:
+    """Start the first `agy models` lookup at app startup (no-op without agy),
+    so the list is usually ready before the Settings panel is opened."""
+    if cli_available("agy"):
+        _agy_live_models()
+
+
+def cli_model_catalog(provider: str, live: bool = True, wait: bool = False) -> dict:
+    """Model suggestions for one provider plus how far to trust them:
+    {"models": [...], "authoritative": bool, "source": str}. `authoritative`
+    means the list is the CLI's own current catalog (codex's cache, a live
+    `agy models`), so a saved model missing from it is stale. Claude's list is
+    only aliases and its --model also takes full model names, and agy's
+    built-in fallback list can itself be old -- neither can prove a saved
+    model is wrong, so they are never authoritative. `live=False` never starts
+    a process; `wait=True` blocks for a fresh `agy models` instead of answering
+    from the cache and refreshing in the background (see _agy_live_models)."""
+    if provider == "codex":
+        models = _codex_known_models()
+        return {"models": models, "authoritative": bool(models), "source": "codex-cache" if models else "none"}
+    if provider == "claude":
+        return {"models": list(_CLAUDE_KNOWN_MODELS), "authoritative": False, "source": "aliases"}
+    if provider == "agy":
+        if live and cli_available("agy"):
+            models = _agy_live_models(wait=wait)
+            if models:
+                return {"models": models, "authoritative": True, "source": "agy-live"}
+        return {"models": list(_AGY_KNOWN_MODELS), "authoritative": False, "source": "built-in"}
+    return {"models": [], "authoritative": False, "source": "none"}
+
+
+def model_is_stale(saved_model: str | None, catalog: dict) -> bool:
+    """True when `saved_model` is pinned but absent from a catalog that is the
+    CLI's own current list -- the typical case being a model the vendor has
+    since retired (the CLI then fails every call)."""
+    if not saved_model or not catalog.get("authoritative"):
+        return False
+    return saved_model not in {m["id"] for m in catalog["models"]}
+
+
 def known_cli_models(provider: str) -> list[dict]:
     """Real, verified model choices to suggest for a CLI-dispatched
     provider's default/override --model field (Settings panel + titlebar),
@@ -149,14 +278,10 @@ def known_cli_models(provider: str) -> list[dict]:
     full model name, silently saved and passed through to every --model
     call until noticed). Always additive to, never a replacement for, free
     text: the frontend renders this as an <input list=...> (datalist), not
-    a closed <select>, so an unlisted-but-valid model still works."""
-    if provider == "codex":
-        return _codex_known_models()
-    if provider == "claude":
-        return list(_CLAUDE_KNOWN_MODELS)
-    if provider == "agy":
-        return list(_AGY_KNOWN_MODELS)
-    return []
+    a closed <select>, so an unlisted-but-valid model still works. Never
+    starts a process; the endpoint uses cli_model_catalog() for the live
+    `agy models` list."""
+    return cli_model_catalog(provider, live=False)["models"]
 
 
 def save_cli_provider_model(provider: str, model: str | None) -> None:

@@ -441,6 +441,23 @@
       // model-override-input 프리필 기본값이 되고, 매 전송 시 그 입력을
       // 비워두면 이 기본값이, 채워두면 그 값이 우선 적용된다.
       row.appendChild(el("div", { class: "pp-note", text: t("provider.cliModelNote") }, []));
+      // "비움 = 자동"을 눈에 보이게: 고정된 값이 있으면 그 값을, 없으면 자동임을
+      // 알려준다. 서버가 CLI 자신의 카탈로그에서 사라진 고정 모델을 찾으면
+      // (model_stale) 경고와 함께 자동으로 되돌리는 버튼을 보여준다.
+      row.appendChild(
+        el("div", {
+          class: "pp-note",
+          text: info.cli_model ? t("provider.modelPinned", { model: info.cli_model }) : t("provider.modelAuto"),
+        }, [])
+      );
+      if (info.model_stale) {
+        row.appendChild(
+          el("div", {
+            class: "pp-note pp-warn",
+            text: t("provider.modelStale", { model: info.cli_model, provider: PROVIDER_LABEL[info.provider] }),
+          }, [])
+        );
+      }
       const cliModelDatalistId = `cli-model-list-${info.provider}`;
       const cliModelDatalist = el("datalist", { id: cliModelDatalistId }, []);
       renderModelDatalist(cliModelDatalist, info.known_models);
@@ -466,7 +483,22 @@
           showToast(t("provider.saveFailed", { msg: err.message }));
         }
       });
-      row.appendChild(el("div", { class: "pp-key-row" }, [cliModelInput, cliModelSaveBtn, cliModelDatalist]));
+      const keyRowChildren = [cliModelInput, cliModelSaveBtn];
+      if (info.cli_model) {
+        const autoBtn = el("button", { type: "button", text: t("provider.useAuto") }, []);
+        autoBtn.addEventListener("click", async () => {
+          try {
+            await postJSON("/api/cli-model", { provider: info.provider, model: "" });
+            showToast(t("provider.cliModelAutoSet", { provider: PROVIDER_LABEL[info.provider] }));
+            await refreshProviderPanel();
+          } catch (err) {
+            showToast(t("provider.saveFailed", { msg: err.message }));
+          }
+        });
+        keyRowChildren.push(autoBtn);
+      }
+      keyRowChildren.push(cliModelDatalist);
+      row.appendChild(el("div", { class: "pp-key-row" }, keyRowChildren));
       return row;
     }
     row.appendChild(el("div", { class: "pp-note", text: t("provider.noCliInstallNote") }, []));
