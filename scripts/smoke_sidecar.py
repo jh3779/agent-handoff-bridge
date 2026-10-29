@@ -80,7 +80,7 @@ def _listening_sockets_windows(pid: int) -> str | None:
 
 def _listening_sockets(pid: int) -> str | None:
     """The TCP sockets listening in `pid`'s process tree, "" for none, or None if
-    this machine has no way to tell (the tools are missing)."""
+    this machine has no way to tell (the tools are missing, or lsof failed)."""
     if os.name == "nt":
         return _listening_sockets_windows(pid)
     if not (shutil.which("pgrep") and shutil.which("lsof")):
@@ -91,6 +91,22 @@ def _listening_sockets(pid: int) -> str | None:
         capture_output=True,
         text=True,
     )
+    return _lsof_listeners(result)
+
+
+def _lsof_listeners(result: "subprocess.CompletedProcess[str]") -> str | None:
+    """Reads an lsof run: the listener lines, "" when it found none, or None when
+    lsof itself failed (so an empty answer is not mistaken for "no listeners").
+    lsof exits 0 with matches and 1 with none; any other code is an error. It also
+    prints harmless "lsof: WARNING: can't stat() ..." lines (Ubuntu runners do) that
+    must not turn a clean run into "could not check", so only other stderr text counts."""
+    problems = [
+        line
+        for line in result.stderr.splitlines()
+        if line.strip() and not line.lstrip().startswith("lsof: WARNING")
+    ]
+    if result.returncode not in (0, 1) or problems:
+        return None
     return result.stdout.strip()
 
 

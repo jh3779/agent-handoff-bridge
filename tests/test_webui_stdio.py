@@ -278,6 +278,19 @@ class SmokeScriptTests(unittest.TestCase):
                 code = module.main((["--require-port-check"] if strict else []) + server)
             self.assertEqual(code, expected, (listening, strict))
 
+    def test_lsof_results_are_read_without_mistaking_a_failure_for_no_listeners(self):
+        module = self.load_script()
+
+        def done(code, out="", err=""):
+            return subprocess.CompletedProcess(args=[], returncode=code, stdout=out, stderr=err)
+
+        self.assertEqual(module._lsof_listeners(done(1)), "")  # no matches: checked, none
+        self.assertEqual(module._lsof_listeners(done(0, "COMMAND PID\npython 5 u 4u IPv4 TCP *:8787 (LISTEN)\n")).split()[0], "COMMAND")
+        self.assertEqual(module._lsof_listeners(done(1, "", "lsof: WARNING: can't stat() fuse.portal file system /run/user/1001/doc\n")), "")
+        self.assertIsNone(module._lsof_listeners(done(2, "", "")))  # lsof failed outright
+        self.assertIsNone(module._lsof_listeners(done(1, "", "lsof: permission denied\n")))  # a real diagnostic
+        self.assertIsNone(module._lsof_listeners(done(127, "", "")))
+
     def test_a_listening_socket_fails_the_run(self):
         module = self.load_script()
         with mock.patch.object(module, "_listening_sockets", return_value="127.0.0.1:8787 pid=1"):
