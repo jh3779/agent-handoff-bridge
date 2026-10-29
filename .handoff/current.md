@@ -4590,3 +4590,30 @@ tag" rule by construction rather than by discipline.
   allow-all agy.
 - **Blocked**: nothing. **Next**: the manual install check above, then pick
   the next feature (OpenCode as a provider was researched and deferred).
+
+### 2026-10-29 — Checkpoint: v0.5.2 released (portless desktop app)
+
+- **Target**: Claude Code CLI (Sonnet 5.5), repo-level (release).
+- **State**: GitHub Release `v0.5.2` is published (not draft) from tag `v0.5.2` at
+  `b2e6b8e` (squash-merge of #111). Contents: no localhost port in the desktop app
+  (#107 stdio transport, #108 Rust IPC + CSP, #110 HTTP mode removed), page fills
+  the window (#109), CLI model lists follow the CLIs (#105), false-positive
+  handoff classification fixed (#106). Assets: both source zips, `latest.json`
+  (`releases/latest/download/latest.json` serves 0.5.2 with windows/darwin/linux
+  entries), `.dmg`, `.app.tar.gz` + `.sig`, nsis `-setup.exe`, `.AppImage`; the
+  three updater URLs return 200 and the uploaded zips hash-match the local build.
+- **Verified before publishing**: required checks on #111 (3 OS, py3.11) and the
+  `installer-build` for the tag (run 40824871994) on macOS/Windows/Linux, each
+  with the sidecar smoke `PASS ... opens no port`; zip `check` outside the repo
+  (722 tests OK, 4 skipped); the shipped macOS `.app.tar.gz` launched for real
+  with a temp HOME (window opened, 7 IPC requests answered, no listening socket,
+  clean exit, nothing left running).
+- **Found on the way**: the src-tauri CSP/no-HTTP tests failed inside the source
+  zip (no `src-tauri/` there) - now skipped only when that directory is absent.
+- **Not verified**: the app on Windows/Linux, installing from the dmg/installer,
+  in-app update badge, folder picker / external link from the window, a real CLI
+  chat round trip, Windows source zip.
+- **Next**: user updates the installed app and reports; possible follow-ups are
+  the live progress display, `agy` write-permission check, OpenCode. The repo
+  folder's own `.handoff/current.md` (auto-archived by the real app) is still
+  uncommitted and untouched, pending the user's decision.
