@@ -90,12 +90,13 @@ The server refuses `--no-auth` on non-local hosts.
 
 ## Tauri Shell Boundaries (Phase 7a, DEC-22)
 
-The Tauri shell (`src-tauri/`) does not change any trust boundary this
-document already establishes -- it wraps the existing Python backend
-(PyInstaller sidecar) rather than replacing it, so the backend's own
-already-documented posture applies unchanged: loopback-only HTTP with no
-authentication. This section covers only what's new because a native shell
-now exists.
+The Tauri shell (`src-tauri/`) does not add a trust boundary of its own -- it
+wraps the existing Python backend (PyInstaller sidecar) rather than replacing
+it. The backend's documented posture (loopback-only HTTP, no authentication)
+still describes the browser mode people get by running the source
+(`python3 handoff_webui.py`); the desktop app reaches the same request handlers
+over the sidecar's stdin/stdout instead, with no listening socket at all. This
+section covers only what's new because a native shell now exists.
 
 - **The desktop app opens no network port.** It runs the sidecar as
   `handoff_webui.py --stdio` and loads the page bundled in the app; every

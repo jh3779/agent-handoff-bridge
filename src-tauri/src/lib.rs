@@ -120,26 +120,21 @@ pub fn run() {
           .build(),
       )?;
 
-      // Matches handoff_webui.py's own `--no-browser` flag: start the
-      // HTTP server and block, without opening a browser tab or its own
-      // pywebview window -- this Tauri window is the window now.
-      // PYTHONUNBUFFERED=1: an extra safety net, not the actual fix.
-      // CPython switches stdout to fully-buffered (not line-buffered)
-      // the moment it's a pipe instead of a tty, so the readiness print
-      // below could sit in Python's own userspace buffer indefinitely
-      // instead of ever reaching this process's CommandEvent::Stdout --
-      // found by testing the actual built .app, where window creation
-      // just hung. This env var alone turned out NOT to reliably fix it
-      // when tested against the real PyInstaller onefile binary (its
-      // bootloader's own environment/re-exec handling apparently
-      // doesn't guarantee it reaches the embedded interpreter) -- the
-      // real fix is handoff_webui.py's own
-      // `sys.stdout.reconfigure(line_buffering=True)` at the top of
-      // main(), which is unaffected by that. Left here anyway since
-      // it's a harmless, standard signal plenty of other Python tooling
-      // respects.
-      // `--stdio` serves the Web UI's routes over stdin/stdout with no
-      // listening socket (webui_stdio.py).
+      // `--stdio` serves the Web UI's routes over the sidecar's stdin/stdout
+      // with no listening socket (webui_stdio.py): the `ready` event and every
+      // response frame come back on its stdout, which this loop reads below.
+      // PYTHONUNBUFFERED=1 is an extra safety net, not the actual fix.
+      // CPython switches stdout to fully-buffered (not line-buffered) the
+      // moment it's a pipe instead of a tty, so the ready event could sit in
+      // Python's own userspace buffer indefinitely instead of ever reaching
+      // this process's CommandEvent::Stdout -- found by testing the actual
+      // built .app, where window creation just hung. This env var alone turned
+      // out NOT to reliably fix it against the real PyInstaller onefile binary
+      // (its bootloader's own environment/re-exec handling apparently doesn't
+      // guarantee it reaches the embedded interpreter). What guarantees it now
+      // is that webui_stdio.serve() flushes after writing every frame (and
+      // handoff_webui.py's main() still sets line buffering). The env var is
+      // left as a harmless, standard signal plenty of Python tooling respects.
       log::info!("[server] starting the bundled server over stdin/stdout");
       let sidecar = app
         .shell()
