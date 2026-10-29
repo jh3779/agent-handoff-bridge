@@ -4498,3 +4498,95 @@ tag" rule by construction rather than by discipline.
   and `sidecar-build` are still not automatic.
 - **Blocked**: nothing. The earlier "GitHub Actions quota" blocker above no
   longer applies. **Next**: manual installer check, then decide on v0.5.1.
+
+### 2026-10-28 — Checkpoint: v0.5.1 release in progress (tagged, installers building)
+
+- **Target**: Claude Code CLI (Sonnet 5.5), repo-level (release).
+- **State at this checkpoint**: `v0.5.1` is tagged and pushed at `42331ed` (the
+  squash-merge of #102, "Release v0.5.1"; `BRIDGE_VERSION`, `tauri.conf.json`,
+  `Cargo.toml`, `Cargo.lock` all 0.5.1; v0.5.1 notes include the OS-level
+  unsigned-installer warning). The installer build was dispatched with
+  `gh workflow run ci.yml --ref v0.5.1`: run **40686616380**, all 3 jobs still
+  `in_progress` when this was written. **No GitHub Release `v0.5.1` exists yet**
+  (`gh release view v0.5.1` -> not found), so nothing is published and
+  `releases/latest` still points at v0.5.0 (whose installers and `latest.json`
+  were published earlier today and respond).
+- **Local, not in git**: `dist/agent-handoff-bridge-{macos,windows}.zip` built
+  from the 0.5.1 tree before the notes-only fix commit (rebuild them from the
+  tag before publishing: `git checkout v0.5.1 && python3
+  scripts/package_platforms.py`); v0.5.0 artifacts and a smoke-test extraction
+  under the session scratchpad are disposable.
+- **Resume here (publish gates agreed in #102)**: (1) wait for run 40686616380 to
+  succeed, else do not publish; (2) `gh run download 40686616380 -n <artifact>`
+  per target (one at a time, a full download timed out once) into
+  `installers-<triple>/<format>/`; (3) BEFORE `latest.json`: extract the macOS
+  `.app.tar.gz` in a scratch dir, run the 4 sidecars and the `-server` sidecar
+  (temp HOME, e.g. port 18765: `/` 200, `/api/providers`); any failure -> do not
+  publish; (4) `python3 scripts/build_updater_manifest.py --installers-dir <dir>
+  --version 0.5.1 --notes "<v0.5.1 section>" --output <scratch>/latest.json`;
+  (5) rebuild the zips from the tag and `gh release create v0.5.1` with the zips,
+  `latest.json`, `.dmg`, `agent-handoff-bridge.app.tar.gz` + `.sig`, nsis
+  `-setup.exe`, `.AppImage`, notes from the v0.5.1 section; (6) verify the three
+  `latest.json` URLs and `releases/latest/download/latest.json` (curl UA); (7)
+  follow-up PR: README / README.ko download links v0.5.0 -> v0.5.1 and a final
+  checkpoint.
+- **Will stay unverified (say so in the release notes)**: GUI app launch,
+  titlebar update badge, provider chat round trip, Windows/Linux installers and
+  the Windows source zip actually being run. If a real install fails, publish a
+  new patch version instead of replacing tag assets.
+- **Other state**: all session PRs are merged (#93-#102); open PR count 0.
+  `main` requires `branch-name` + `check` on ubuntu/macOS/Windows; Python 3.11
+  CI. `.msi`/`.deb`/`.rpm` are built but intentionally not attached.
+- **Still open from earlier**: `AGENTS.md`/`CLAUDE.md` dedupe,
+  `release-notes.ko.md` behind, `rust-build`/`sidecar-build` not automatic,
+  `agy --dangerously-skip-permissions` and `--sandbox` unverified against a real
+  run, Web UI has no pre-run banner for allow-all agy.
+- **Blocked**: nothing; waiting on the installer build.
+
+### 2026-10-28 — v0.5.1 released (supersedes the mid-release checkpoint above)
+
+- **Target**: Claude Code CLI (Sonnet 5.5), repo-level (release).
+- **Changed**: `v0.5.1` is published (https://github.com/jh3779/agent-handoff-bridge/releases/tag/v0.5.1),
+  tag `42331ed` (squash-merge of #102). Installers came from run 40686616380
+  (3 OSes, all succeeded). Assets: `agent-handoff-bridge-{macos,windows}.zip`
+  (built from the tagged tree, both report 0.5.1), `latest.json`, `.dmg`,
+  `agent-handoff-bridge.app.tar.gz` + `.sig`, nsis `-setup.exe`, `.AppImage`.
+  `.msi`/`.deb`/`.rpm` were built but are not attached. The release body carries
+  the v0.5.1 notes (incl. the OS-level unsigned-installer warning) plus a
+  paragraph on what was and was not verified. This PR also points the README /
+  README.ko download links at v0.5.1.
+- **Verified**: publish gate passed before `latest.json` was made -- the macOS
+  `.app.tar.gz` unpacked in a scratch dir (not installed): bundle 0.5.1,
+  ad-hoc signed, the 4 sidecars ran, and the `-server` sidecar (temp HOME)
+  served `/` (200) and `/api/providers` (codex, claude, agy detected). After
+  publishing: the three `latest.json` URLs and the three README download URLs
+  respond (HTTP 206 to a range request), and
+  `releases/latest/download/latest.json` returns the same 0.5.1 manifest as the
+  one uploaded. All required CI checks (branch-name + `check` on ubuntu/macOS/
+  Windows, Python 3.11) passed on #102.
+- **Post-release checks on the published assets (2026-10-29, agent)**: the
+  released `agent-handoff-bridge-macos.zip` was downloaded and unpacked in a
+  clean folder outside the repo: `--version` 0.5.1 and `python3
+  handoff_bridge.py check` passed (640 tests, 1 dev-checkout-only test skipped).
+  The released `.dmg` was mounted read-only: it contains `agent-handoff-bridge.app`
+  at 0.5.1 whose five `Contents/MacOS` binaries have the same SHA-256 as the ones
+  in the updater `.app.tar.gz`, and `codesign --verify --deep --strict` printed no
+  error (the bundle is ad-hoc signed only). The mount was detached afterwards.
+- **User-reported (2026-10-29, macOS Apple Silicon)**: the installed desktop app
+  auto-updated to v0.5.1 through the in-app updater with no problems, which
+  exercises the `latest.json` + `.app.tar.gz` + signature path end to end. Not
+  independently reproduced by the agent.
+- **Not verified**: a provider chat round trip in the GUI and a fresh
+  drag-to-Applications install of the `.dmg` (only its contents were compared;
+  the user's installed app did auto-update), the Windows and Linux installers and
+  the Windows source zip being run, and the minisign signatures in `latest.json`
+  checked independently outside the updater. If a real install is broken, publish a new patch version; do
+  not replace the v0.5.1 assets.
+- **Remaining**: a manual install of the v0.5.1 build on a real machine
+  (macOS `.dmg`, then confirm the update badge and a chat round trip);
+  `AGENTS.md`/`CLAUDE.md` dedupe; `release-notes.ko.md` behind;
+  `rust-build`/`sidecar-build` not automatic; `agy --dangerously-skip-permissions`
+  and `--sandbox` unverified against a real run; no Web UI pre-run banner for
+  allow-all agy.
+- **Blocked**: nothing. **Next**: the manual install check above, then pick
+  the next feature (OpenCode as a provider was researched and deferred).
