@@ -1490,27 +1490,6 @@ def parse_jsonl(text: str) -> list[dict[str, Any]]:
     return events
 
 
-def _collect_tool_text(value: Any, out: list[str]) -> None:
-    """Recursively collect every string leaf out of a JSON-like structure.
-
-    Used to gather tool-echoed content (command output, file reads, tool
-    arguments) whose exact shape isn't a stable/documented schema for either
-    CLI -- rather than naming specific fields (e.g. codex's
-    `item.aggregated_output`, claude's `tool_use_result.file.content`) and
-    risking silently missing the next one, this walks the whole structure so
-    any string inside it ends up excluded from classify_handoff()'s signal
-    scan. See that function's `quoted_text` handling for why.
-    """
-    if isinstance(value, str):
-        out.append(value)
-    elif isinstance(value, dict):
-        for v in value.values():
-            _collect_tool_text(v, out)
-    elif isinstance(value, list):
-        for v in value:
-            _collect_tool_text(v, out)
-
-
 def summarize_codex(events: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "provider": "codex",
@@ -1518,10 +1497,8 @@ def summarize_codex(events: list[dict[str, Any]]) -> dict[str, Any]:
         "usage": None,
         "final_text": "",
         "errors": [],
-        "quoted_text": "",
     }
     agent_messages = []
-    quoted: list[str] = []
     for event in events:
         event_type = event.get("type")
         if event_type == "thread.started":
@@ -1531,19 +1508,12 @@ def summarize_codex(events: list[dict[str, Any]]) -> dict[str, Any]:
         elif event_type in {"turn.failed", "error"}:
             summary["errors"].append(event)
         item = event.get("item")
-        if isinstance(item, dict):
-            if item.get("type") == "agent_message":
-                text = item.get("text")
-                if text:
-                    agent_messages.append(text)
-            else:
-                # Non-agent_message items (command_execution output, file
-                # diffs, etc.) echo arbitrary workspace/command text -- not a
-                # signal codex itself emitted about its own run.
-                _collect_tool_text(item, quoted)
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            if text:
+                agent_messages.append(text)
     if agent_messages:
         summary["final_text"] = agent_messages[-1]
-    summary["quoted_text"] = "\n".join(quoted)
     return summary
 
 
@@ -1555,9 +1525,7 @@ def summarize_claude(events: list[dict[str, Any]]) -> dict[str, Any]:
         "cost_usd": None,
         "final_text": "",
         "errors": [],
-        "quoted_text": "",
     }
-    quoted: list[str] = []
     for event in events:
         event_type = event.get("type")
         if event_type == "system" and event.get("subtype") == "init":
@@ -1571,18 +1539,6 @@ def summarize_claude(events: list[dict[str, Any]]) -> dict[str, Any]:
                 summary["errors"].append(event)
         elif event_type == "error":
             summary["errors"].append(event)
-        elif event_type == "user":
-            # Tool-result echoes (file reads, command stdout/stderr) -- not
-            # a signal claude itself emitted about its own run.
-            _collect_tool_text(event.get("message"), quoted)
-            _collect_tool_text(event.get("tool_use_result"), quoted)
-        elif event_type == "assistant":
-            for block in (event.get("message") or {}).get("content") or []:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    # Tool call arguments (e.g. a Write tool's file content
-                    # param) can just as easily carry arbitrary text.
-                    _collect_tool_text(block.get("input"), quoted)
-    summary["quoted_text"] = "\n".join(quoted)
     return summary
 
 
@@ -1680,6 +1636,100 @@ def summarize_agy(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[str
     return summary
 
 
+# Event types each parser understands. Their lines are dropped from the signal
+# scan whole: they carry the answer, narration and every tool's echoed output,
+# and a real failure among them (codex "error"/"turn.failed", claude is_error
+# results) is already in parsed["errors"]. The sets are per provider on purpose:
+# a type that is normal for one CLI ("result" for claude) is unknown for the
+# other, and must not hide that CLI's new error event.
+KNOWN_EVENT_TYPES_BY_PROVIDER = {
+    "codex": frozenset(
+        {"thread.started", "turn.started", "turn.completed", "turn.failed", "error",
+         "item.started", "item.updated", "item.completed"}
+    ),
+    "claude": frozenset(
+        {"system", "assistant", "user", "result", "error", "stream_event", "rate_limit_event"}
+    ),
+}
+# Used when the provider is not known (synthetic callers): the union.
+_ALL_KNOWN_EVENT_TYPES = frozenset().union(*KNOWN_EVENT_TYPES_BY_PROVIDER.values())
+# The fields of an *unrecognized* event that can say "usage limit reached".
+_UNKNOWN_EVENT_SIGNAL_FIELDS = ("error", "message", "status", "reason", "detail")
+
+
+def _unknown_event_text(event: dict[str, Any]) -> str:
+    parts = []
+    for field in _UNKNOWN_EVENT_SIGNAL_FIELDS:
+        value = event.get(field)
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, dict):
+            parts.extend(v for v in value.values() if isinstance(v, str))
+    return "\n".join(parts)
+
+
+def _signal_scan_text(stdout: str, stderr: str, parsed: dict[str, Any]) -> str:
+    """The text classify_handoff() looks for handoff signals in: stderr, the
+    stdout lines that are NOT structured JSON, and the error-like fields of JSON
+    events this parser does not recognize.
+
+    A provider's structured events (codex/claude JSONL, agy's single envelope)
+    carry its answer, narration and every tool's echoed output -- arbitrary text
+    that may legitimately say "quota", "rate limit" or "command not found" (a grep
+    over this repo's own source, a README, a bug summary). A real failure from a
+    known event already arrives as an error in parsed["errors"], which
+    classify_handoff() handles first, so those lines are dropped whole instead of
+    being matched against.
+
+    This replaces cutting final_text / tool output out of the raw stream by
+    string replacement, which leaked: codex writes non-ASCII as UTF-8 but the
+    cut looked for the \\uXXXX form, one short fragment ("error") removed
+    from inside longer lines before they could match, nested JSON escaping
+    changed the bytes again, and earlier agent_message narration was never cut.
+
+    What is left is where a real signal can still appear: stderr, plain-text
+    stdout (a CLI that prints "Error: 429 too many requests" and exits 0 -- see
+    test_rate_limit_signal_in_stdout), and a future event type such as
+    {"type": "warning", "message": "usage limit reached"}, which no parser knows
+    yet. parsed["final_text"] is still removed for providers whose answer is
+    plain text.
+    """
+    kept = [stderr]
+    provider = parsed.get("provider")
+    known_types = KNOWN_EVENT_TYPES_BY_PROVIDER.get(provider, _ALL_KNOWN_EVENT_TYPES)
+    stripped_stdout = stdout.strip()
+    whole_is_json = False
+    # Only agy prints one (possibly pretty-printed, multi-line) JSON envelope; its
+    # failures are in parsed["errors"]. For the JSONL providers a single event
+    # on stdout must still go through the per-event check below.
+    if provider == "agy" and stripped_stdout.startswith(("{", "[")):
+        try:
+            json.loads(stripped_stdout)
+            whole_is_json = True
+        except ValueError:
+            pass
+    if not whole_is_json:
+        for line in stdout.splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            if text.startswith(("{", "[")):
+                try:
+                    event = json.loads(text)
+                except ValueError:
+                    kept.append(line)  # looks like JSON but isn't: treat as text
+                    continue
+                if isinstance(event, dict) and event.get("type") not in known_types:
+                    kept.append(_unknown_event_text(event))
+                continue  # a recognized event line: its errors are in parsed["errors"]
+            kept.append(line)
+    scan_text = "\n".join(kept)
+    final_text = parsed.get("final_text") or ""
+    if final_text:
+        scan_text = scan_text.replace(final_text, "")
+    return scan_text
+
+
 def classify_handoff(exit_code: int, stdout: str, stderr: str, parsed: dict[str, Any]) -> tuple[bool, str]:
     """Classify whether the run needs a handoff.
 
@@ -1687,46 +1737,11 @@ def classify_handoff(exit_code: int, stdout: str, stderr: str, parsed: dict[str,
     when no handoff is needed) so downstream tooling and `.handoff/current.md`
     stay in the vocabulary defined by docs/shared-agent-contract.md.
     """
-    combined = "\n".join([stdout, stderr])
-    # The provider's own final answer text (already extracted into
-    # parsed["final_text"] by summarize_agy()/its counterparts), plus any
-    # tool-echoed content collected into parsed["quoted_text"] by
-    # summarize_codex()/summarize_claude() (command output, file reads, tool
-    # call arguments), are cut out of the text these patterns scan below.
-    # Found via review: on a genuinely successful run, that answer text can
-    # legitimately *quote* a phrase like "command not found" or "set an auth
-    # method" (e.g. summarizing a bug it just fixed), and scanning it wrongly
-    # triggered a handoff/auto-fallback that discarded a good response.
-    # Found again later (real-world report, 2026-09-03): the same is true
-    # for a tool result -- e.g. reading a README that happens to mention
-    # "rate limit and quota" in ordinary prose -- which isn't a signal about
-    # codex/claude's own run at all. This must stay a substring cut, not an
-    # exit_code gate: a provider that exits 0 while still emitting a real
-    # plain-text error signal outside its answer (verified real case -- see
-    # test_rate_limit_signal_in_stdout, exit_code 0) must still be caught.
-    #
-    # Both cuts strip the raw string AND its JSON-escaped form: `combined` is
-    # the provider's *raw* stdout/stderr text, i.e. for a JSONL event stream
-    # (codex/claude) a literal newline inside a string value is encoded as
-    # the two characters `\` `n`, not an actual line break -- so a decoded
-    # multi-line string (very common in a real final_text or file excerpt)
-    # would silently fail to match and strip via the raw form alone. Found
-    # via review after noticing test coverage for this only ever used
-    # single-line text.
-    final_text = parsed.get("final_text") or ""
-    quoted_text = parsed.get("quoted_text") or ""
-    scan_text = combined
-    for chunk in [final_text, *quoted_text.split("\n")]:
-        if not chunk:
-            continue
-        scan_text = scan_text.replace(chunk, "")
-        escaped_chunk = json.dumps(chunk)[1:-1]
-        if escaped_chunk != chunk:
-            scan_text = scan_text.replace(escaped_chunk, "")
+    scan_text = _signal_scan_text(stdout, stderr, parsed)
     if parsed.get("errors"):
         errors_text = json.dumps(parsed["errors"], ensure_ascii=False)
         for label, pattern in ERROR_PATTERNS:
-            if pattern.search(combined) or pattern.search(errors_text):
+            if pattern.search(scan_text) or pattern.search(errors_text):
                 return True, f"{label}: provider emitted a machine-readable error event"
         return True, "unknown: provider emitted a machine-readable error event"
     for label, pattern in ERROR_PATTERNS:

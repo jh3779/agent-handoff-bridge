@@ -212,6 +212,130 @@ class ClassifyHandoffTests(unittest.TestCase):
         needed, reason = hb.classify_handoff(0, raw_stdout, "", parsed)
         self.assertFalse(needed, msg=reason)
 
+    def _codex_stream(self, events):
+        raw = "\n".join(json.dumps(event, ensure_ascii=False) for event in events)
+        return raw, hb.summarize_codex(hb.parse_jsonl(raw))
+
+    def test_tool_output_with_non_ascii_text_and_trigger_words_is_not_a_signal(self):
+        # Real case (2026-10-29): codex searched this repo's own source; the rg output
+        # held lines like a Korean i18n string mentioning "quota/rate" and a test
+        # string "quota: matched quota signal". The old cut removed each output line
+        # by its ASCII-escaped (\\uXXXX) form, but codex writes UTF-8 as-is, so the
+        # Korean line survived and an exit-0 run was reported as a quota handoff.
+        output = (
+            'webui/i18n.js:63:      "settings.autoFallback.note": "선택한 provider가 quota/rate/컨텍스트 한도로 실패하면 전환",\n'
+            'tests/test_handoff_bridge.py:1317:  "reason": reason or ("quota: matched quota signal" if handoff else "none"),\n'
+            "rg: handoff_chat.py: No such file or directory (os error 2)\n"
+            "error\n"
+        )
+        raw, parsed = self._codex_stream(
+            [
+                {"type": "thread.started", "thread_id": "t1"},
+                {
+                    "type": "item.completed",
+                    "item": {"type": "command_execution", "command": "rg quota", "aggregated_output": output, "exit_code": 0},
+                },
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "찾아봤습니다."}},
+                {"type": "turn.completed", "usage": {}},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
+    def test_an_intermediate_agent_message_quoting_a_trigger_word_is_not_a_signal(self):
+        # Only the *last* agent_message becomes final_text; earlier ones are narration
+        # (often quoting protocol words such as "Blocked: tool_failure").
+        raw, parsed = self._codex_stream(
+            [
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "Blocked: tool_failure is a label; also rate limit and quota."}},
+                {"type": "item.completed", "item": {"type": "command_execution", "command": "echo \"quota\"", "aggregated_output": "quota\n", "exit_code": 0}},
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "끝났습니다."}},
+                {"type": "turn.completed", "usage": {}},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
+    def test_a_real_codex_error_event_is_still_a_handoff_and_gets_the_right_label(self):
+        raw, parsed = self._codex_stream(
+            [
+                {"type": "thread.started", "thread_id": "t1"},
+                {"type": "item.completed", "item": {"type": "command_execution", "command": "rg", "aggregated_output": "tool_failure auth quota", "exit_code": 0}},
+                {"type": "error", "message": "You exceeded your current quota, please check your plan"},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("quota:"), msg=reason)  # not auth/tool_failure from the tool output
+
+    def test_an_unrecognized_json_event_with_an_error_like_field_is_still_a_signal(self):
+        # A future CLI event no parser knows must not turn a failure into success.
+        raw, parsed = self._codex_stream(
+            [
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}},
+                {"type": "warning", "message": "usage limit reached"},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("rate_limit:"), msg=reason)
+
+    def test_an_unrecognized_event_without_trigger_words_and_recognized_events_with_them_are_not(self):
+        raw, parsed = self._codex_stream(
+            [
+                {"type": "progress", "message": "indexing files", "status": "running"},
+                {"type": "turn.started", "message": "quota and rate limit are just words here"},
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
+    def test_a_single_unrecognized_event_as_the_only_stdout_line_is_still_a_signal(self):
+        # stdout that is one valid JSON object must not be mistaken for agy's envelope.
+        raw = json.dumps({"type": "warning", "message": "usage limit reached"})
+        parsed = hb.summarize_codex(hb.parse_jsonl(raw))
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("rate_limit:"), msg=reason)
+
+    def test_an_event_type_that_is_normal_for_the_other_provider_is_not_hidden(self):
+        # "result" is a claude event; for codex it is unknown, and a new codex error
+        # event must not hide behind another provider's vocabulary (and vice versa).
+        codex_raw = "\n".join(
+            json.dumps(e)
+            for e in [
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}},
+                {"type": "result", "message": "usage limit reached"},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, codex_raw, "", hb.summarize_codex(hb.parse_jsonl(codex_raw)))
+        self.assertTrue(needed, msg=reason)
+        claude_raw = "\n".join(
+            json.dumps(e)
+            for e in [
+                {"type": "result", "result": "ok"},
+                {"type": "turn.completed", "message": "usage limit reached"},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, claude_raw, "", hb.summarize_claude(hb.parse_jsonl(claude_raw)))
+        self.assertTrue(needed, msg=reason)
+        # ...while each provider's own known types are still left out whole.
+        claude_ok = json.dumps({"type": "result", "result": "ok", "message": "quota and rate limit words"})
+        needed, reason = hb.classify_handoff(0, claude_ok, "", hb.summarize_claude(hb.parse_jsonl(claude_ok)))
+        self.assertFalse(needed, msg=reason)
+
+    def test_plain_text_and_stderr_signals_are_still_caught_next_to_json_events(self):
+        raw, parsed = self._codex_stream(
+            [{"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}]
+        )
+        needed, reason = hb.classify_handoff(0, raw + "\nError: 429 too many requests", "", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("rate_limit:"), msg=reason)
+        needed, reason = hb.classify_handoff(1, raw, "usage limit reached", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("rate_limit:"), msg=reason)
+
     def test_multiline_final_text_is_still_excluded_from_the_raw_json_escaped_stdout(self):
         # Regression (found in review while fixing the above): a decoded
         # final_text containing a real newline character doesn't literally
@@ -2631,7 +2755,7 @@ class SummarizeAgyTests(unittest.TestCase):
 
 
 class SummarizeCodexTests(unittest.TestCase):
-    def test_agent_message_becomes_final_text_and_is_not_in_quoted_text(self):
+    def test_agent_message_becomes_final_text(self):
         events = [
             {"type": "thread.started", "thread_id": "t1"},
             {"type": "item.completed", "item": {"type": "agent_message", "text": "the answer"}},
@@ -2639,28 +2763,8 @@ class SummarizeCodexTests(unittest.TestCase):
         ]
         summary = hb.summarize_codex(events)
         self.assertEqual(summary["final_text"], "the answer")
-        self.assertEqual(summary["quoted_text"], "")
+        self.assertNotIn("quoted_text", summary)
         self.assertEqual(summary["session_id"], "t1")
-
-    def test_command_execution_output_is_collected_into_quoted_text(self):
-        # Real shape (captured from a real `codex exec --json` run,
-        # 2026-09-03): a command_execution item's aggregated_output echoes
-        # whatever the command printed -- e.g. a file's contents -- which is
-        # not a signal about codex's own run.
-        events = [
-            {
-                "type": "item.completed",
-                "item": {
-                    "type": "command_execution",
-                    "command": "cat README.md",
-                    "aggregated_output": "rate limit and quota, see billing docs",
-                    "exit_code": 0,
-                },
-            },
-        ]
-        summary = hb.summarize_codex(events)
-        self.assertIn("rate limit and quota", summary["quoted_text"])
-        self.assertIn("cat README.md", summary["quoted_text"])
 
     def test_turn_failed_and_error_events_are_captured_as_errors(self):
         events = [{"type": "turn.failed", "error": {"message": "boom"}}]
@@ -2677,49 +2781,7 @@ class SummarizeClaudeTests(unittest.TestCase):
         summary = hb.summarize_claude(events)
         self.assertEqual(summary["final_text"], "the answer")
         self.assertEqual(summary["session_id"], "s1")
-        self.assertEqual(summary["quoted_text"], "")
-
-    def test_tool_result_content_is_collected_into_quoted_text(self):
-        # Real shape (captured from a real `claude --verbose` run,
-        # 2026-09-03): a Read tool's result echoes the file's contents back
-        # as a "user" event, both in message.content and the duplicate
-        # tool_use_result.file.content -- neither is a signal about
-        # claude's own run.
-        events = [
-            {
-                "type": "user",
-                "message": {
-                    "role": "user",
-                    "content": [
-                        {
-                            "tool_use_id": "t1",
-                            "type": "tool_result",
-                            "content": "rate limit and quota, see billing docs",
-                        }
-                    ],
-                },
-                "tool_use_result": {
-                    "type": "text",
-                    "file": {"content": "rate limit and quota, see billing docs"},
-                },
-            },
-        ]
-        summary = hb.summarize_claude(events)
-        self.assertIn("rate limit and quota", summary["quoted_text"])
-
-    def test_tool_use_input_is_collected_into_quoted_text(self):
-        events = [
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {"type": "tool_use", "name": "Write", "input": {"content": "quota exceeded example"}}
-                    ]
-                },
-            },
-        ]
-        summary = hb.summarize_claude(events)
-        self.assertIn("quota exceeded example", summary["quoted_text"])
+        self.assertNotIn("quoted_text", summary)
 
     def test_is_error_result_is_captured_as_error(self):
         events = [{"type": "result", "is_error": True, "result": "oops"}]
