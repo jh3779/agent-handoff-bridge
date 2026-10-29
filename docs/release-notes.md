@@ -11,8 +11,10 @@
   a server on `127.0.0.1:8787`. This also removes the port-in-use failure mode
   and the local-HTTP exposure noted in the Security Model. If something is wrong
   with the new path on your machine, launch the app with `AHB_TRANSPORT=http` to
-  get the previous behavior back, and please report it. The update link now
-  opens in your default browser. See [CLI Reference](cli-reference.md) and
+  get the previous behavior back, and please report it. The app's page now also
+  runs under a Content-Security-Policy (the inline script and inline styles moved
+  into `theme-init.js` and `app.css`), and the update link opens in your default
+  browser. See [CLI Reference](cli-reference.md) and
   [Security Model](security-model.md).
 - **Fixed: a successful run could be reported as a handoff because a tool printed
   a trigger word.** The classifier used to cut the answer and tool output out of

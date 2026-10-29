@@ -118,6 +118,19 @@ class RealHandlerTests(unittest.TestCase):
         self.assertIn("text/html", response["headers"]["content-type"])
         self.assertIn("<title>", response["body"])
 
+    def test_every_asset_the_page_references_is_served(self):
+        # The page now loads /theme-init.js instead of an inline script; a missing
+        # route would silently drop the saved-theme step.
+        import re
+
+        index = self.request("GET", "/")["body"]
+        refs = re.findall(r'(?:src|href)="(/[^"]+)"', index)
+        self.assertIn("/theme-init.js", refs)
+        for ref in refs:
+            response = self.request("GET", ref)
+            self.assertEqual(response["status"], 200, ref)
+            self.assertTrue(response["body"].strip(), ref)
+
     def test_unsupported_methods_and_malformed_frames_are_rejected(self):
         self.assertEqual(self.request("PUT", "/api/info")["status"], 405)
         self.assertEqual(webui_stdio.dispatch(self.handler, {"method": "GET", "path": "api/info"})["status"], 400)
@@ -202,6 +215,35 @@ class WaitForWorkersTests(unittest.TestCase):
         workers = [_FakeWorker(), _FakeWorker()]
         webui_stdio._wait_for_workers(workers, 5.0, monotonic=self.racing_clock())
         self.assertEqual([w.joins for w in workers], [[0.0], [0.0]])
+
+
+class SmokeScriptTests(unittest.TestCase):
+    """scripts/smoke_sidecar.py is what installer-build runs against the built
+    binary on every OS; running it against the source here keeps it correct."""
+
+    def test_it_passes_against_the_source_server(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "smoke_sidecar.py"), sys.executable, str(ROOT / "handoff_webui.py")],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            cwd=str(ROOT),
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_it_fails_when_the_command_is_not_a_server(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "smoke_sidecar.py"), sys.executable, "-c", "import sys; sys.exit(3)"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            cwd=str(ROOT),
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("FAIL", result.stdout)
 
 
 class ShutdownTests(unittest.TestCase):

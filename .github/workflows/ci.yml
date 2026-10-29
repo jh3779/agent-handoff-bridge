@@ -89,6 +89,17 @@ jobs:
         run: pip install pyinstaller
       - name: Build sidecars (real binaries, not rust-build's placeholders)
         run: python scripts/build_sidecars.py --target-triple ${{ matrix.target-triple }}
+      # The app talks to this binary over stdin/stdout (src-tauri/src/ipc.rs).
+      # The unit tests run the Python *source*, not the PyInstaller onefile binary
+      # that ships, so a binary that cannot read stdin or that opens a port would
+      # pass all of them. Start the real one the way the app does and send it
+      # requests; a failure here fails this leg and so the release build.
+      - name: Smoke-test the built server sidecar over stdin/stdout
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${{ runner.os }}" = "Windows" ]; then suffix=".exe"; fi
+          python scripts/smoke_sidecar.py "src-tauri/binaries/agent-handoff-bridge-server-${{ matrix.target-triple }}${suffix}"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

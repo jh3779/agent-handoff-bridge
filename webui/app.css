@@ -561,3 +561,13 @@ body {
 .toggle input:checked + .track { background: var(--primary); }
 .toggle input:checked ~ .thumb { transform: translateX(16px); }
 .toggle input:focus-visible + .track { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* These were inline style="" attributes in index.html. Moved here so the page
+   can run under a Content-Security-Policy without 'unsafe-inline' (the desktop
+   app sets one; see src-tauri/tauri.conf.json). Same declarations; the ID
+   selectors keep the precedence the inline styles had over the class rules. */
+#settings-panel { width: 520px; }
+#settings-panel-actions { justify-content: flex-end; margin-top: 14px; gap: 8px; }
+#update-popover-note { margin-top: 6px; }
+#update-popover-actions { margin-top: 10px; gap: 8px; justify-content: flex-end; }
+#context-textarea { width:100%; box-sizing:border-box; resize:vertical; }

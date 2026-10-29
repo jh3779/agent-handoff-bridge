@@ -2970,6 +2970,23 @@ class AgyLiveModelsTests(unittest.TestCase):
         self.assertEqual(second, {"models": live, "authoritative": True, "source": "agy-live", "refreshing": False})
         self.assertFalse(webui_credentials._agy_models_cache["refreshing"])
 
+    def test_the_off_switch_stops_every_lookup_not_just_the_startup_one(self):
+        # A test server on a machine with agy installed must never spawn the real
+        # agy (it opens local sockets and made a port check report a false hit).
+        with mock.patch.dict(os.environ, {"AHB_NO_MODEL_PREWARM": "1"}), mock.patch(
+            "webui_credentials.cli_available", return_value=True
+        ), mock.patch("webui_credentials._start_agy_refresh") as start, mock.patch(
+            "webui_credentials._fetch_agy_models"
+        ) as fetch:
+            webui_credentials.prewarm_agy_models()
+            catalog = webui_credentials.cli_model_catalog("agy")
+            waited = webui_credentials.cli_model_catalog("agy", wait=True)
+        start.assert_not_called()
+        fetch.assert_not_called()
+        for result in (catalog, waited):
+            self.assertEqual(result["source"], "built-in")
+            self.assertFalse(result["refreshing"])  # the page must not poll for a lookup that will never come
+
     def test_prewarm_only_runs_when_agy_is_installed(self):
         with mock.patch("webui_credentials._start_agy_refresh") as start:
             with mock.patch("webui_credentials.cli_available", return_value=False):

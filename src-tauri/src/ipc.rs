@@ -214,8 +214,8 @@ mod tests {
   }
 }
 
-/// Talks to the real Python end. Needs `python3` and the repo checkout, so it is
-/// opt-in: `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored`.
+/// Talks to the real Python end. Needs Python and the repo checkout, so it is
+/// opt-in: `cargo test --manifest-path src-tauri/Cargo.toml -- --include-ignored`.
 #[cfg(test)]
 mod live {
   use super::*;
@@ -223,25 +223,28 @@ mod live {
   use std::process::{Command, Stdio};
 
   #[test]
-  #[ignore = "spawns python3 handoff_webui.py --stdio"]
+  #[ignore = "spawns python handoff_webui.py --stdio"]
   fn rust_and_python_agree_on_the_wire_format() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
     let home = std::env::temp_dir().join(format!("ahb-ipc-live-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
-    let mut child = Command::new(std::env::var("AHB_TEST_PYTHON").unwrap_or_else(|_| "python3".to_string()))
+    // `python` is the usual name on Windows, `python3` elsewhere; set
+    // AHB_TEST_PYTHON to use a specific interpreter.
+    let default_python = if cfg!(windows) { "python" } else { "python3" };
+    let mut child = Command::new(std::env::var("AHB_TEST_PYTHON").unwrap_or_else(|_| default_python.to_string()))
       .arg(root.join("handoff_webui.py"))
       .args(["--stdio", "--workspace"])
       .arg(&home)
       .env("HOME", &home)
       .env("USERPROFILE", &home)
-      // No agy on the path, so the startup prewarm does not run `agy models`.
-      .env("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
+      // Do not start the background `agy models` lookup on the developer's machine.
+      .env("AHB_NO_MODEL_PREWARM", "1")
       .current_dir(&root)
       .stdin(Stdio::piped())
       .stdout(Stdio::piped())
       .stderr(Stdio::null())
       .spawn()
-      .expect("could not start python3");
+      .expect("could not start Python (set AHB_TEST_PYTHON to its path)");
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let state = IpcState::default();

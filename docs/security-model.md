@@ -138,14 +138,25 @@ now exists.
   directly). Any *further* permission beyond this one should still be
   added deliberately and scoped to exactly what it's for, not bulk-
   granted from here.
-- **`tauri.conf.json`'s `"security": {"csp": null}` is similarly a
-  no-op today**, not a deliberately widened attack surface: Tauri's CSP
-  injection applies to responses served through its own asset/IPC
-  protocol, not to arbitrary external `http://` content the window
-  navigates to. Revisit this the same time the capability grant above
-  gets revisited -- both assumptions hold only as long as the window's
-  content is exactly "the same local Python server this project already
-  runs and has already reasoned about," and no more.
+- **The page now runs under a Content-Security-Policy** (`tauri.conf.json`
+  `app.security.csp`; it was `null`, which was only harmless while the window
+  showed external `http://` content that Tauri's CSP does not govern). Since the
+  window shows the page bundled in the app, and that page can call privileged
+  APIs (`window.__TAURI__`: the `api_request` command, the folder dialog, opening
+  links), a single injected script would reach all of them, so the policy limits
+  what the page may run and load: `script-src 'self'` and `style-src 'self'`
+  plus the two stylesheet hosts `app.css` imports (Pretendard on jsDelivr,
+  Google Fonts), `connect-src ipc: http://ipc.localhost` (Tauri's own channel,
+  nothing else), `object-src 'none'`, `base-uri 'none'`, `form-action 'none'`.
+  There is no `'unsafe-inline'` and no `'unsafe-eval'`: the page's former inline
+  `<script>` is `webui/theme-init.js`, its inline `style=""` attributes are
+  rules in `app.css`, and tests pin both. The policy was checked in headless
+  Chrome (no violations, identical rendering to no policy; a deliberately
+  stricter policy did produce violations, so the check can see them), and the
+  built app was launched once to see the page load and call the server under
+  it. Chat text is rendered with `textContent`, so there is no known HTML
+  injection path; the policy is the backstop for a future one. The two external
+  stylesheet hosts mean the page contacts those CDNs for fonts, as it did before.
 - `tauri-plugin-dialog` was originally registered only for a
   fatal-startup-error path and the DEC-28 update-confirm dialog (both
   Rust-initiated, not reachable from the frontend). As of 2026-09-02 it
