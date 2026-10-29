@@ -212,6 +212,73 @@ class ClassifyHandoffTests(unittest.TestCase):
         needed, reason = hb.classify_handoff(0, raw_stdout, "", parsed)
         self.assertFalse(needed, msg=reason)
 
+    def _codex_stream(self, events):
+        raw = "\n".join(json.dumps(event, ensure_ascii=False) for event in events)
+        return raw, hb.summarize_codex(hb.parse_jsonl(raw))
+
+    def test_tool_output_with_non_ascii_text_and_trigger_words_is_not_a_signal(self):
+        # Real case (2026-10-29): codex searched this repo's own source; the rg output
+        # held lines like a Korean i18n string mentioning "quota/rate" and a test
+        # string "quota: matched quota signal". The old cut removed each output line
+        # by its ASCII-escaped (\\uXXXX) form, but codex writes UTF-8 as-is, so the
+        # Korean line survived and an exit-0 run was reported as a quota handoff.
+        output = (
+            'webui/i18n.js:63:      "settings.autoFallback.note": "선택한 provider가 quota/rate/컨텍스트 한도로 실패하면 전환",\n'
+            'tests/test_handoff_bridge.py:1317:  "reason": reason or ("quota: matched quota signal" if handoff else "none"),\n'
+            "rg: handoff_chat.py: No such file or directory (os error 2)\n"
+            "error\n"
+        )
+        raw, parsed = self._codex_stream(
+            [
+                {"type": "thread.started", "thread_id": "t1"},
+                {
+                    "type": "item.completed",
+                    "item": {"type": "command_execution", "command": "rg quota", "aggregated_output": output, "exit_code": 0},
+                },
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "찾아봤습니다."}},
+                {"type": "turn.completed", "usage": {}},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
+    def test_an_intermediate_agent_message_quoting_a_trigger_word_is_not_a_signal(self):
+        # Only the *last* agent_message becomes final_text; earlier ones are narration
+        # (often quoting protocol words such as "Blocked: tool_failure").
+        raw, parsed = self._codex_stream(
+            [
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "Blocked: tool_failure is a label; also rate limit and quota."}},
+                {"type": "item.completed", "item": {"type": "command_execution", "command": "echo \"quota\"", "aggregated_output": "quota\n", "exit_code": 0}},
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "끝났습니다."}},
+                {"type": "turn.completed", "usage": {}},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
+    def test_a_real_codex_error_event_is_still_a_handoff_and_gets_the_right_label(self):
+        raw, parsed = self._codex_stream(
+            [
+                {"type": "thread.started", "thread_id": "t1"},
+                {"type": "item.completed", "item": {"type": "command_execution", "command": "rg", "aggregated_output": "tool_failure auth quota", "exit_code": 0}},
+                {"type": "error", "message": "You exceeded your current quota, please check your plan"},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("quota:"), msg=reason)  # not auth/tool_failure from the tool output
+
+    def test_plain_text_and_stderr_signals_are_still_caught_next_to_json_events(self):
+        raw, parsed = self._codex_stream(
+            [{"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}]
+        )
+        needed, reason = hb.classify_handoff(0, raw + "\nError: 429 too many requests", "", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("rate_limit:"), msg=reason)
+        needed, reason = hb.classify_handoff(1, raw, "usage limit reached", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("rate_limit:"), msg=reason)
+
     def test_multiline_final_text_is_still_excluded_from_the_raw_json_escaped_stdout(self):
         # Regression (found in review while fixing the above): a decoded
         # final_text containing a real newline character doesn't literally

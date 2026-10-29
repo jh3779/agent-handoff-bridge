@@ -4,6 +4,16 @@
 
 ## Unreleased
 
+- **Fixed: a successful run could be reported as a handoff because a tool printed
+  a trigger word.** The classifier used to cut the answer and tool output out of
+  the raw output by string replacement and then look for words like "quota". That
+  missed lines with non-ASCII text (codex writes UTF-8 as-is, the cut looked for
+  the `\uXXXX` form), lines broken by shorter fragments removed first, and earlier
+  agent narration. In a real run codex searched this repo's source for how to
+  switch providers, exited 0, and was handed off to Claude for "quota". The
+  classifier now leaves structured JSON event lines out of the text it scans
+  and looks only at stderr and plain-text stdout; real failures still come through
+  the error events. See [How It Works](how-it-works.md).
 - **Model lists follow the CLIs; "automatic" is now explicit.** Antigravity's
   model suggestions come from `agy models` (cached for 10 minutes and refreshed
   in the background, so opening Settings never waits; the built-in list is only
