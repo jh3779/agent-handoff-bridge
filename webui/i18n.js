@@ -87,6 +87,11 @@ var AHB_I18N = (function () {
       "provider.cliModelSaved": "{provider}의 기본 모델이 \"{model}\"(으)로 저장되었습니다.",
       "provider.cliModelCleared": "{provider}의 기본 모델 설정이 삭제되었습니다.",
       "provider.modelPlaceholder": "model",
+      "provider.modelAuto": "현재: 자동 — CLI가 정한 최신 기본 모델을 사용합니다.",
+      "provider.modelPinned": "현재 고정: {model}",
+      "provider.modelStale": "⚠ \"{model}\"은(는) {provider}의 현재 모델 목록에 없습니다. 더 이상 지원되지 않는 모델일 수 있어 자동으로 바꾸는 것을 권장합니다.",
+      "provider.useAuto": "자동으로",
+      "provider.cliModelAutoSet": "{provider}의 기본 모델을 자동(CLI 기본)으로 되돌렸습니다.",
       "provider.save": "저장",
       "provider.saveFailed": "저장 실패: {msg}",
 
@@ -208,6 +213,11 @@ var AHB_I18N = (function () {
       "provider.cliModelSaved": "{provider}'s default model saved as \"{model}\".",
       "provider.cliModelCleared": "{provider}'s default model was cleared.",
       "provider.modelPlaceholder": "model",
+      "provider.modelAuto": "Currently: automatic — uses the newest default model the CLI picks.",
+      "provider.modelPinned": "Currently pinned: {model}",
+      "provider.modelStale": "⚠ \"{model}\" is not in {provider}'s current model list. It may be retired; switching to automatic is recommended.",
+      "provider.useAuto": "Use automatic",
+      "provider.cliModelAutoSet": "{provider}'s default model was reset to automatic (the CLI's own default).",
       "provider.save": "Save",
       "provider.saveFailed": "Save failed: {msg}",
 

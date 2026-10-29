@@ -404,8 +404,13 @@ HTTP server. What it does:
   Context, an auto-fallback toggle, and a theme switch) opens a connection
   panel listing each provider's CLI-detection status. A provider whose CLI
   **is detected** can be given a default `--model` override (suggestions come
-  from `known_cli_models()`), sent as `--model` on every run and overridable
-  per message from the titlebar's model field; the value is stored in
+  from the CLI itself where it exposes a list: Codex's own model catalog and
+  `agy models`; Claude uses its always-newest aliases), sent as `--model` on
+  every run and overridable
+  per message from the titlebar's model field. Leaving it empty is "automatic":
+  the CLI picks its own newest default. A pinned Codex or Antigravity model
+  that is no longer in that CLI's current list is flagged, with a **Use
+  automatic** button. The value is stored in
   `~/Documents/Agent Handoff Bridge/credentials.json` (`0600`) under
   `cli_models`. A provider with no local CLI is shown as "CLI 없음" and cannot
   be run from here — there is no API-key fallback (removed after v0.4.11);

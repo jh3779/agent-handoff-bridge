@@ -265,7 +265,18 @@ on write, and writes go through `atomic_write_text()` under a lock like the
 registry's. `POST /api/cli-model` saves one entry (no key, no verification
 call — the CLI itself handles auth); `GET /api/providers` returns, per
 provider, `cli_detected` (`shutil.which()`-based), `cli_model` (the saved
-override), and `known_models` (suggestions for the model `<datalist>`).
+override), `known_models` (suggestions for the model `<datalist>`),
+`models_source` (`codex-cache`, `agy-live`, `agy-cache`, `aliases`,
+`built-in` or `none`), `models_refreshing` and `model_stale` (true when the saved model is missing from a catalog that is
+the CLI's own current list -- Codex's `~/.codex/models_cache.json` or a live
+`agy models`; never true for Claude, whose `--model` also accepts full model
+names, nor for agy's built-in fallback, nor for an agy list older than the
+10-minute cache window, which is `agy-cache` and still offered as
+suggestions). `agy models` is cached for 10 minutes (60 seconds after a
+failure) and refreshed on a background thread, so the endpoint never waits for
+it; the server also starts the first lookup at startup. `models_refreshing` is
+true while that lookup is in flight, and the page asks again (every 2.5
+seconds, at most 6 times) until it settles.
 
 **API-key mode was removed** (the release after v0.4.11). It let a provider
 with no local CLI be reached over its vendor HTTP API with a pasted key,

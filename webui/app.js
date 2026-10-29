@@ -100,6 +100,10 @@
       composerDraft: "",
       provider: "auto",
       model: "",
+      // true while this tab's model input just mirrors the provider's saved
+      // default (so clearing/changing that default must clear/change it here
+      // too); false once the user typed their own override in the titlebar.
+      modelInherited: true,
       // Guards against a second concurrent /api/run for *this* session --
       // sendBtn.disabled alone doesn't stop the Enter-key send path, and
       // updateSendState() (run on every keystroke) would otherwise
@@ -441,6 +445,19 @@
       // model-override-input 프리필 기본값이 되고, 매 전송 시 그 입력을
       // 비워두면 이 기본값이, 채워두면 그 값이 우선 적용된다.
       row.appendChild(el("div", { class: "pp-note", text: t("provider.cliModelNote") }, []));
+      // "비움 = 자동"을 눈에 보이게: 고정된 값이 있으면 그 값을, 없으면 자동임을
+      // 알려준다. 서버가 CLI 자신의 카탈로그에서 사라진 고정 모델을 찾으면
+      // (model_stale) 경고와 함께 자동으로 되돌리는 버튼을 보여준다.
+      row.appendChild(
+        el("div", {
+          class: "pp-note",
+          text: info.cli_model ? t("provider.modelPinned", { model: info.cli_model }) : t("provider.modelAuto"),
+        }, [])
+      );
+      const staleWarning = el("div", { class: "pp-note pp-warn", id: `cli-model-warn-${info.provider}` }, []);
+      staleWarning.textContent = staleWarningText(info, PROVIDER_LABEL[info.provider], t);
+      staleWarning.hidden = !staleWarning.textContent;
+      row.appendChild(staleWarning);
       const cliModelDatalistId = `cli-model-list-${info.provider}`;
       const cliModelDatalist = el("datalist", { id: cliModelDatalistId }, []);
       renderModelDatalist(cliModelDatalist, info.known_models);
@@ -466,7 +483,22 @@
           showToast(t("provider.saveFailed", { msg: err.message }));
         }
       });
-      row.appendChild(el("div", { class: "pp-key-row" }, [cliModelInput, cliModelSaveBtn, cliModelDatalist]));
+      const keyRowChildren = [cliModelInput, cliModelSaveBtn];
+      if (info.cli_model) {
+        const autoBtn = el("button", { type: "button", text: t("provider.useAuto") }, []);
+        autoBtn.addEventListener("click", async () => {
+          try {
+            await postJSON("/api/cli-model", { provider: info.provider, model: "" });
+            showToast(t("provider.cliModelAutoSet", { provider: PROVIDER_LABEL[info.provider] }));
+            await refreshProviderPanel();
+          } catch (err) {
+            showToast(t("provider.saveFailed", { msg: err.message }));
+          }
+        });
+        keyRowChildren.push(autoBtn);
+      }
+      keyRowChildren.push(cliModelDatalist);
+      row.appendChild(el("div", { class: "pp-key-row" }, keyRowChildren));
       return row;
     }
     row.appendChild(el("div", { class: "pp-note", text: t("provider.noCliInstallNote") }, []));
@@ -488,6 +520,44 @@
   // and after refreshProviderSelect() rebuilds the option list, so a
   // provider-list refresh (e.g. reopening Settings) never silently resets
   // what this tab had selected.
+  // What the titlebar model input shows for a tab (pure; tested from
+  // tests/test_webui_frontend_logic.py). An inherited value follows the
+  // provider's *current* saved default, so "자동으로" or clearing the default
+  // really stops sending the old model from every tab that never overrode it;
+  // only a value the user typed in that tab is kept as it was.
+  function resolveTitlebarModel(meta, defaultModel, show) {
+    if (!show) return "";
+    return meta.modelInherited === false ? meta.model || "" : defaultModel || "";
+  }
+
+  // The warning shown when a pinned model is missing from the CLI's own
+  // current list ("" = nothing to warn about). Pure; tested.
+  function staleWarningText(info, providerLabel, translate) {
+    if (!info || !info.model_stale || !info.cli_model) return "";
+    return translate("provider.modelStale", { model: info.cli_model, provider: providerLabel });
+  }
+
+  // Updates only the warning elements of rows that are already on screen, so
+  // a re-poll can surface a newly stale model without rebuilding the rows --
+  // which would wipe what the user is typing in a model field. Touches
+  // nothing but the warnings (getById is only asked for their ids). Pure
+  // given its arguments; tested.
+  function applyStaleWarnings(providers, getById, translate, labels) {
+    for (const info of providers) {
+      const warning = getById(`cli-model-warn-${info.provider}`);
+      if (!warning) continue;
+      const text = staleWarningText(info, labels[info.provider] || info.provider, translate);
+      warning.textContent = text;
+      warning.hidden = !text;
+    }
+  }
+
+  // Whether /api/providers should be asked again because agy's model list is
+  // still being fetched in the background (pure; tested). Bounded.
+  function needsModelRepoll(providers, attempt, maxPolls) {
+    return attempt < maxPolls && providers.some((info) => info.models_refreshing);
+  }
+
   function restoreProviderSelectionForActiveSession() {
     const meta = activeMeta();
     if ([...providerSelect.options].some((opt) => opt.value === meta.provider)) {
@@ -501,7 +571,7 @@
     const show = Boolean(info && info.cli_detected);
     modelOverrideInput.hidden = !show;
     renderModelDatalist(modelOverrideDatalist, show ? info.known_models : []);
-    modelOverrideInput.value = show ? meta.model || (info && info.cli_model) || "" : "";
+    modelOverrideInput.value = resolveTitlebarModel(meta, info && info.cli_model, show);
     meta.model = modelOverrideInput.value;
   }
 
@@ -526,9 +596,12 @@
     // default, unlike restoring a tab (which keeps whatever was typed).
     modelOverrideInput.value = show ? info.cli_model || "" : "";
     meta.model = modelOverrideInput.value;
+    meta.modelInherited = true;
   });
   modelOverrideInput.addEventListener("input", () => {
-    activeMeta().model = modelOverrideInput.value;
+    const meta = activeMeta();
+    meta.model = modelOverrideInput.value;
+    meta.modelInherited = false;
   });
 
   // Monotonic token so an overlapping refresh (e.g. a "저장" click's own
@@ -538,7 +611,22 @@
   // recently issued request is ever allowed to touch the DOM.
   let providerPanelRequestId = 0;
 
-  async function refreshProviderPanel() {
+  // agy's model list is fetched on a background thread server-side
+  // (/api/providers answers at once with `models_refreshing: true`), so ask
+  // again a few times until it settles: bounded, and it never rebuilds the
+  // rows while the user is typing in one.
+  const MODEL_REFRESH_POLL_MS = 2500;
+  const MODEL_REFRESH_MAX_POLLS = 6;
+
+  function updateModelDatalists(data) {
+    for (const info of data.providers) {
+      const list = document.getElementById(`cli-model-list-${info.provider}`);
+      if (list) renderModelDatalist(list, info.known_models);
+    }
+    applyStaleWarnings(data.providers, (id) => document.getElementById(id), t, PROVIDER_LABEL);
+  }
+
+  async function refreshProviderPanel(attempt = 0) {
     const requestId = ++providerPanelRequestId;
     let data;
     let error;
@@ -548,15 +636,28 @@
       error = err;
     }
     if (requestId !== providerPanelRequestId) return; // superseded by a newer refresh
-    providerPanelList.innerHTML = "";
     if (error) {
+      providerPanelList.innerHTML = "";
       providerPanelList.appendChild(el("div", { class: "hd-empty", text: t("history.loadError", { msg: error.message }) }, []));
       return;
     }
-    for (const info of data.providers) {
-      providerPanelList.appendChild(renderProviderRow(info));
+    if (attempt > 0 && providerPanelList.contains(document.activeElement)) {
+      // A re-poll must not wipe what the user is typing: refresh only the
+      // suggestion lists, the stale warnings and the titlebar, not the rows.
+      updateModelDatalists(data);
+    } else {
+      providerPanelList.innerHTML = "";
+      for (const info of data.providers) {
+        providerPanelList.appendChild(renderProviderRow(info));
+      }
     }
     refreshProviderSelect(data);
+    if (needsModelRepoll(data.providers, attempt, MODEL_REFRESH_MAX_POLLS)) {
+      setTimeout(() => {
+        // A newer refresh (a click, a reopened panel) owns the polling now.
+        if (requestId === providerPanelRequestId) refreshProviderPanel(attempt + 1);
+      }, MODEL_REFRESH_POLL_MS);
+    }
   }
 
   // ---------- shared context (DEC-27) ----------
@@ -1436,7 +1537,9 @@
     // detection is app-level, not per-workspace): populates the
     // composer's provider-select dropdown (index.html only hardcodes
     // "auto") with the real provider list.
-    fetchJSON("/api/providers").then(refreshProviderSelect).catch(() => {});
+    // Through refreshProviderPanel (not a bare fetch) so the boot load also
+    // re-asks while agy's list is still being fetched in the background.
+    refreshProviderPanel();
 
     // M2: restore any extra tabs left open across a restart -- the default
     // session/tab already exists (sessionMetaById's own initialization),

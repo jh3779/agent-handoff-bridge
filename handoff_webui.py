@@ -69,7 +69,9 @@ from webui_common import (
 )
 from webui_credentials import (
     cli_available,
-    known_cli_models,
+    cli_model_catalog,
+    model_is_stale,
+    prewarm_agy_models,
     read_cli_provider_models,
     save_cli_provider_model,
 )
@@ -222,15 +224,28 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                 # provider CLIs are detected on this machine, plus each
                 # one's saved default --model override and model suggestions.
                 cli_models = read_cli_provider_models()
-                providers = [
-                    {
-                        "provider": provider,
-                        "cli_detected": cli_available(provider),
-                        "cli_model": cli_models.get(provider),
-                        "known_models": known_cli_models(provider),
-                    }
-                    for provider in PROVIDERS
-                ]
+                providers = []
+                for provider in PROVIDERS:
+                    detected = cli_available(provider)
+                    # Only a detected CLI is asked for its live model list
+                    # (agy runs `agy models`); an absent one gets the cheap list.
+                    catalog = cli_model_catalog(provider, live=detected)
+                    saved = cli_models.get(provider)
+                    providers.append(
+                        {
+                            "provider": provider,
+                            "cli_detected": detected,
+                            "cli_model": saved,
+                            "known_models": catalog["models"],
+                            "models_source": catalog["source"],
+                            # True while agy's list is being (re)fetched in
+                            # the background: the page asks again shortly.
+                            "models_refreshing": bool(catalog.get("refreshing")),
+                            # A pinned model the CLI's own catalog no longer
+                            # lists (e.g. retired); the panel offers "auto".
+                            "model_stale": model_is_stale(saved, catalog),
+                        }
+                    )
                 self._send_json(200, {"providers": providers})
             elif parsed.path == "/api/update-check":
                 # Phase 6 (SCR-07): reads the cached result of the
@@ -940,6 +955,7 @@ def main(argv: list[str] | None = None) -> int:
     restore_persisted_sessions(state)  # M2: any extra tabs left open last time
 
     threading.Thread(target=_check_for_update_in_background, args=(state,), daemon=True).start()
+    prewarm_agy_models()  # so the Settings panel's agy model list is usually ready on first open
 
     handler = build_handler(state)
     try:

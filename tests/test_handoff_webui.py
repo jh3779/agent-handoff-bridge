@@ -175,9 +175,9 @@ class MainNoWorkspaceStartupBannerTests(unittest.TestCase):
             os.chdir(tmp.name)  # no .handoff marker here -> "no workspace yet"
             with mock.patch.object(webui_common, "AUTO_WORKSPACE_BASE_DIR", fake_base_dir), mock.patch.object(
                 webui, "_bridge_check_for_update", return_value={"status": "unavailable"}
-            ), mock.patch.object(webui, "WebUIServer", return_value=mock.Mock()), mock.patch(
-                "builtins.print"
-            ) as print_spy:
+            ), mock.patch.object(webui, "WebUIServer", return_value=mock.Mock()), mock.patch.object(
+                webui, "prewarm_agy_models"
+            ), mock.patch("builtins.print") as print_spy:
                 exit_code = webui.main(["--no-browser"])
         finally:
             os.chdir(orig_cwd)
@@ -2857,6 +2857,161 @@ class CliProviderModelTests(unittest.TestCase):
         self.assertEqual(webui_credentials.read_cli_provider_models(), {"codex": "gpt-5-codex"})
 
 
+class AgyLiveModelsTests(unittest.TestCase):
+    """`agy models` is the CLI's own current list; the app asks it instead of
+    trusting a copy in the source that goes stale when Google ships a model."""
+
+    def setUp(self):
+        patcher = mock.patch.dict(
+            webui_credentials._agy_models_cache,
+            {"models": [], "ok_at": None, "failed_at": None, "refreshing": False},
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_parsing_skips_the_banner_and_malformed_lines(self):
+        out = "Fetching available models...\n" "a-model-high\tA Model (High)\n" "\n" "no tab here\n" "-bad\tx\n" "a-model-high\tdup\n" "b.model:1\n" "c-model\t\n"
+        self.assertEqual(
+            webui_credentials._parse_agy_models(out),
+            [{"id": "a-model-high", "label": "A Model (High)"}, {"id": "c-model", "label": "c-model"}],
+        )
+
+    def test_a_live_list_is_authoritative_and_cached(self):
+        live = [{"id": "m1", "label": "M1"}]
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "webui_credentials._fetch_agy_models", return_value=live
+        ) as fetch:
+            first = webui_credentials.cli_model_catalog("agy", wait=True)
+            second = webui_credentials.cli_model_catalog("agy", wait=True)
+        self.assertEqual(first, {"models": live, "authoritative": True, "source": "agy-live", "refreshing": False})
+        self.assertEqual(second, first)
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_a_failed_lookup_falls_back_to_the_built_in_list_and_backs_off(self):
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "webui_credentials._fetch_agy_models", return_value=[]
+        ) as fetch:
+            first = webui_credentials.cli_model_catalog("agy", wait=True)
+            webui_credentials.cli_model_catalog("agy", wait=True)
+        self.assertEqual(first["source"], "built-in")
+        self.assertFalse(first["authoritative"])  # the built-in copy can itself be old
+        self.assertEqual(first["models"], webui_credentials._AGY_KNOWN_MODELS)
+        self.assertEqual(fetch.call_count, 1)  # not retried within the backoff
+
+    def test_a_later_failure_keeps_the_last_good_list(self):
+        live = [{"id": "m1", "label": "M1"}]
+        with mock.patch("webui_credentials.cli_available", return_value=True):
+            with mock.patch("webui_credentials._fetch_agy_models", return_value=live):
+                webui_credentials.cli_model_catalog("agy", wait=True)
+            webui_credentials._agy_models_cache["ok_at"] = None  # expire the TTL
+            with mock.patch("webui_credentials._fetch_agy_models", return_value=[]):
+                again = webui_credentials.cli_model_catalog("agy", wait=True)
+        self.assertEqual(again["models"], live)
+        # Still useful as suggestions, but no longer the CLI's *current* list.
+        self.assertEqual(again["source"], "agy-cache")
+        self.assertFalse(again["authoritative"])
+
+    def test_an_expired_list_never_calls_a_pinned_model_stale(self):
+        # agy shipped a new model after our last successful lookup, the user pinned
+        # it, and the refresh failed: the old list lacks it, which proves nothing.
+        old_list = [{"id": "old-model", "label": "Old"}]
+        webui_credentials._agy_models_cache.update(
+            models=old_list, ok_at=time.monotonic() - webui_credentials._AGY_MODELS_TTL_SECONDS - 1
+        )
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "webui_credentials._start_agy_refresh"
+        ):
+            catalog = webui_credentials.cli_model_catalog("agy")
+        self.assertEqual(catalog["models"], old_list)
+        self.assertFalse(catalog["authoritative"])
+        self.assertFalse(webui_credentials.model_is_stale("brand-new-model", catalog))
+        # ...and the same pin is only judged once a fresh lookup is in.
+        webui_credentials._agy_models_cache.update(ok_at=time.monotonic())
+        with mock.patch("webui_credentials.cli_available", return_value=True):
+            fresh = webui_credentials.cli_model_catalog("agy")
+        self.assertTrue(webui_credentials.model_is_stale("brand-new-model", fresh))
+
+    def test_the_catalog_says_when_a_refresh_is_in_flight(self):
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "webui_credentials._start_agy_refresh"
+        ):
+            first = webui_credentials.cli_model_catalog("agy")
+            second = webui_credentials.cli_model_catalog("agy")
+        self.assertTrue(first["refreshing"])
+        self.assertTrue(second["refreshing"])
+        for provider in ("codex", "claude"):
+            self.assertFalse(webui_credentials.cli_model_catalog(provider, live=False)["refreshing"])
+
+    def test_by_default_it_answers_at_once_and_refreshes_in_the_background(self):
+        # The first `agy models` takes ~5s; the Settings panel must not wait for it.
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "webui_credentials._start_agy_refresh"
+        ) as start, mock.patch("webui_credentials._fetch_agy_models") as fetch:
+            first = webui_credentials.cli_model_catalog("agy")
+            second = webui_credentials.cli_model_catalog("agy")
+        self.assertEqual(first["source"], "built-in")
+        self.assertEqual(second["source"], "built-in")
+        fetch.assert_not_called()  # nothing ran inline
+        self.assertEqual(start.call_count, 1)  # and only one refresh is ever in flight
+
+    def test_the_background_refresh_fills_the_cache_for_the_next_call(self):
+        live = [{"id": "m1", "label": "M1"}]
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "webui_credentials._fetch_agy_models", return_value=live
+        ), mock.patch("webui_credentials._start_agy_refresh") as start:
+            first = webui_credentials.cli_model_catalog("agy")  # asks for a refresh, answers at once
+            start.assert_called_once()
+            # The real refresh runs on its own thread after the lock is released;
+            # run it here the same way (never from inside _start_agy_refresh,
+            # which is called under the lock).
+            webui_credentials._refresh_agy_models()
+            second = webui_credentials.cli_model_catalog("agy")
+        self.assertEqual(first["source"], "built-in")
+        self.assertEqual(second, {"models": live, "authoritative": True, "source": "agy-live", "refreshing": False})
+        self.assertFalse(webui_credentials._agy_models_cache["refreshing"])
+
+    def test_prewarm_only_runs_when_agy_is_installed(self):
+        with mock.patch("webui_credentials._start_agy_refresh") as start:
+            with mock.patch("webui_credentials.cli_available", return_value=False):
+                webui_credentials.prewarm_agy_models()
+            start.assert_not_called()
+            with mock.patch("webui_credentials.cli_available", return_value=True):
+                webui_credentials.prewarm_agy_models()
+            start.assert_called_once()
+
+    def test_no_process_is_started_when_live_is_off_or_the_cli_is_missing(self):
+        with mock.patch("webui_credentials._fetch_agy_models") as fetch:
+            with mock.patch("webui_credentials.cli_available", return_value=True):
+                webui_credentials.cli_model_catalog("agy", live=False)
+            with mock.patch("webui_credentials.cli_available", return_value=False):
+                webui_credentials.cli_model_catalog("agy", wait=True)
+        fetch.assert_not_called()
+
+    def test_fetch_survives_timeouts_missing_binaries_and_errors(self):
+        for effect in (subprocess.TimeoutExpired("agy", 8), FileNotFoundError("agy")):
+            with mock.patch("webui_credentials.subprocess.run", side_effect=effect):
+                self.assertEqual(webui_credentials._fetch_agy_models(), [])
+        failed = subprocess.CompletedProcess(args=[], returncode=1, stdout="x\ty\n", stderr="")
+        with mock.patch("webui_credentials.subprocess.run", return_value=failed):
+            self.assertEqual(webui_credentials._fetch_agy_models(), [])
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="Fetching...\nm1\tM1\n", stderr="")
+        with mock.patch("webui_credentials.subprocess.run", return_value=ok) as run:
+            self.assertEqual(webui_credentials._fetch_agy_models(), [{"id": "m1", "label": "M1"}])
+        self.assertEqual(run.call_args.args[0], ["agy", "models"])
+        self.assertEqual(run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+
+
+class ModelIsStaleTests(unittest.TestCase):
+    def test_only_an_authoritative_catalog_can_call_a_pin_stale(self):
+        catalog = {"models": [{"id": "gpt-6.1-sol", "label": "x"}], "authoritative": True, "source": "codex-cache"}
+        self.assertTrue(webui_credentials.model_is_stale("gpt-5-codex", catalog))
+        self.assertFalse(webui_credentials.model_is_stale("gpt-6.1-sol", catalog))
+        self.assertFalse(webui_credentials.model_is_stale(None, catalog))
+        self.assertFalse(webui_credentials.model_is_stale("", catalog))
+        self.assertFalse(webui_credentials.model_is_stale("gpt-5-codex", {**catalog, "authoritative": False}))
+        self.assertFalse(webui_credentials.model_is_stale("gpt-5-codex", {"models": [], "authoritative": False}))
+
+
 class KnownCliModelsTests(unittest.TestCase):
     """known_cli_models(): real model suggestions surfaced in the Settings
     panel and titlebar model-override <datalist> (message: "회사별로 cli
@@ -3012,6 +3167,18 @@ class CliProviderModelLiveServerTests(unittest.TestCase):
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
         self.addCleanup(self.tmp.cleanup)
+        # Never run the machine's real `agy models` from a test; each test
+        # starts with an empty live-list cache.
+        for patcher in (
+            mock.patch("webui_credentials._fetch_agy_models", return_value=[]),
+            mock.patch("webui_credentials._start_agy_refresh"),
+            mock.patch.dict(
+                webui_credentials._agy_models_cache,
+                {"models": [], "ok_at": None, "failed_at": None, "refreshing": False},
+            ),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
         self.state = webui.AppState(None)
         handler = webui.build_handler(self.state)
@@ -3038,6 +3205,57 @@ class CliProviderModelLiveServerTests(unittest.TestCase):
             with exc:
                 return exc.code, json.loads(exc.read().decode("utf-8"))
 
+    def test_providers_list_reports_model_source_and_staleness(self):
+        with tempfile.TemporaryDirectory() as home_dir:
+            codex_dir = Path(home_dir) / ".codex"
+            codex_dir.mkdir()
+            (codex_dir / "models_cache.json").write_text(
+                json.dumps({"models": [{"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list"}]}),
+                encoding="utf-8",
+            )
+            self._post("/api/cli-model", {"provider": "codex", "model": "gpt-5-codex"})
+            with mock.patch("pathlib.Path.home", return_value=Path(home_dir)):
+                _, data = self._get("/api/providers")
+                by_name = {p["provider"]: p for p in data["providers"]}
+                self.assertTrue(by_name["codex"]["model_stale"])
+                self.assertEqual(by_name["codex"]["models_source"], "codex-cache")
+                self._post("/api/cli-model", {"provider": "codex", "model": "gpt-6.1-sol"})
+                _, data = self._get("/api/providers")
+                self.assertFalse({p["provider"]: p for p in data["providers"]}["codex"]["model_stale"])
+                self._post("/api/cli-model", {"provider": "codex", "model": ""})
+                _, data = self._get("/api/providers")
+                self.assertFalse({p["provider"]: p for p in data["providers"]}["codex"]["model_stale"])
+        # claude takes full model names too, so a pinned one is never "stale"
+        self._post("/api/cli-model", {"provider": "claude", "model": "claude-some-full-name"})
+        _, data = self._get("/api/providers")
+        self.assertFalse({p["provider"]: p for p in data["providers"]}["claude"]["model_stale"])
+
+    def test_providers_list_uses_the_live_agy_list_when_available(self):
+        live = [{"id": "gemini-9-nova-high", "label": "Gemini 9 Nova (High)"}]
+        webui_credentials._agy_models_cache.update(models=live, ok_at=time.monotonic())
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "handoff_webui.cli_available", return_value=True
+        ):
+            _, data = self._get("/api/providers")
+            agy = next(p for p in data["providers"] if p["provider"] == "agy")
+            self.assertEqual(agy["known_models"], live)
+            self.assertEqual(agy["models_source"], "agy-live")
+            self.assertFalse(agy["models_refreshing"])
+            self._post("/api/cli-model", {"provider": "agy", "model": "gemini-4-argon-medium"})
+            _, data = self._get("/api/providers")
+            self.assertTrue(next(p for p in data["providers"] if p["provider"] == "agy")["model_stale"])
+
+    def test_providers_list_reports_a_refresh_in_flight_so_the_page_asks_again(self):
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "handoff_webui.cli_available", return_value=True
+        ):
+            _, data = self._get("/api/providers")
+        by_name = {p["provider"]: p for p in data["providers"]}
+        self.assertTrue(by_name["agy"]["models_refreshing"])
+        self.assertEqual(by_name["agy"]["models_source"], "built-in")  # until the lookup lands
+        self.assertFalse(by_name["codex"]["models_refreshing"])
+        self.assertFalse(by_name["claude"]["models_refreshing"])
+
     def test_providers_list_has_no_cli_model_by_default(self):
         _, data = self._get("/api/providers")
         for info in data["providers"]:
@@ -3060,7 +3278,18 @@ class CliProviderModelLiveServerTests(unittest.TestCase):
         by_name = {p["provider"]: p for p in data["providers"]}
         self.assertEqual(set(by_name), {"codex", "claude", "agy"})
         for info in by_name.values():
-            self.assertEqual(set(info), {"provider", "cli_detected", "cli_model", "known_models"})
+            self.assertEqual(
+                set(info),
+                {
+                    "provider",
+                    "cli_detected",
+                    "cli_model",
+                    "known_models",
+                    "models_source",
+                    "models_refreshing",
+                    "model_stale",
+                },
+            )
         # claude's list doesn't depend on any local cache file, so it's a
         # reliable non-empty check at the HTTP layer too.
         self.assertTrue(by_name["claude"]["known_models"])
