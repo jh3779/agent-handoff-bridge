@@ -1490,27 +1490,6 @@ def parse_jsonl(text: str) -> list[dict[str, Any]]:
     return events
 
 
-def _collect_tool_text(value: Any, out: list[str]) -> None:
-    """Recursively collect every string leaf out of a JSON-like structure.
-
-    Used to gather tool-echoed content (command output, file reads, tool
-    arguments) whose exact shape isn't a stable/documented schema for either
-    CLI -- rather than naming specific fields (e.g. codex's
-    `item.aggregated_output`, claude's `tool_use_result.file.content`) and
-    risking silently missing the next one, this walks the whole structure so
-    any string inside it ends up excluded from classify_handoff()'s signal
-    scan. See that function's `quoted_text` handling for why.
-    """
-    if isinstance(value, str):
-        out.append(value)
-    elif isinstance(value, dict):
-        for v in value.values():
-            _collect_tool_text(v, out)
-    elif isinstance(value, list):
-        for v in value:
-            _collect_tool_text(v, out)
-
-
 def summarize_codex(events: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "provider": "codex",
@@ -1518,10 +1497,8 @@ def summarize_codex(events: list[dict[str, Any]]) -> dict[str, Any]:
         "usage": None,
         "final_text": "",
         "errors": [],
-        "quoted_text": "",
     }
     agent_messages = []
-    quoted: list[str] = []
     for event in events:
         event_type = event.get("type")
         if event_type == "thread.started":
@@ -1531,19 +1508,12 @@ def summarize_codex(events: list[dict[str, Any]]) -> dict[str, Any]:
         elif event_type in {"turn.failed", "error"}:
             summary["errors"].append(event)
         item = event.get("item")
-        if isinstance(item, dict):
-            if item.get("type") == "agent_message":
-                text = item.get("text")
-                if text:
-                    agent_messages.append(text)
-            else:
-                # Non-agent_message items (command_execution output, file
-                # diffs, etc.) echo arbitrary workspace/command text -- not a
-                # signal codex itself emitted about its own run.
-                _collect_tool_text(item, quoted)
+        if isinstance(item, dict) and item.get("type") == "agent_message":
+            text = item.get("text")
+            if text:
+                agent_messages.append(text)
     if agent_messages:
         summary["final_text"] = agent_messages[-1]
-    summary["quoted_text"] = "\n".join(quoted)
     return summary
 
 
@@ -1555,9 +1525,7 @@ def summarize_claude(events: list[dict[str, Any]]) -> dict[str, Any]:
         "cost_usd": None,
         "final_text": "",
         "errors": [],
-        "quoted_text": "",
     }
-    quoted: list[str] = []
     for event in events:
         event_type = event.get("type")
         if event_type == "system" and event.get("subtype") == "init":
@@ -1571,18 +1539,6 @@ def summarize_claude(events: list[dict[str, Any]]) -> dict[str, Any]:
                 summary["errors"].append(event)
         elif event_type == "error":
             summary["errors"].append(event)
-        elif event_type == "user":
-            # Tool-result echoes (file reads, command stdout/stderr) -- not
-            # a signal claude itself emitted about its own run.
-            _collect_tool_text(event.get("message"), quoted)
-            _collect_tool_text(event.get("tool_use_result"), quoted)
-        elif event_type == "assistant":
-            for block in (event.get("message") or {}).get("content") or []:
-                if isinstance(block, dict) and block.get("type") == "tool_use":
-                    # Tool call arguments (e.g. a Write tool's file content
-                    # param) can just as easily carry arbitrary text.
-                    _collect_tool_text(block.get("input"), quoted)
-    summary["quoted_text"] = "\n".join(quoted)
     return summary
 
 
@@ -1680,17 +1636,44 @@ def summarize_agy(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[str
     return summary
 
 
+# Event types the codex and claude parsers understand. Their lines are dropped
+# from the signal scan whole: they carry the answer, narration and every tool's
+# echoed output, and a real failure among them (codex "error"/"turn.failed",
+# claude is_error results) is already in parsed["errors"].
+KNOWN_EVENT_TYPES = frozenset(
+    {
+        "thread.started", "turn.started", "turn.completed", "turn.failed", "error",
+        "item.started", "item.updated", "item.completed",
+        "system", "assistant", "user", "result", "stream_event", "rate_limit_event",
+    }
+)
+# The fields of an *unrecognized* event that can say "usage limit reached".
+_UNKNOWN_EVENT_SIGNAL_FIELDS = ("error", "message", "status", "reason", "detail")
+
+
+def _unknown_event_text(event: dict[str, Any]) -> str:
+    parts = []
+    for field in _UNKNOWN_EVENT_SIGNAL_FIELDS:
+        value = event.get(field)
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, dict):
+            parts.extend(v for v in value.values() if isinstance(v, str))
+    return "\n".join(parts)
+
+
 def _signal_scan_text(stdout: str, stderr: str, parsed: dict[str, Any]) -> str:
-    """The text classify_handoff() looks for handoff signals in: stderr plus the
-    stdout lines that are NOT structured JSON.
+    """The text classify_handoff() looks for handoff signals in: stderr, the
+    stdout lines that are NOT structured JSON, and the error-like fields of JSON
+    events this parser does not recognize.
 
     A provider's structured events (codex/claude JSONL, agy's single envelope)
     carry its answer, narration and every tool's echoed output -- arbitrary text
     that may legitimately say "quota", "rate limit" or "command not found" (a grep
     over this repo's own source, a README, a bug summary). A real failure from a
-    structured stream already arrives as an error event in parsed["errors"],
-    which classify_handoff() handles first, so those lines are dropped whole
-    instead of being matched against.
+    known event already arrives as an error in parsed["errors"], which
+    classify_handoff() handles first, so those lines are dropped whole instead of
+    being matched against.
 
     This replaces cutting final_text / tool output out of the raw stream by
     string replacement, which leaked: codex writes non-ASCII as UTF-8 but the
@@ -1698,10 +1681,12 @@ def _signal_scan_text(stdout: str, stderr: str, parsed: dict[str, Any]) -> str:
     from inside longer lines before they could match, nested JSON escaping
     changed the bytes again, and earlier agent_message narration was never cut.
 
-    What is left is exactly where a real signal can still appear: stderr, and
-    plain-text stdout (a CLI that prints "Error: 429 too many requests" and
-    exits 0 -- see test_rate_limit_signal_in_stdout). parsed["final_text"] is
-    still removed from that remainder for providers whose answer is plain text.
+    What is left is where a real signal can still appear: stderr, plain-text
+    stdout (a CLI that prints "Error: 429 too many requests" and exits 0 -- see
+    test_rate_limit_signal_in_stdout), and a future event type such as
+    {"type": "warning", "message": "usage limit reached"}, which no parser knows
+    yet. parsed["final_text"] is still removed for providers whose answer is
+    plain text.
     """
     kept = [stderr]
     stripped_stdout = stdout.strip()
@@ -1719,10 +1704,13 @@ def _signal_scan_text(stdout: str, stderr: str, parsed: dict[str, Any]) -> str:
                 continue
             if text.startswith(("{", "[")):
                 try:
-                    json.loads(text)
+                    event = json.loads(text)
                 except ValueError:
                     kept.append(line)  # looks like JSON but isn't: treat as text
-                continue  # a structured event line: its errors are in parsed["errors"]
+                    continue
+                if isinstance(event, dict) and event.get("type") not in KNOWN_EVENT_TYPES:
+                    kept.append(_unknown_event_text(event))
+                continue  # a recognized event line: its errors are in parsed["errors"]
             kept.append(line)
     scan_text = "\n".join(kept)
     final_text = parsed.get("final_text") or ""

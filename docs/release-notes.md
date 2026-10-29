@@ -11,9 +11,11 @@
   the `\uXXXX` form), lines broken by shorter fragments removed first, and earlier
   agent narration. In a real run codex searched this repo's source for how to
   switch providers, exited 0, and was handed off to Claude for "quota". The
-  classifier now leaves structured JSON event lines out of the text it scans
-  and looks only at stderr and plain-text stdout; real failures still come through
-  the error events. See [How It Works](how-it-works.md).
+  classifier now leaves the recognized JSON event lines out of the text it scans
+  and looks at stderr, plain-text stdout and the error-like fields of event types
+  it does not know yet; real failures still come through the error events. The
+  unused `quoted_text` summary field was removed. See
+  [How It Works](how-it-works.md).
 - **Model lists follow the CLIs; "automatic" is now explicit.** Antigravity's
   model suggestions come from `agy models` (cached for 10 minutes and refreshed
   in the background, so opening Settings never waits; the built-in list is only

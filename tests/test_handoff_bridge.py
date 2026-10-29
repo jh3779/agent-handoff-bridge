@@ -268,6 +268,29 @@ class ClassifyHandoffTests(unittest.TestCase):
         self.assertTrue(needed)
         self.assertTrue(reason.startswith("quota:"), msg=reason)  # not auth/tool_failure from the tool output
 
+    def test_an_unrecognized_json_event_with_an_error_like_field_is_still_a_signal(self):
+        # A future CLI event no parser knows must not turn a failure into success.
+        raw, parsed = self._codex_stream(
+            [
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}},
+                {"type": "warning", "message": "usage limit reached"},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("rate_limit:"), msg=reason)
+
+    def test_an_unrecognized_event_without_trigger_words_and_recognized_events_with_them_are_not(self):
+        raw, parsed = self._codex_stream(
+            [
+                {"type": "progress", "message": "indexing files", "status": "running"},
+                {"type": "system", "message": "quota and rate limit are just words here"},
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
     def test_plain_text_and_stderr_signals_are_still_caught_next_to_json_events(self):
         raw, parsed = self._codex_stream(
             [{"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}]
@@ -2698,7 +2721,7 @@ class SummarizeAgyTests(unittest.TestCase):
 
 
 class SummarizeCodexTests(unittest.TestCase):
-    def test_agent_message_becomes_final_text_and_is_not_in_quoted_text(self):
+    def test_agent_message_becomes_final_text(self):
         events = [
             {"type": "thread.started", "thread_id": "t1"},
             {"type": "item.completed", "item": {"type": "agent_message", "text": "the answer"}},
@@ -2706,28 +2729,8 @@ class SummarizeCodexTests(unittest.TestCase):
         ]
         summary = hb.summarize_codex(events)
         self.assertEqual(summary["final_text"], "the answer")
-        self.assertEqual(summary["quoted_text"], "")
+        self.assertNotIn("quoted_text", summary)
         self.assertEqual(summary["session_id"], "t1")
-
-    def test_command_execution_output_is_collected_into_quoted_text(self):
-        # Real shape (captured from a real `codex exec --json` run,
-        # 2026-09-03): a command_execution item's aggregated_output echoes
-        # whatever the command printed -- e.g. a file's contents -- which is
-        # not a signal about codex's own run.
-        events = [
-            {
-                "type": "item.completed",
-                "item": {
-                    "type": "command_execution",
-                    "command": "cat README.md",
-                    "aggregated_output": "rate limit and quota, see billing docs",
-                    "exit_code": 0,
-                },
-            },
-        ]
-        summary = hb.summarize_codex(events)
-        self.assertIn("rate limit and quota", summary["quoted_text"])
-        self.assertIn("cat README.md", summary["quoted_text"])
 
     def test_turn_failed_and_error_events_are_captured_as_errors(self):
         events = [{"type": "turn.failed", "error": {"message": "boom"}}]
@@ -2744,49 +2747,7 @@ class SummarizeClaudeTests(unittest.TestCase):
         summary = hb.summarize_claude(events)
         self.assertEqual(summary["final_text"], "the answer")
         self.assertEqual(summary["session_id"], "s1")
-        self.assertEqual(summary["quoted_text"], "")
-
-    def test_tool_result_content_is_collected_into_quoted_text(self):
-        # Real shape (captured from a real `claude --verbose` run,
-        # 2026-09-03): a Read tool's result echoes the file's contents back
-        # as a "user" event, both in message.content and the duplicate
-        # tool_use_result.file.content -- neither is a signal about
-        # claude's own run.
-        events = [
-            {
-                "type": "user",
-                "message": {
-                    "role": "user",
-                    "content": [
-                        {
-                            "tool_use_id": "t1",
-                            "type": "tool_result",
-                            "content": "rate limit and quota, see billing docs",
-                        }
-                    ],
-                },
-                "tool_use_result": {
-                    "type": "text",
-                    "file": {"content": "rate limit and quota, see billing docs"},
-                },
-            },
-        ]
-        summary = hb.summarize_claude(events)
-        self.assertIn("rate limit and quota", summary["quoted_text"])
-
-    def test_tool_use_input_is_collected_into_quoted_text(self):
-        events = [
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {"type": "tool_use", "name": "Write", "input": {"content": "quota exceeded example"}}
-                    ]
-                },
-            },
-        ]
-        summary = hb.summarize_claude(events)
-        self.assertIn("quota exceeded example", summary["quoted_text"])
+        self.assertNotIn("quoted_text", summary)
 
     def test_is_error_result_is_captured_as_error(self):
         events = [{"type": "result", "is_error": True, "result": "oops"}]

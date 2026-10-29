@@ -169,10 +169,9 @@ provider가 한 턴 돌았더라도 이 provider가 못 본 부분을 건너뛰�
 `default`, `unknown`은 기록용 라벨이라 CLI에 넘기지 않습니다(`model_override_arg()`).
 
 결과 파서(`summarize_codex` / `summarize_claude` / `summarize_agy`)는 공통으로
-세션 ID, 사용량(`usage`), 최종 답변(`final_text`), 오류 목록, 도구 출력에서 인용된
-텍스트(`quoted_text`)를 뽑습니다. Claude는 `cost_usd`도 있습니다. 모델이 파일을
-읽다가 "rate limit"이라는 글자를 *본* 것과 *실제로 걸린* 것을 구분하려고
-`quoted_text`를 따로 모아 둡니다(다음 절).
+세션 ID, 사용량(`usage`), 최종 답변(`final_text`), 오류 목록(`errors`)을 뽑습니다.
+Claude는 `cost_usd`도 있습니다. 모델이 파일을 읽다가 "rate limit"이라는 글자를
+*본* 것과 *실제로 걸린* 것을 구분하는 일은 다음 절의 판정이 맡습니다.
 
 ## 7. "넘겨야 하는가" 판정 — `classify_handoff()`
 
@@ -183,10 +182,13 @@ provider가 한 턴 돌았더라도 이 provider가 못 본 부분을 건너뛰�
 
 판정 순서:
 
-1. 검사 대상은 **stderr와 stdout 중 JSON이 아닌 줄**뿐입니다. codex/claude의 JSONL
-   이벤트 줄과 agy의 JSON 한 덩어리는 답변, 중간 설명, 도구 출력이 섞여 있어 통째로
-   제외합니다(`_signal_scan_text()`). 진짜 실패는 오류 이벤트(`errors`)로 따로 들어오고
-   2번에서 처리합니다. 예전에는 최종 답변과 도구 출력을 문자열로 *지운 뒤* 검사했는데,
+1. 검사 대상은 **stderr, stdout 중 JSON이 아닌 줄, 그리고 파서가 모르는 종류의 JSON
+   이벤트가 가진 오류성 필드(`error`·`message`·`status` 등)**뿐입니다. codex/claude의
+   알려진 이벤트 줄과 agy의 JSON 한 덩어리는 답변, 중간 설명, 도구 출력이 섞여 있어
+   통째로 제외합니다(`_signal_scan_text()`). 알려진 이벤트의 진짜 실패는 오류
+   목록(`errors`)으로 따로 들어오고 2번에서 처리합니다. 앞으로 CLI가
+   `{"type":"warning","message":"usage limit reached"}` 같은 새 이벤트를 내보내도
+   놓치지 않으려는 안전장치입니다. 예전에는 최종 답변과 도구 출력을 문자열로 *지운 뒤* 검사했는데,
    한글 줄이 지워지지 않거나(CLI는 UTF-8 그대로, 지우는 쪽은 `\\uXXXX` 형태) 짧은 조각이
    먼저 지워져 긴 줄이 깨지면서 정상 응답이 "quota"로 판정되는 오탐이 실제로 있었습니다
    (2026-10-29).
@@ -199,8 +201,8 @@ provider가 한 턴 돌았더라도 이 provider가 못 본 부분을 건너뛰�
 
 정규식 판정이라 완벽하지 않습니다. 그래서 "정상 응답이 우연히 패턴 단어를 포함"하는
 경우를 줄이는 방향(1번, 그리고 `auth` 패턴이 `set an auth method`처럼 CLI 고유
-문구를 쓰는 식)으로 계속 보강해 왔습니다. 남은 약점은 JSON이 아닌 일반 텍스트 줄과
-stderr로 나오는 문구가 우연히 패턴에 맞는 경우입니다.
+문구를 쓰는 식)으로 계속 보강해 왔습니다. 남은 약점은 JSON이 아닌 일반 텍스트 줄, stderr, 모르는 이벤트의 오류성 필드에
+우연히 패턴 단어가 있는 경우입니다.
 
 ## 8. 넘기기와 자동 전환
 
