@@ -6,14 +6,14 @@
 // docs/design-system/flutter-mapping.html's DEC-22 for why (keep the tested
 // Python backend, don't rewrite it).
 //
-// How the page reaches that backend (two transports, see `Transport`):
-//   * Ipc (default): no network port at all. The window loads the page bundled
-//     in the app (tauri.conf.json `frontendDist`), and every request the page
-//     makes goes through the `api_request` command below to the sidecar's
-//     stdin/stdout (`handoff_webui.py --stdio`, ipc.rs, webui_stdio.py).
-//   * Http (fallback, `AHB_TRANSPORT=http`): the pre-existing behavior -- the
-//     sidecar listens on 127.0.0.1:8787 and the window is pointed at it.
-//     Kept only until the Ipc path has been confirmed on installed builds.
+// How the page reaches that backend: no network port at all. The window loads
+// the page bundled in the app (tauri.conf.json `frontendDist`), and every
+// request the page makes goes through the `api_request` command below to the
+// sidecar's stdin/stdout (`handoff_webui.py --stdio`, ipc.rs, webui_stdio.py).
+// (Released versions up to v0.5.1 had the sidecar listen on 127.0.0.1:8787 with
+// the window pointed at it. That mode and its port-conflict handling were
+// removed once the portless path was confirmed on an installed build; a switch
+// to fall back to it existed only briefly on the development branch.)
 mod ipc;
 
 use ipc::{IpcState, LineKind};
@@ -25,55 +25,26 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_updater::UpdaterExt;
 
-// Matches handoff_webui.py's --port default. tauri.conf.json's
-// app.windows is deliberately empty -- the window is created
-// programmatically below, only after the sidecar's own stdout confirms
-// it's actually listening, not just spawned. A statically-declared
-// window (the first thing tried) navigates the instant it's created,
-// which races a PyInstaller onefile binary's real, non-trivial startup
-// cost (self-extracting to a temp dir, then a full Python import) --
-// found by actually launching the built .app and seeing a permanently
-// blank window (the webview's one-shot initial navigation had already
-// failed by the time the server was really up; nothing ever retried
-// it). A later sub-phase can make the port dynamic if 8787 being taken
-// ever becomes a real problem (out of scope for 7a's "does the sidecar
-// architecture work at all" goal).
-const SERVER_URL: &str = "http://127.0.0.1:8787/";
-// Printed by handoff_webui.py's main() -- after ThreadingHTTPServer(...)
-// has already bound and is listening -- as either "... serving
-// <workspace>" or "... -- no workspace yet". Matching the common prefix
-// covers both without caring which.
-const SERVER_READY_MARKER: &str = "Agent Handoff Bridge web UI";
+// tauri.conf.json's app.windows is deliberately empty -- the window is created
+// programmatically below, only after the sidecar's `ready` event (ipc.rs), not
+// merely after it was spawned. A PyInstaller onefile binary has a real,
+// non-trivial startup cost (self-extracting to a temp dir, then a full Python
+// import); a window created at once would load the page and fire its first
+// requests before there is anything to answer them.
 
 // Phase 7b M6: the CommandChild returned by sidecar.spawn() below used to
 // be dropped immediately (bound as `_child`) -- verified empirically
 // (built the real .app, quit it normally, checked `ps`) that dropping it
 // does NOT kill the sidecar: tauri-plugin-shell's CommandChild has no
 // Drop-triggered cleanup, so the process just gets reparented to launchd
-// and keeps running forever, still holding port 8787 -- confirmed as a
-// real, already-hit bug (a leftover orphaned sidecar from earlier local
-// testing was found squatting on the port during this same
-// investigation). Stored here as managed state so the RunEvent::Exit
-// handler in run() below can reach it and kill it before the app actually
-// exits.
+// and keeps running forever -- confirmed as a real, already-hit bug (a
+// leftover orphaned sidecar from earlier local testing was found squatting on
+// the old localhost port during this same investigation). Stored here as
+// managed state so the RunEvent::Exit handler in run() below can reach it and
+// kill it before the app actually exits.
 type SidecarChildState = Arc<Mutex<Option<CommandChild>>>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Transport {
-  Ipc,
-  Http,
-}
-
-/// `AHB_TRANSPORT=http` selects the old localhost-port behavior; anything else
-/// (including unset) is the portless default.
-fn transport_from_env(value: Option<&str>) -> Transport {
-  match value {
-    Some(v) if v.trim().eq_ignore_ascii_case("http") => Transport::Http,
-    _ => Transport::Ipc,
-  }
-}
-
-/// The page's way of talking to the bundled server in Ipc mode. `request` is
+/// The page's way of talking to the bundled server. `request` is
 /// `{method, path, headers, body}`; the answer is the server's response frame
 /// `{id, status, headers, body, encoding}`. A transport failure (server gone,
 /// malformed call) is an `Err`; an HTTP-level error such as a 404 is still an
@@ -117,8 +88,8 @@ pub fn run() {
     // intercept a second launch before anything else in this chain runs.
     // A second instance's whole process exits right after this callback
     // fires -- it never reaches the sidecar-spawn code below, so there is
-    // no second agent-handoff-bridge-server fighting the first one for
-    // port 8787.
+    // no second agent-handoff-bridge-server sharing the first one's
+    // workspace registry and chat files.
     .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
       if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -149,98 +120,64 @@ pub fn run() {
           .build(),
       )?;
 
-      // Matches handoff_webui.py's own `--no-browser` flag: start the
-      // HTTP server and block, without opening a browser tab or its own
-      // pywebview window -- this Tauri window is the window now.
-      // PYTHONUNBUFFERED=1: an extra safety net, not the actual fix.
-      // CPython switches stdout to fully-buffered (not line-buffered)
-      // the moment it's a pipe instead of a tty, so the readiness print
-      // below could sit in Python's own userspace buffer indefinitely
-      // instead of ever reaching this process's CommandEvent::Stdout --
-      // found by testing the actual built .app, where window creation
-      // just hung. This env var alone turned out NOT to reliably fix it
-      // when tested against the real PyInstaller onefile binary (its
-      // bootloader's own environment/re-exec handling apparently
-      // doesn't guarantee it reaches the embedded interpreter) -- the
-      // real fix is handoff_webui.py's own
-      // `sys.stdout.reconfigure(line_buffering=True)` at the top of
-      // main(), which is unaffected by that. Left here anyway since
-      // it's a harmless, standard signal plenty of other Python tooling
-      // respects.
-      let transport = transport_from_env(std::env::var("AHB_TRANSPORT").ok().as_deref());
-      log::info!("[server] transport: {transport:?}");
-      // Ipc: `--stdio` serves the same routes over stdin/stdout with no
-      // listening socket. Http (fallback): `--no-browser` starts the HTTP
-      // server and blocks without opening a browser tab or its own window.
-      let sidecar_args = match transport {
-        Transport::Ipc => ["--stdio"],
-        Transport::Http => ["--no-browser"],
-      };
+      // `--stdio` serves the Web UI's routes over the sidecar's stdin/stdout
+      // with no listening socket (webui_stdio.py): the `ready` event and every
+      // response frame come back on its stdout, which this loop reads below.
+      // PYTHONUNBUFFERED=1 is an extra safety net, not the actual fix.
+      // CPython switches stdout to fully-buffered (not line-buffered) the
+      // moment it's a pipe instead of a tty, so the ready event could sit in
+      // Python's own userspace buffer indefinitely instead of ever reaching
+      // this process's CommandEvent::Stdout -- found by testing the actual
+      // built .app, where window creation just hung. This env var alone turned
+      // out NOT to reliably fix it against the real PyInstaller onefile binary
+      // (its bootloader's own environment/re-exec handling apparently doesn't
+      // guarantee it reaches the embedded interpreter). What guarantees it now
+      // is that webui_stdio.serve() flushes after writing every frame (and
+      // handoff_webui.py's main() still sets line buffering). The env var is
+      // left as a harmless, standard signal plenty of Python tooling respects.
+      log::info!("[server] starting the bundled server over stdin/stdout");
       let sidecar = app
         .shell()
         .sidecar("agent-handoff-bridge-server")
         .expect("failed to create agent-handoff-bridge-server sidecar command")
         .env("PYTHONUNBUFFERED", "1")
-        .args(sidecar_args);
+        .args(["--stdio"]);
       let (mut rx, child) = sidecar.spawn().expect("failed to spawn agent-handoff-bridge-server sidecar");
       *app.state::<SidecarChildState>().lock().unwrap() = Some(child);
 
       let app_handle = app.handle().clone();
       tauri::async_runtime::spawn(async move {
         let mut window_created = false;
-        // Phase 7b M6: handoff_webui.py's ThreadingHTTPServer(...) has no
-        // try/except around the bind call, so "port 8787 already taken"
-        // surfaces as a raw Python traceback on stderr followed by a
-        // non-zero exit -- verified empirically (pre-bound the port, then
-        // launched a real second instance, read the actual log). Without
-        // this, that case fell into Terminated's generic "exited before
-        // it was ready" message below, which doesn't tell the user why or
-        // what to do about it.
-        let mut port_conflict_detected = false;
         while let Some(event) = rx.recv().await {
           match event {
             CommandEvent::Stdout(line) => {
               let text = String::from_utf8_lossy(&line);
-              let ready = match transport {
-                Transport::Ipc => {
-                  // Response frames carry the user's chat text and file
-                  // contents, so a frame is never logged; only lines that
-                  // are not frames (stray prints) are.
-                  let kind = app_handle.state::<IpcState>().handle_line(&text);
-                  if kind == LineKind::Ignored {
-                    log::info!("[server] {text}");
-                  }
-                  kind == LineKind::Ready
-                }
-                Transport::Http => {
-                  log::info!("[server] {text}");
-                  text.contains(SERVER_READY_MARKER)
-                }
-              };
-              if !window_created && ready {
+              // Response frames carry the user's chat text and file contents,
+              // so a frame is never logged; only lines that are not frames
+              // (stray prints) are.
+              let kind = app_handle.state::<IpcState>().handle_line(&text);
+              if kind == LineKind::Ignored {
+                log::info!("[server] {text}");
+              }
+              if !window_created && kind == LineKind::Ready {
                 window_created = true;
                 let handle = app_handle.clone();
                 let handle_for_closure = handle.clone();
                 // WebviewWindowBuilder must run on the main thread.
                 let _ = handle.run_on_main_thread(move || {
-                  let url = match transport {
-                    // The page bundled into the app (tauri.conf.json frontendDist).
-                    Transport::Ipc => WebviewUrl::App("index.html".into()),
-                    Transport::Http => WebviewUrl::External(SERVER_URL.parse().unwrap()),
-                  };
-                  let mut builder = WebviewWindowBuilder::new(&handle_for_closure, "main", url)
+                  // The page bundled into the app (tauri.conf.json frontendDist).
+                  // webui/app.js sends its requests through `api_request` only
+                  // when __AHB_IPC__ is set; in a plain browser it keeps using
+                  // fetch().
+                  log::info!("[window] opening the main window");
+                  if let Err(err) = WebviewWindowBuilder::new(&handle_for_closure, "main", WebviewUrl::App("index.html".into()))
                     .title("Agent Handoff Bridge")
                     .inner_size(1100.0, 760.0)
                     .min_inner_size(720.0, 480.0)
-                    .resizable(true);
-                  if transport == Transport::Ipc {
-                    // webui/app.js sends its requests through `api_request`
-                    // only when this is set; in a browser or in Http mode it
-                    // keeps using fetch().
-                    builder = builder.initialization_script("window.__AHB_IPC__ = true;");
-                  }
-                  log::info!("[window] opening the main window ({transport:?})");
-                  if let Err(err) = builder.build() {
+                    .resizable(true)
+                    .initialization_script("window.__AHB_IPC__ = true;")
+                    .build()
+                  {
                     log::error!("failed to create main window: {err}");
                     fatal_startup_error(&handle_for_closure, &format!("Failed to open the app window: {err}"));
                   }
@@ -256,23 +193,6 @@ pub fn run() {
             CommandEvent::Stderr(line) => {
               let text = String::from_utf8_lossy(&line);
               log::warn!("[server] {text}");
-              // A review round pointed out that matching raw OSError text
-              // (POSIX's "Address already in use" vs. Windows'
-              // WSAEADDRINUSE wording, which can itself be localized per
-              // system language) was fragile -- handoff_webui.py now
-              // prints a fixed marker itself (PORT_CONFLICT_MARKER)
-              // before re-raising, so this doesn't need to guess at OS/
-              // locale-specific exception text anymore. The free-text
-              // checks stay as a defensive fallback (e.g. an older,
-              // un-rebuilt sidecar binary that predates the marker) --
-              // cheap to keep, never the primary signal now.
-              if text.contains("AHB_PORT_CONFLICT")
-                || text.contains("Address already in use")
-                || text.contains("Only one usage of each socket address")
-                || text.contains("10048")
-              {
-                port_conflict_detected = true;
-              }
             }
             CommandEvent::Error(err) => {
               log::error!("[server] sidecar error: {err}");
@@ -292,16 +212,10 @@ pub fn run() {
               log::warn!("[server] sidecar exited: {:?}", payload);
               app_handle.state::<IpcState>().fail_all("the app's local server exited");
               if !window_created {
-                let message = if port_conflict_detected && transport == Transport::Http {
-                  "Port 8787 is already in use, so the app's local server \
-                   could not start. Another instance of Agent Handoff \
-                   Bridge (or something else) may already be running -- \
-                   quit it and try again."
-                    .to_string()
-                } else {
-                  format!("The app's local server exited before it was ready (code: {:?}).", payload.code)
-                };
-                fatal_startup_error(&app_handle, &message);
+                fatal_startup_error(
+                  &app_handle,
+                  &format!("The app's local server exited before it was ready (code: {:?}).", payload.code),
+                );
               }
             }
             _ => {}
@@ -318,8 +232,8 @@ pub fn run() {
     // Phase 7b M6: fires on every exit path this app has (window closed,
     // Cmd+Q, or fatal_startup_error's own app.exit(1)) -- one hook here
     // covers all of them instead of duplicating a kill call at each exit
-    // site. If the sidecar already died on its own (e.g. the port-conflict
-    // crash above), the state is already None and this is a no-op.
+    // site. If the sidecar already died on its own, the state is already None
+    // and this is a no-op.
     //
     // RunEvent::Exit, not RunEvent::ExitRequested -- verified empirically
     // (built the real .app, quit it via a real Apple Event `tell
@@ -352,7 +266,7 @@ const GRACEFUL_KILL_GRACE_PERIOD: std::time::Duration = std::time::Duration::fro
 /// / TerminateProcess on Windows) only reaches the single PID Tauri
 /// directly spawned -- verified empirically (built the real .app, quit it,
 /// checked `ps`) that this leaves the PyInstaller onefile bootloader's
-/// re-exec'd inner process orphaned, still holding port 8787.
+/// re-exec'd inner process orphaned and still running.
 ///
 /// A single `pkill -P <pid>` (killing only direct children) is NOT
 /// sufficient either: an in-flight provider run makes the real tree
@@ -564,23 +478,4 @@ fn spawn_update_check(app_handle: tauri::AppHandle) {
     log::info!("[updater] update installed, restarting");
     app_handle.restart();
   });
-}
-
-#[cfg(test)]
-mod tests {
-  use super::*;
-
-  #[test]
-  fn the_portless_transport_is_the_default() {
-    assert_eq!(transport_from_env(None), Transport::Ipc);
-    assert_eq!(transport_from_env(Some("")), Transport::Ipc);
-    assert_eq!(transport_from_env(Some("ipc")), Transport::Ipc);
-    assert_eq!(transport_from_env(Some("anything else")), Transport::Ipc);
-  }
-
-  #[test]
-  fn http_is_an_explicit_opt_back_in() {
-    assert_eq!(transport_from_env(Some("http")), Transport::Http);
-    assert_eq!(transport_from_env(Some(" HTTP ")), Transport::Http);
-  }
 }

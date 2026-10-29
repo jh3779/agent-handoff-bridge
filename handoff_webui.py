@@ -85,15 +85,6 @@ from webui_workspace import (
     validate_workspace_candidate,
 )
 
-# Phase 7b M6: a stable, OS-independent stderr marker for "the port is
-# already in use" -- src-tauri/src/lib.rs used to detect this by matching
-# raw OSError text (POSIX's "Address already in use" vs. Windows'
-# WSAEADDRINUSE wording, which can itself be localized per system
-# language), which a review round pointed out was fragile. Printing this
-# fixed string ourselves, once, means the Rust side never has to guess at
-# what a given Python/OS combination's exception text looks like.
-PORT_CONFLICT_MARKER = "AHB_PORT_CONFLICT"
-
 try:
     import webview  # type: ignore[import-not-found]
 except ImportError as exc:  # pragma: no cover - depends on optional local install
@@ -818,9 +809,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--stdio",
         action="store_true",
         help="Serve the same routes over stdin/stdout (one JSON request per line in, one JSON response per line "
-        "out) instead of a TCP port; nothing listens on the network. This is the desktop app's default transport "
-        "(launch the app with AHB_TRANSPORT=http to use the older localhost-port mode instead). "
-        "--host/--port/--browser/--no-browser are ignored.",
+        "out) instead of a TCP port; nothing listens on the network. This is how the desktop app talks to its "
+        "bundled server. --host/--port/--browser/--no-browser are ignored.",
     )
     return parser
 
@@ -974,12 +964,7 @@ def main(argv: list[str] | None = None) -> int:
         frames_out = sys.stdout
         sys.stdout = sys.stderr
         return webui_stdio.serve(handler, sys.stdin, frames_out, BRIDGE_VERSION)
-    try:
-        httpd = WebUIServer((args.host, args.port), handler)
-    except OSError as exc:
-        if exc.errno in (48, 98, 10048):  # EADDRINUSE: macOS, Linux, Windows
-            print(PORT_CONFLICT_MARKER, file=sys.stderr)
-        raise
+    httpd = WebUIServer((args.host, args.port), handler)
     url = f"http://{args.host}:{args.port}/"
     if workspace is not None:
         print(f"Agent Handoff Bridge web UI (MVP) serving {workspace}")

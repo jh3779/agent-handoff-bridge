@@ -1,9 +1,10 @@
 """A socket-free transport for the Web UI's request handler.
 
-The desktop app used to open a window onto http://127.0.0.1:8787, i.e. a TCP
-port served by this process. `handoff_webui.py --stdio` serves the same routes
-without any port: the desktop shell writes one JSON request per line to this
-process's stdin and reads one JSON response per line from its stdout.
+The desktop app does not open a network port. `handoff_webui.py --stdio` serves
+the Web UI's routes over this process's standard streams instead: the desktop
+shell writes one JSON request per line to stdin and reads one JSON response per
+line from stdout. (The browser mode, `python3 handoff_webui.py`, still listens
+on a loopback port for people running the source.)
 
 The route handlers are not rewritten. `dispatch()` builds the real
 `BaseHTTPRequestHandler` subclass (`handoff_webui.build_handler`) around

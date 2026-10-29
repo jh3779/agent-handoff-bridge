@@ -51,9 +51,9 @@ tauri-plugin-updater = "2"
 # Without this, a second launch attempt (double-clicking the Dock/Finder
 # icon while the app is already running -- closing its window on macOS
 # doesn't quit the process, standard convention this app follows too)
-# spawns a second sidecar that loses the port 8787 bind race against the
-# first, surfacing as a real, confusing "port already in use, quit and
-# try again" dialog to a user who has no idea an instance is already
-# running (2026-09-02, hit in practice). This plugin instead redirects a
-# second launch to focus the existing window.
+# spawns a second sidecar. It used to lose the port 8787 bind race and show a
+# confusing "port already in use" dialog (2026-09-02, hit in practice); with no
+# port it would instead run beside the first one on the same workspace
+# registry and chat files. This plugin redirects a second launch to focus the
+# existing window.
 tauri-plugin-single-instance = "2"

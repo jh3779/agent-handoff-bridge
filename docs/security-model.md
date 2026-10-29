@@ -90,31 +90,34 @@ The server refuses `--no-auth` on non-local hosts.
 
 ## Tauri Shell Boundaries (Phase 7a, DEC-22)
 
-The Tauri shell (`src-tauri/`) does not change any trust boundary this
-document already establishes -- it wraps the existing Python backend
-(PyInstaller sidecar) rather than replacing it, so the backend's own
-already-documented posture applies unchanged: loopback-only HTTP with no
-authentication. This section covers only what's new because a native shell
-now exists.
+The Tauri shell (`src-tauri/`) does not add a trust boundary of its own -- it
+wraps the existing Python backend (PyInstaller sidecar) rather than replacing
+it. The backend's documented posture (loopback-only HTTP, no authentication)
+still describes the browser mode people get by running the source
+(`python3 handoff_webui.py`); the desktop app reaches the same request handlers
+over the sidecar's stdin/stdout instead, with no listening socket at all. This
+section covers only what's new because a native shell now exists.
 
-- **No localhost port by default (Ipc transport).** The desktop app now runs
-  the sidecar as `handoff_webui.py --stdio` and loads the page bundled in the
-  app; every request the page makes goes through the shell's `api_request`
-  command to the sidecar's stdin/stdout (`src-tauri/src/ipc.rs`,
-  `webui_stdio.py`). Nothing listens on the network, so a web page open in the
-  user's browser has no address to send requests to, and port 8787 can no
-  longer be taken by another program or left held by an orphaned sidecar. Frame
-  contents carry chat text and file contents and are never written to the app
-  log. Setting `AHB_TRANSPORT=http` before launching restores the previous
-  behavior (sidecar on `127.0.0.1:8787`, window pointed at it), kept as a
-  fallback until the portless path is confirmed on installed builds; **in that
-  mode everything below about the localhost URL still applies, and so does the
-  absence of Origin/Host checks on that HTTP server.** The `shell:allow-open`
-  grant exists only to open the update link in the user's own browser.
-- **In Http mode the main window loads the sidecar's real
-  `http://127.0.0.1:8787/` URL, never Tauri's own bundled/asset-protocol
-  content.** (The paragraph below predates the Ipc transport and describes
-  that mode.) `src-tauri/capabilities/default.json` originally granted no
+- **The desktop app opens no network port.** It runs the sidecar as
+  `handoff_webui.py --stdio` and loads the page bundled in the app; every
+  request the page makes goes through the shell's `api_request` command to the
+  sidecar's stdin/stdout (`src-tauri/src/ipc.rs`, `webui_stdio.py`). Nothing
+  listens, so a web page open in the user's browser has no address to send
+  requests to, and there is no port for another program to take or for an
+  orphaned sidecar to keep holding. Frame contents carry chat text and file
+  contents and are never written to the app log. Earlier versions served the
+  same routes on `127.0.0.1:8787` and pointed the window at it; that mode is
+  gone (a switch to fall back to it existed only on the development branch while
+  the portless path was being checked, and was never released), and with it the
+  exposure of an HTTP server that never checked Origin/Host. The browser mode for people running the source
+  (`python3 handoff_webui.py`) still listens on a loopback port and is
+  unauthenticated, as described above. The `shell:allow-open` grant exists only
+  to open the update link in the user's own browser.
+- **The main window always loads the page bundled in the app, never external
+  content, and `src-tauri/capabilities/default.json` has no `remote` entry.**
+  (An earlier version pointed the window at `http://127.0.0.1:8787/` and listed
+  that URL under `remote`, which gave a localhost page the same permissions; the
+  entry was removed with that mode.) The capability originally granted no
   permissions beyond `core:default` -- an earlier draft also granted
   `shell:allow-execute` for window `"main"`, matching Tauri's own
   scaffolding convention, but a review round pointed out that leaving an
@@ -154,10 +157,10 @@ now exists.
   Chrome (no violations, identical rendering to no policy; a deliberately
   stricter policy did produce violations, so the check can see them), and the
   built app was launched once (macOS arm64, 2026-10-29) and observed to load
-  the page and make its requests through the IPC command under the policy. Not
-  exercised: clicking the folder picker or the update link (they need a person),
-  how the window looks, and Windows/Linux GUIs. Chat text is rendered with `textContent`, so there is no known HTML
-  injection path; the policy is the backstop for a future one. The two external
+  the page and make its requests through the IPC command under the policy; the
+  user then reported no problems using the installed build on macOS. Windows and
+  Linux GUIs were not exercised (their sidecar and bundle builds were). Chat
+  text is rendered with `textContent`, so there is no known HTML injection path; the policy is the backstop for a future one. The two external
   stylesheet hosts mean the page contacts those CDNs for fonts, as it did before.
 - `tauri-plugin-dialog` was originally registered only for a
   fatal-startup-error path and the DEC-28 update-confirm dialog (both
@@ -170,7 +173,7 @@ now exists.
   `CommandChild` returned by spawning the sidecar was dropped immediately
   with no cleanup, so quitting the app left the sidecar running forever
   as a process reparented to `launchd`/init -- discovered via a real
-  leftover orphan, still holding port 8787 hours after its parent app
+  leftover orphan, still holding the old localhost port (8787) hours after its parent app
   had exited. Fixed in `src-tauri/src/lib.rs`: the child is now kept in
   managed state and explicitly killed on `RunEvent::Exit` (not
   `ExitRequested`, which doesn't fire on a normal quit -- verified by
@@ -198,7 +201,9 @@ now exists.
   who then re-opens it from the Dock/Finder, not realizing it's already
   running in the background, used to spawn a *second* sidecar that lost
   the port 8787 bind race against the first, surfacing as a confusing
-  "port already in use, quit and try again" dialog (hit in practice).
+  "port already in use, quit and try again" dialog (hit in practice; with no
+  port today a second sidecar would instead share the first one's workspace
+  registry and chat files, so the plugin is still needed).
   `tauri-plugin-single-instance` is now registered first in the plugin
   chain (required for it to intercept before anything else runs); a
   second launch attempt's whole process exits inside that plugin's
