@@ -49,6 +49,9 @@ CI was removed once and has been partly restored:
   python scripts/build_sidecars.py --target-triple <triple>
   # was: rust-build -- needs the files from the step above, so run it second
   cargo build --manifest-path src-tauri/Cargo.toml
+  # Rust unit tests (src-tauri/src/ipc.rs); `--include-ignored` also runs the one
+  # that starts the real `python3 handoff_webui.py --stdio` and talks to it
+  cargo test --manifest-path src-tauri/Cargo.toml -- --include-ignored
   ```
 
 - **Branch protection on `main`** (pull request required, enforced for admins,

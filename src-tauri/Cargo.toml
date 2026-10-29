@@ -32,6 +32,10 @@ tauri-build = { version = "2.6.3", features = [] }
 # `serde` (the derive crate) has no such hidden requirement and was
 # genuinely unused -- removed.
 serde_json = "1.0"
+# oneshot channels for matching a sidecar response to the `api_request` call
+# waiting for it (src/ipc.rs). Already compiled as a dependency of tauri; this
+# only names it so the crate can use it directly.
+tokio = { version = "1", features = ["sync"] }
 log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"

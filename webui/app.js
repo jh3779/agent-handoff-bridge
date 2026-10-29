@@ -149,6 +149,64 @@
     showToast._t = window.setTimeout(() => toast.classList.remove("show"), 3200);
   }
 
+  // ---------- transport ----------
+  // The desktop app has no network port: its shell sets window.__AHB_IPC__ and
+  // sends every request through the shell's `api_request` command, which hands
+  // it to the bundled server over stdin/stdout (see src-tauri/src/lib.rs and
+  // webui_stdio.py). In a plain browser (python3 handoff_webui.py) the same
+  // calls are ordinary fetches. Both return the little bit of the Response API
+  // this file uses: ok, status, json(), text().
+
+  // Base64 -> UTF-8 text, for the rare non-text body the server sends.
+  // Pure; tested from tests/test_webui_frontend_logic.py.
+  function decodeBase64Utf8(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+
+  // `invoke` is the Tauri command invoker when the shell provided one, else null.
+  // Pure given its arguments; tested.
+  function createApiFetch(invoke, plainFetch) {
+    if (!invoke) return plainFetch;
+    return async function apiFetch(url, init) {
+      const options = init || {};
+      const response = await invoke("api_request", {
+        request: {
+          method: options.method || "GET",
+          path: url,
+          headers: options.headers || {},
+          body: options.body == null ? null : String(options.body),
+        },
+      });
+      const text = response.encoding === "base64" ? decodeBase64Utf8(response.body) : response.body;
+      return {
+        ok: response.status >= 200 && response.status < 300,
+        status: response.status,
+        json: async () => JSON.parse(text),
+        text: async () => text,
+      };
+    };
+  }
+
+  const apiFetch = createApiFetch(
+    window.__AHB_IPC__ && window.__TAURI__ && window.__TAURI__.core ? window.__TAURI__.core.invoke : null,
+    (url, init) => fetch(url, init)
+  );
+
+  // Opens an http(s) link in the user's own browser. In the desktop app that goes
+  // through the shell plugin (window.open does not leave the app window); in a
+  // browser it is a normal new tab.
+  function openExternal(url) {
+    const shell = window.__AHB_IPC__ && window.__TAURI__ && window.__TAURI__.shell;
+    if (shell && typeof shell.open === "function") {
+      Promise.resolve(shell.open(url)).catch(() => window.open(url, "_blank", "noopener"));
+      return;
+    }
+    window.open(url, "_blank", "noopener");
+  }
+
   // `sessionId`: which open tab this request is scoped to. Omit to use
   // whichever tab is active *at call time* (fine for most call sites);
   // pass it explicitly wherever a long-running async operation needs to
@@ -156,7 +214,7 @@
   // before it resolves (sendMessage() is the one place this actually
   // matters -- see its own comment).
   async function fetchJSON(url, sessionId) {
-    const res = await fetch(url, { headers: { [SESSION_HEADER]: sessionId || activeSessionId } });
+    const res = await apiFetch(url, { headers: { [SESSION_HEADER]: sessionId || activeSessionId } });
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || `request failed: ${res.status}`);
@@ -165,7 +223,7 @@
   }
 
   async function postJSON(url, payload, sessionId) {
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", [SESSION_HEADER]: sessionId || activeSessionId },
       body: JSON.stringify(payload),
@@ -178,7 +236,7 @@
   }
 
   async function deleteJSON(url, sessionId) {
-    const res = await fetch(url, { method: "DELETE", headers: { [SESSION_HEADER]: sessionId || activeSessionId } });
+    const res = await apiFetch(url, { method: "DELETE", headers: { [SESSION_HEADER]: sessionId || activeSessionId } });
     const data = await res.json();
     if (!res.ok) {
       throw new Error(data.error || `request failed: ${res.status}`);
@@ -1400,7 +1458,7 @@
   updateBtn.addEventListener("click", openUpdatePopover);
   updateLaterBtn.addEventListener("click", closeUpdatePopover);
   updateReleaseNotesBtn.addEventListener("click", () => {
-    if (latestUpdateInfo && latestUpdateInfo.url) window.open(latestUpdateInfo.url, "_blank", "noopener");
+    if (latestUpdateInfo && latestUpdateInfo.url) openExternal(latestUpdateInfo.url);
     closeUpdatePopover();
   });
   document.addEventListener("click", (event) => {

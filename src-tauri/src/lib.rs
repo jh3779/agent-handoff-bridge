@@ -1,11 +1,23 @@
 // Phase 7a (DEC-22): the actual application logic stays in the Python
 // backend (handoff_webui.py, PyInstaller-built as the
 // "agent-handoff-bridge-server" sidecar) -- this Rust side only spawns it
-// and points a window at its fixed local port once it's actually ready.
-// No API/business logic lives here by design; see
-// docs/research-phase7-framework.md and docs/design-system/
-// flutter-mapping.html's DEC-22 for why (keep the tested Python backend,
-// don't rewrite it).
+// and opens a window once it's actually ready. No API/business logic lives
+// here by design; see docs/research-phase7-framework.md and
+// docs/design-system/flutter-mapping.html's DEC-22 for why (keep the tested
+// Python backend, don't rewrite it).
+//
+// How the page reaches that backend (two transports, see `Transport`):
+//   * Ipc (default): no network port at all. The window loads the page bundled
+//     in the app (tauri.conf.json `frontendDist`), and every request the page
+//     makes goes through the `api_request` command below to the sidecar's
+//     stdin/stdout (`handoff_webui.py --stdio`, ipc.rs, webui_stdio.py).
+//   * Http (fallback, `AHB_TRANSPORT=http`): the pre-existing behavior -- the
+//     sidecar listens on 127.0.0.1:8787 and the window is pointed at it.
+//     Kept only until the Ipc path has been confirmed on installed builds.
+mod ipc;
+
+use ipc::{IpcState, LineKind};
+use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -46,6 +58,58 @@ const SERVER_READY_MARKER: &str = "Agent Handoff Bridge web UI";
 // exits.
 type SidecarChildState = Arc<Mutex<Option<CommandChild>>>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Transport {
+  Ipc,
+  Http,
+}
+
+/// `AHB_TRANSPORT=http` selects the old localhost-port behavior; anything else
+/// (including unset) is the portless default.
+fn transport_from_env(value: Option<&str>) -> Transport {
+  match value {
+    Some(v) if v.trim().eq_ignore_ascii_case("http") => Transport::Http,
+    _ => Transport::Ipc,
+  }
+}
+
+/// The page's way of talking to the bundled server in Ipc mode. `request` is
+/// `{method, path, headers, body}`; the answer is the server's response frame
+/// `{id, status, headers, body, encoding}`. A transport failure (server gone,
+/// malformed call) is an `Err`; an HTTP-level error such as a 404 is still an
+/// `Ok` carrying that status, exactly as it would be over HTTP.
+#[tauri::command]
+async fn api_request(
+  ipc_state: tauri::State<'_, IpcState>,
+  sidecar: tauri::State<'_, SidecarChildState>,
+  request: Value,
+) -> Result<Value, String> {
+  let (id, reply) = ipc_state.register();
+  let line = match ipc::request_frame(id, &request) {
+    Ok(line) => line,
+    Err(message) => {
+      ipc_state.cancel(id);
+      return Err(message);
+    }
+  };
+  {
+    // Not held across the await below.
+    let mut guard = sidecar.lock().unwrap();
+    let written = match guard.as_mut() {
+      Some(child) => child.write(line.as_bytes()).map_err(|err| format!("could not reach the app's local server: {err}")),
+      None => Err("the app's local server is not running".to_string()),
+    };
+    if let Err(message) = written {
+      ipc_state.cancel(id);
+      return Err(message);
+    }
+  }
+  match reply.await {
+    Ok(answer) => answer,
+    Err(_) => Err("the app's local server stopped before answering".to_string()),
+  }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let app = tauri::Builder::default()
@@ -68,6 +132,8 @@ pub fn run() {
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_updater::Builder::new().build())
     .manage(SidecarChildState::default())
+    .manage(IpcState::default())
+    .invoke_handler(tauri::generate_handler![api_request])
     .setup(|app| {
       // Always on, not just debug_assertions -- a review round pointed
       // out that gating this to debug builds left a release build with
@@ -101,12 +167,21 @@ pub fn run() {
       // main(), which is unaffected by that. Left here anyway since
       // it's a harmless, standard signal plenty of other Python tooling
       // respects.
+      let transport = transport_from_env(std::env::var("AHB_TRANSPORT").ok().as_deref());
+      log::info!("[server] transport: {transport:?}");
+      // Ipc: `--stdio` serves the same routes over stdin/stdout with no
+      // listening socket. Http (fallback): `--no-browser` starts the HTTP
+      // server and blocks without opening a browser tab or its own window.
+      let sidecar_args = match transport {
+        Transport::Ipc => ["--stdio"],
+        Transport::Http => ["--no-browser"],
+      };
       let sidecar = app
         .shell()
         .sidecar("agent-handoff-bridge-server")
         .expect("failed to create agent-handoff-bridge-server sidecar command")
         .env("PYTHONUNBUFFERED", "1")
-        .args(["--no-browser"]);
+        .args(sidecar_args);
       let (mut rx, child) = sidecar.spawn().expect("failed to spawn agent-handoff-bridge-server sidecar");
       *app.state::<SidecarChildState>().lock().unwrap() = Some(child);
 
@@ -126,20 +201,46 @@ pub fn run() {
           match event {
             CommandEvent::Stdout(line) => {
               let text = String::from_utf8_lossy(&line);
-              log::info!("[server] {text}");
-              if !window_created && text.contains(SERVER_READY_MARKER) {
+              let ready = match transport {
+                Transport::Ipc => {
+                  // Response frames carry the user's chat text and file
+                  // contents, so a frame is never logged; only lines that
+                  // are not frames (stray prints) are.
+                  let kind = app_handle.state::<IpcState>().handle_line(&text);
+                  if kind == LineKind::Ignored {
+                    log::info!("[server] {text}");
+                  }
+                  kind == LineKind::Ready
+                }
+                Transport::Http => {
+                  log::info!("[server] {text}");
+                  text.contains(SERVER_READY_MARKER)
+                }
+              };
+              if !window_created && ready {
                 window_created = true;
                 let handle = app_handle.clone();
                 let handle_for_closure = handle.clone();
                 // WebviewWindowBuilder must run on the main thread.
                 let _ = handle.run_on_main_thread(move || {
-                  if let Err(err) = WebviewWindowBuilder::new(&handle_for_closure, "main", WebviewUrl::External(SERVER_URL.parse().unwrap()))
+                  let url = match transport {
+                    // The page bundled into the app (tauri.conf.json frontendDist).
+                    Transport::Ipc => WebviewUrl::App("index.html".into()),
+                    Transport::Http => WebviewUrl::External(SERVER_URL.parse().unwrap()),
+                  };
+                  let mut builder = WebviewWindowBuilder::new(&handle_for_closure, "main", url)
                     .title("Agent Handoff Bridge")
                     .inner_size(1100.0, 760.0)
                     .min_inner_size(720.0, 480.0)
-                    .resizable(true)
-                    .build()
-                  {
+                    .resizable(true);
+                  if transport == Transport::Ipc {
+                    // webui/app.js sends its requests through `api_request`
+                    // only when this is set; in a browser or in Http mode it
+                    // keeps using fetch().
+                    builder = builder.initialization_script("window.__AHB_IPC__ = true;");
+                  }
+                  log::info!("[window] opening the main window ({transport:?})");
+                  if let Err(err) = builder.build() {
                     log::error!("failed to create main window: {err}");
                     fatal_startup_error(&handle_for_closure, &format!("Failed to open the app window: {err}"));
                   }
@@ -175,6 +276,7 @@ pub fn run() {
             }
             CommandEvent::Error(err) => {
               log::error!("[server] sidecar error: {err}");
+              app_handle.state::<IpcState>().fail_all("the app's local server failed");
               // A review round found that an error here before the
               // readiness marker ever printed (a Python import error, a
               // broken PyInstaller build, etc.) used to leave the app
@@ -188,8 +290,9 @@ pub fn run() {
             }
             CommandEvent::Terminated(payload) => {
               log::warn!("[server] sidecar exited: {:?}", payload);
+              app_handle.state::<IpcState>().fail_all("the app's local server exited");
               if !window_created {
-                let message = if port_conflict_detected {
+                let message = if port_conflict_detected && transport == Transport::Http {
                   "Port 8787 is already in use, so the app's local server \
                    could not start. Another instance of Agent Handoff \
                    Bridge (or something else) may already be running -- \
@@ -461,4 +564,23 @@ fn spawn_update_check(app_handle: tauri::AppHandle) {
     log::info!("[updater] update installed, restarting");
     app_handle.restart();
   });
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn the_portless_transport_is_the_default() {
+    assert_eq!(transport_from_env(None), Transport::Ipc);
+    assert_eq!(transport_from_env(Some("")), Transport::Ipc);
+    assert_eq!(transport_from_env(Some("ipc")), Transport::Ipc);
+    assert_eq!(transport_from_env(Some("anything else")), Transport::Ipc);
+  }
+
+  #[test]
+  fn http_is_an_explicit_opt_back_in() {
+    assert_eq!(transport_from_env(Some("http")), Transport::Http);
+    assert_eq!(transport_from_env(Some(" HTTP ")), Transport::Http);
+  }
 }

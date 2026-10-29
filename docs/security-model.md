@@ -97,9 +97,24 @@ already-documented posture applies unchanged: loopback-only HTTP with no
 authentication. This section covers only what's new because a native shell
 now exists.
 
-- **The main window always loads the sidecar's real
+- **No localhost port by default (Ipc transport).** The desktop app now runs
+  the sidecar as `handoff_webui.py --stdio` and loads the page bundled in the
+  app; every request the page makes goes through the shell's `api_request`
+  command to the sidecar's stdin/stdout (`src-tauri/src/ipc.rs`,
+  `webui_stdio.py`). Nothing listens on the network, so a web page open in the
+  user's browser has no address to send requests to, and port 8787 can no
+  longer be taken by another program or left held by an orphaned sidecar. Frame
+  contents carry chat text and file contents and are never written to the app
+  log. Setting `AHB_TRANSPORT=http` before launching restores the previous
+  behavior (sidecar on `127.0.0.1:8787`, window pointed at it), kept as a
+  fallback until the portless path is confirmed on installed builds; **in that
+  mode everything below about the localhost URL still applies, and so does the
+  absence of Origin/Host checks on that HTTP server.** The `shell:allow-open`
+  grant exists only to open the update link in the user's own browser.
+- **In Http mode the main window loads the sidecar's real
   `http://127.0.0.1:8787/` URL, never Tauri's own bundled/asset-protocol
-  content.** `src-tauri/capabilities/default.json` originally granted no
+  content.** (The paragraph below predates the Ipc transport and describes
+  that mode.) `src-tauri/capabilities/default.json` originally granted no
   permissions beyond `core:default` -- an earlier draft also granted
   `shell:allow-execute` for window `"main"`, matching Tauri's own
   scaffolding convention, but a review round pointed out that leaving an
