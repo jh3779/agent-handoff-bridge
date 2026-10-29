@@ -276,15 +276,17 @@ Claude는 `cost_usd`도 있습니다. 모델이 파일을 읽다가 "rate limit"
 
 ## 11. 데스크톱 앱
 
-- Tauri(Rust) 셸이 **사이드카** 실행 파일을 띄우고, 사이드카가 127.0.0.1:8787에서
-  웹 UI 서버를 서비스하면 창에 그 주소를 보여줍니다. 사이드카는 PyInstaller로 만든
-  독립 실행 파일 4개(`agent-handoff-bridge-server`, `-cli`, `-validate`, `-scan`)라서
-  사용자가 Python을 설치하지 않아도 됩니다.
+- Tauri(Rust) 셸이 **사이드카** 실행 파일을 `--stdio`로 띄우고, 앱에 번들된
+  페이지를 창에 보여줍니다. 페이지의 요청은 셸의 `api_request` 명령을 거쳐 사이드카의
+  stdin/stdout으로 오갑니다(`ipc.rs`, `webui_stdio.py`). **네트워크 포트는 열지 않습니다.**
+  (예전에는 127.0.0.1:8787에서 서버를 서비스하고 창이 그 주소를 열었습니다.) 사이드카는
+  PyInstaller로 만든 독립 실행 파일 4개(`agent-handoff-bridge-server`, `-cli`,
+  `-validate`, `-scan`)라서 사용자가 Python을 설치하지 않아도 됩니다.
 - 사이드카 안에서는 `sys.executable`이 진짜 Python이 아니라 얼어붙은(frozen)
   서버 바이너리입니다. 그래서 4절의 서브프로세스 호출은 `bridge_command_prefix()`가
   같은 폴더의 `agent-handoff-bridge-cli` 바이너리를 직접 가리키도록 분기합니다.
-- 앱을 닫을 때 사이드카를 함께 종료하고, 8787 포트가 이미 쓰이면 안내 메시지를
-  띄웁니다(둘 다 실제로 깨져 있다가 고친 부분).
+- 앱을 닫을 때 사이드카와 그 하위 프로세스를 함께 종료하고, 두 번째 실행은 새 서버를
+  띄우지 않고 기존 창을 앞으로 가져옵니다(둘 다 실제로 깨져 있다가 고친 부분).
 - 설치형 앱의 자동 업데이트는 Tauri 업데이터 플러그인이 릴리스의 `latest.json`을
   확인합니다. 소스 zip 사용자는 `check_for_update()`가 `gh release view`로 새 버전
   배지를 띄우며, `gh`가 없거나 오프라인이면 "알 수 없음"으로 조용히 처리합니다.

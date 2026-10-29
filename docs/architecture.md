@@ -36,8 +36,8 @@ The packaged desktop app (`src-tauri/`) is a thin Tauri shell around the same we
 UI: it starts the server sidecar as `handoff_webui.py --stdio`, loads the page
 bundled in the app, and forwards each request the page makes to the sidecar over
 stdin/stdout (`api_request` command, `src-tauri/src/ipc.rs`, `webui_stdio.py`),
-so no port is opened. `AHB_TRANSPORT=http` selects the older mode with the
-server on `127.0.0.1:8787`.
+so no port is opened. (Earlier versions served the UI on `127.0.0.1:8787` and
+pointed the window at it.)
 
 `handoff_desktop.py` provides the same control flow with a macOS/Windows GUI
 for folder selection and mobile prompt generation.

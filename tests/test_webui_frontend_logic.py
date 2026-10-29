@@ -285,6 +285,19 @@ class ContentSecurityPolicyTests(unittest.TestCase):
             self.assertIn(host, directives["style-src"], host)
         self.assertTrue(any(h.startswith("https://") for h in directives["font-src"]))
 
+    def test_the_desktop_shell_has_no_http_mode_left(self):
+        # The window shows only the bundled page and talks to the sidecar over
+        # stdin/stdout. A `remote` capability entry or an External window URL would
+        # bring back a localhost page with the app's permissions.
+        capability = json.loads((self.ROOT / "src-tauri" / "capabilities" / "default.json").read_text(encoding="utf-8"))
+        self.assertNotIn("remote", capability)
+        shell = (self.ROOT / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+        code = "\n".join(line for line in shell.splitlines() if not line.lstrip().startswith("//"))
+        for gone in ("WebviewUrl::External", "--no-browser", "8787", "AHB_TRANSPORT", "SERVER_URL", "port_conflict"):
+            self.assertNotIn(gone, code, gone)
+        self.assertIn('.args(["--stdio"])', code)
+        self.assertIn("WebviewUrl::App", code)
+
     def test_every_local_script_and_stylesheet_exists_in_webui(self):
         for ref in re.findall(r'(?:src|href)="(/[^"]+)"', self.INDEX):
             self.assertTrue((self.ROOT / "webui" / ref.lstrip("/")).is_file(), ref)
