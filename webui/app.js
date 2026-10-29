@@ -454,14 +454,10 @@
           text: info.cli_model ? t("provider.modelPinned", { model: info.cli_model }) : t("provider.modelAuto"),
         }, [])
       );
-      if (info.model_stale) {
-        row.appendChild(
-          el("div", {
-            class: "pp-note pp-warn",
-            text: t("provider.modelStale", { model: info.cli_model, provider: PROVIDER_LABEL[info.provider] }),
-          }, [])
-        );
-      }
+      const staleWarning = el("div", { class: "pp-note pp-warn", id: `cli-model-warn-${info.provider}` }, []);
+      staleWarning.textContent = staleWarningText(info, PROVIDER_LABEL[info.provider], t);
+      staleWarning.hidden = !staleWarning.textContent;
+      row.appendChild(staleWarning);
       const cliModelDatalistId = `cli-model-list-${info.provider}`;
       const cliModelDatalist = el("datalist", { id: cliModelDatalistId }, []);
       renderModelDatalist(cliModelDatalist, info.known_models);
@@ -532,6 +528,28 @@
   function resolveTitlebarModel(meta, defaultModel, show) {
     if (!show) return "";
     return meta.modelInherited === false ? meta.model || "" : defaultModel || "";
+  }
+
+  // The warning shown when a pinned model is missing from the CLI's own
+  // current list ("" = nothing to warn about). Pure; tested.
+  function staleWarningText(info, providerLabel, translate) {
+    if (!info || !info.model_stale || !info.cli_model) return "";
+    return translate("provider.modelStale", { model: info.cli_model, provider: providerLabel });
+  }
+
+  // Updates only the warning elements of rows that are already on screen, so
+  // a re-poll can surface a newly stale model without rebuilding the rows --
+  // which would wipe what the user is typing in a model field. Touches
+  // nothing but the warnings (getById is only asked for their ids). Pure
+  // given its arguments; tested.
+  function applyStaleWarnings(providers, getById, translate, labels) {
+    for (const info of providers) {
+      const warning = getById(`cli-model-warn-${info.provider}`);
+      if (!warning) continue;
+      const text = staleWarningText(info, labels[info.provider] || info.provider, translate);
+      warning.textContent = text;
+      warning.hidden = !text;
+    }
   }
 
   // Whether /api/providers should be asked again because agy's model list is
@@ -605,6 +623,7 @@
       const list = document.getElementById(`cli-model-list-${info.provider}`);
       if (list) renderModelDatalist(list, info.known_models);
     }
+    applyStaleWarnings(data.providers, (id) => document.getElementById(id), t, PROVIDER_LABEL);
   }
 
   async function refreshProviderPanel(attempt = 0) {
@@ -624,7 +643,7 @@
     }
     if (attempt > 0 && providerPanelList.contains(document.activeElement)) {
       // A re-poll must not wipe what the user is typing: refresh only the
-      // suggestion lists and the titlebar, not the rows.
+      // suggestion lists, the stale warnings and the titlebar, not the rows.
       updateModelDatalists(data);
     } else {
       providerPanelList.innerHTML = "";
@@ -1518,7 +1537,9 @@
     // detection is app-level, not per-workspace): populates the
     // composer's provider-select dropdown (index.html only hardcodes
     // "auto") with the real provider list.
-    fetchJSON("/api/providers").then(refreshProviderSelect).catch(() => {});
+    // Through refreshProviderPanel (not a bare fetch) so the boot load also
+    // re-asks while agy's list is still being fetched in the background.
+    refreshProviderPanel();
 
     // M2: restore any extra tabs left open across a restart -- the default
     // session/tab already exists (sessionMetaById's own initialization),

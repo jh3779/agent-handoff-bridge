@@ -34,7 +34,24 @@ def _run_node(expression: str):
         [
             _function_source("resolveTitlebarModel"),
             _function_source("needsModelRepoll"),
+            _function_source("staleWarningText"),
+            _function_source("applyStaleWarnings"),
             f"process.stdout.write(JSON.stringify({expression}));",
+        ]
+    )
+    result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return json.loads(result.stdout)
+
+
+def _run_node_script(body: str, result_var: str):
+    script = "\n".join(
+        [
+            _function_source("staleWarningText"),
+            _function_source("applyStaleWarnings"),
+            body,
+            f"process.stdout.write(JSON.stringify({result_var}));",
         ]
     )
     result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30, check=False)
@@ -85,6 +102,56 @@ class NeedsModelRepollTests(unittest.TestCase):
         refreshing = [{"models_refreshing": True}]
         self.assertTrue(self.repoll(refreshing, 5, 6))
         self.assertFalse(self.repoll(refreshing, 6, 6))
+
+
+@unittest.skipUnless(NODE, "node is not installed")
+class StaleWarningTests(unittest.TestCase):
+    """A re-poll must be able to surface a newly stale model while the user is
+    typing in a model field, without rebuilding (and so wiping) the rows."""
+
+    def run_warnings(self, providers, existing_ids):
+        # Fake DOM: only warning elements exist, and any other lookup throws, which
+        # proves the function never reaches for an input or anything else.
+        script = f"""
+        const els = {{}};
+        for (const id of {json.dumps(existing_ids)}) els[id] = {{ hidden: true, textContent: "" }};
+        const getById = (id) => {{
+          if (!id.startsWith("cli-model-warn-")) throw new Error("touched " + id);
+          return els[id] || null;
+        }};
+        const translate = (key, p) => key + "|" + p.model + "|" + p.provider;
+        applyStaleWarnings({json.dumps(providers)}, getById, translate, {{ codex: "Codex" }});
+        """
+        return _run_node_script(script + "\nconst out = els;", "out")
+
+    def test_a_newly_stale_model_shows_its_warning(self):
+        out = self.run_warnings(
+            [{"provider": "codex", "cli_model": "gpt-5-codex", "model_stale": True}], ["cli-model-warn-codex"]
+        )
+        self.assertEqual(out["cli-model-warn-codex"]["hidden"], False)
+        self.assertEqual(out["cli-model-warn-codex"]["textContent"], "provider.modelStale|gpt-5-codex|Codex")
+
+    def test_the_warning_clears_when_the_model_is_no_longer_stale_or_unset(self):
+        for info in (
+            {"provider": "codex", "cli_model": "gpt-6.1-sol", "model_stale": False},
+            {"provider": "codex", "cli_model": None, "model_stale": True},
+        ):
+            out = self.run_warnings([info], ["cli-model-warn-codex"])
+            self.assertEqual(out["cli-model-warn-codex"], {"hidden": True, "textContent": ""})
+
+    def test_a_provider_without_a_row_is_skipped(self):
+        out = self.run_warnings([{"provider": "agy", "cli_model": "x", "model_stale": True}], [])
+        self.assertEqual(out, {})
+
+
+class ProvidersLoaderWiringTests(unittest.TestCase):
+    def test_every_providers_request_goes_through_refresh_provider_panel(self):
+        # Boot used to fetch /api/providers on its own and never re-polled while agy's
+        # list was still loading; one loader means every path re-polls.
+        text = APP_JS.read_text(encoding="utf-8")
+        self.assertEqual(text.count('fetchJSON("/api/providers")'), 1)
+        body = text[text.index("async function refreshProviderPanel("):]
+        self.assertIn('fetchJSON("/api/providers")', body[:900])
 
 
 if __name__ == "__main__":
