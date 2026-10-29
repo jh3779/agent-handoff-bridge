@@ -290,6 +290,35 @@ class ContentSecurityPolicyTests(unittest.TestCase):
             self.assertTrue((self.ROOT / "webui" / ref.lstrip("/")).is_file(), ref)
 
 
+class FillsTheWindowTests(unittest.TestCase):
+    """The page must use the whole window. It used to be a card (max 1600x1000,
+    page padding, border, rounded corners, shadow) centered on a grey page, which
+    looked like a block floating in the middle of a bigger window."""
+
+    CSS = (Path(__file__).resolve().parent.parent / "webui" / "app.css").read_text(encoding="utf-8")
+
+    def rule(self, selector):
+        match = re.search(r"(?m)^" + re.escape(selector) + r"\s*\{([^}]*)\}", self.CSS)
+        self.assertIsNotNone(match, f"no {selector} rule")
+        return match.group(1)
+
+    def test_the_app_container_is_as_big_as_the_window_and_has_no_card_styling(self):
+        app = self.rule(".app")
+        self.assertRegex(app, r"width:\s*100%")
+        self.assertRegex(app, r"height:\s*100%")
+        for card_property in ("max-width", "max-height", "border-radius", "box-shadow", "border:", "margin"):
+            self.assertNotIn(card_property, app, card_property)
+
+    def test_the_page_does_not_center_the_app_or_pad_around_it(self):
+        body = self.rule("body")
+        for centering in ("align-items", "justify-content", "padding", "display: flex"):
+            self.assertNotIn(centering, body, centering)
+
+    def test_no_viewport_sized_cap_is_left_on_the_app_layout(self):
+        self.assertNotIn("min(1600px", self.CSS)
+        self.assertNotIn("min(1000px", self.CSS)
+
+
 class ProvidersLoaderWiringTests(unittest.TestCase):
     def test_every_providers_request_goes_through_refresh_provider_panel(self):
         # Boot used to fetch /api/providers on its own and never re-polled while agy's
