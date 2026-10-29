@@ -34,11 +34,14 @@ import subprocess
 import sys
 import threading
 import webbrowser
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from handoff_bridge import BRIDGE_VERSION, PROVIDERS, atomic_write_text
+
+from run_progress import read_progress, run_started_prefix
 
 from webui_bridge_run import (
     RunAlreadyInProgressError,
@@ -209,6 +212,15 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                         200,
                         {"month": month, "months": list_available_months(workspace, session_id), "messages": messages},
                     )
+            elif parsed.path == "/api/run-progress":
+                # What the provider CLI is doing right now, for the "running"
+                # bubble. Read-only: it only tails the current run's own log
+                # (run_progress.py), and says running=false when no run holds
+                # this workspace's run lock.
+                if workspace is None or not state.get_run_lock_for(workspace).locked():
+                    self._send_json(200, {"running": False})
+                else:
+                    self._send_json(200, {"running": True, **read_progress(workspace, state.run_started_prefix(workspace))})
             elif parsed.path == "/api/history":
                 self._send_json(200, {"groups": build_history_drawer(workspace, session_id)})
             elif parsed.path == "/api/providers":
@@ -461,6 +473,7 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     auto_fallback = bool(body.get("auto_fallback", True))
                     workspace = session.workspace
                     prompt = build_run_prompt(text, attachments)
+                    state.mark_run_started(workspace)
                     records = run_provider_via_bridge(
                         state.get_run_lock_for(workspace), workspace, provider, prompt, model, "continue", auto_fallback
                     )
@@ -683,6 +696,10 @@ class AppState:
         # only while creating a workspace's lock object the first time).
         self._workspace_run_locks: dict[str, threading.Lock] = {}
         self._workspace_run_locks_meta_lock = threading.Lock()
+        # When each workspace's latest /api/run began, as a run-directory name
+        # prefix (run_progress.run_started_prefix), so /api/run-progress never
+        # reads the previous run's log. Plain dict: one atomic write per run.
+        self._run_started_prefix: dict[str, str] = {}
 
         # Phase 6 (SCR-07): written once by a background thread started in
         # main() shortly after startup, read by GET /api/update-check.
@@ -723,6 +740,12 @@ class AppState:
     @workspace.setter
     def workspace(self, value: Path | None) -> None:
         self.sessions[DEFAULT_SESSION_ID].workspace = value
+
+    def mark_run_started(self, workspace: Path) -> None:
+        self._run_started_prefix[str(workspace)] = run_started_prefix(datetime.now(timezone.utc))
+
+    def run_started_prefix(self, workspace: Path) -> str:
+        return self._run_started_prefix.get(str(workspace), "")
 
     def get_run_lock_for(self, workspace: Path) -> threading.Lock:
         """The lock that must be held for the whole duration of a

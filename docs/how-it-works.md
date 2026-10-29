@@ -51,6 +51,7 @@ limit, context 등)에 걸리면 **작업 폴더의 파일**을 통해 다음 CL
 | `handoff_webui.py` | 웹 UI의 HTTP 서버(표준 라이브러리 `ThreadingHTTPServer`)와 API 라우팅 |
 | `webui_common.py` | 웹 UI가 `handoff_bridge.py`를 서브프로세스로 부르는 경계(`bridge_command_prefix`) 등 공용 도구 |
 | `webui_bridge_run.py` | `/api/run`이 실제로 provider를 돌리는 부분 |
+| `run_progress.py` | 실행 중인 provider가 지금 무엇을 하는지(`/api/run-progress`)를 로그에서 읽어 짧은 단계로 바꿈 |
 | `webui_chat_storage.py` | 채팅 기록 저장(월별 JSONL, 지난 달은 gzip) |
 | `webui_workspace.py` | 작업 폴더 선택·파일 트리·자동 폴더 생성 |
 | `webui_credentials.py` | provider별 기본 `--model` 설정만 저장(키는 저장하지 않음) |
@@ -262,6 +263,13 @@ Claude는 `cost_usd`도 있습니다. 모델이 파일을 읽다가 "rate limit"
   **서브프로세스**로 실행합니다. 프롬프트는 임시 파일로 `--prompt-file`에 넘깁니다.
   provider별 제한 시간은 600초(`PROVIDER_RUN_TIMEOUT_SECONDS`)이고, 바깥 래퍼는
   자동 전환 두 번 + 락 대기 여유를 합쳐 1260초에서 강제로 끊습니다.
+- **진행 표시**: `run_provider()`는 provider의 stdout을 파이프 대신 그 실행의
+  `stdout.jsonl` 파일에 바로 쓰게 하므로, 실행 중에도 파일이 늘어납니다. 화면은
+  1초마다 `GET /api/run-progress`를 불러 `run_progress.py`가 이 파일의 끝부분에서
+  가장 최근 이벤트를 읽어 만든 단계(`생각하는 중`, `명령 실행 중: …`, `답변 작성 중`
+  등)와 경과 시간을 "실행 중" 말풍선에 보여 줍니다. codex와 claude만 중간
+  이벤트를 내며, agy는 끝날 때 한 번만 출력하므로 `작업 중…`으로만 표시됩니다.
+  이 단계는 저장하지 않고, 이미 디스크에 있는 실행 로그를 읽기만 합니다.
 - **결과 읽기**: 실행 전후의 `state["history"]` 길이를 비교해 새로 생긴 기록을
   채팅 메시지로 바꿉니다. 서브프로세스가 기록조차 못 남기고 죽으면 가짜 기록을
   만들어 항상 사용자에게 무언가 보이게 합니다.

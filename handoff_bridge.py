@@ -174,6 +174,7 @@ INSTALL_FILES = [
     ("webui_credentials.py", "webui_credentials.py"),
     ("webui_bridge_run.py", "webui_bridge_run.py"),
     ("webui_stdio.py", "webui_stdio.py"),
+    ("run_progress.py", "run_progress.py"),
     ("webui/index.html", "webui/index.html"),
     ("webui/app.css", "webui/app.css"),
     ("webui/app.js", "webui/app.js"),
@@ -190,6 +191,7 @@ INSTALL_FILES = [
     ("tests/test_check_branch_name.py", "tests/test_check_branch_name.py"),
     ("tests/test_handoff_webui.py", "tests/test_handoff_webui.py"),
     ("tests/test_webui_stdio.py", "tests/test_webui_stdio.py"),
+    ("tests/test_run_progress.py", "tests/test_run_progress.py"),
     ("tests/test_webui_frontend_logic.py", "tests/test_webui_frontend_logic.py"),
     ("tests/test_validate_handoff.py", "tests/test_validate_handoff.py"),
     ("tests/test_build_updater_manifest.py", "tests/test_build_updater_manifest.py"),
@@ -482,6 +484,15 @@ def load_state() -> dict[str, Any]:
 def save_state(state: dict[str, Any]) -> None:
     state["updated_at"] = utc_now()
     write_json(STATE_FILE, state)
+
+
+def read_text_lossy(path: Path) -> str:
+    """A file's text, decoded as UTF-8 with undecodable bytes replaced; "" if unreadable."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
 
 
 def decode_timeout_output(value: str | bytes | None) -> str:
@@ -1889,6 +1900,12 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
     allow_all = provider == "agy" and agy_allow_writes_enabled()
     if allow_all:
         print(f"WARNING: agy runs with every tool call auto-approved ({AGY_ALLOW_WRITES_ENV} / --agy-allow-writes).")
+    stdout_path = run_dir / "stdout.jsonl"
+    # The provider writes its stdout straight into the run's stdout.jsonl
+    # instead of a pipe, so the file grows while it works and the Web UI can show
+    # what it is doing right now (run_progress.py). It is read back below, so
+    # everything downstream sees the same text a pipe would have given it.
+    live_stdout = stdout_path.open("wb")
     try:
         process = subprocess.run(
             command,
@@ -1912,13 +1929,14 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
             # decode_timeout_output() elsewhere in this file.
             encoding="utf-8",
             errors="replace",
-            capture_output=True,
+            stdout=live_stdout,
+            stderr=subprocess.PIPE,
             cwd=Path.cwd(),
             timeout=None if args.timeout_seconds == 0 else args.timeout_seconds,
             check=False,
         )
         exit_code = process.returncode
-        stdout = process.stdout
+        stdout = process.stdout  # None: it went to live_stdout
         stderr = process.stderr
     except FileNotFoundError:
         exit_code = 127
@@ -1928,9 +1946,15 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         exit_code = 124
         stdout = decode_timeout_output(exc.stdout)
         stderr = decode_timeout_output(exc.stderr) or "provider timed out"
+    finally:
+        live_stdout.close()
+    if not stdout:
+        # What the provider wrote to the file (also what it had written when a
+        # timeout killed it).
+        stdout = read_text_lossy(stdout_path)
 
     duration_seconds = round(time.monotonic() - started_clock, 2)
-    (run_dir / "stdout.jsonl").write_text(stdout, encoding="utf-8")
+    stdout_path.write_text(stdout, encoding="utf-8")
     (run_dir / "stderr.log").write_text(stderr, encoding="utf-8")
 
     if provider == "codex":
