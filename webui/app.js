@@ -100,6 +100,10 @@
       composerDraft: "",
       provider: "auto",
       model: "",
+      // true while this tab's model input just mirrors the provider's saved
+      // default (so clearing/changing that default must clear/change it here
+      // too); false once the user typed their own override in the titlebar.
+      modelInherited: true,
       // Guards against a second concurrent /api/run for *this* session --
       // sendBtn.disabled alone doesn't stop the Enter-key send path, and
       // updateSendState() (run on every keystroke) would otherwise
@@ -520,6 +524,22 @@
   // and after refreshProviderSelect() rebuilds the option list, so a
   // provider-list refresh (e.g. reopening Settings) never silently resets
   // what this tab had selected.
+  // What the titlebar model input shows for a tab (pure; tested from
+  // tests/test_webui_frontend_logic.py). An inherited value follows the
+  // provider's *current* saved default, so "자동으로" or clearing the default
+  // really stops sending the old model from every tab that never overrode it;
+  // only a value the user typed in that tab is kept as it was.
+  function resolveTitlebarModel(meta, defaultModel, show) {
+    if (!show) return "";
+    return meta.modelInherited === false ? meta.model || "" : defaultModel || "";
+  }
+
+  // Whether /api/providers should be asked again because agy's model list is
+  // still being fetched in the background (pure; tested). Bounded.
+  function needsModelRepoll(providers, attempt, maxPolls) {
+    return attempt < maxPolls && providers.some((info) => info.models_refreshing);
+  }
+
   function restoreProviderSelectionForActiveSession() {
     const meta = activeMeta();
     if ([...providerSelect.options].some((opt) => opt.value === meta.provider)) {
@@ -533,7 +553,7 @@
     const show = Boolean(info && info.cli_detected);
     modelOverrideInput.hidden = !show;
     renderModelDatalist(modelOverrideDatalist, show ? info.known_models : []);
-    modelOverrideInput.value = show ? meta.model || (info && info.cli_model) || "" : "";
+    modelOverrideInput.value = resolveTitlebarModel(meta, info && info.cli_model, show);
     meta.model = modelOverrideInput.value;
   }
 
@@ -558,9 +578,12 @@
     // default, unlike restoring a tab (which keeps whatever was typed).
     modelOverrideInput.value = show ? info.cli_model || "" : "";
     meta.model = modelOverrideInput.value;
+    meta.modelInherited = true;
   });
   modelOverrideInput.addEventListener("input", () => {
-    activeMeta().model = modelOverrideInput.value;
+    const meta = activeMeta();
+    meta.model = modelOverrideInput.value;
+    meta.modelInherited = false;
   });
 
   // Monotonic token so an overlapping refresh (e.g. a "저장" click's own
@@ -570,7 +593,21 @@
   // recently issued request is ever allowed to touch the DOM.
   let providerPanelRequestId = 0;
 
-  async function refreshProviderPanel() {
+  // agy's model list is fetched on a background thread server-side
+  // (/api/providers answers at once with `models_refreshing: true`), so ask
+  // again a few times until it settles: bounded, and it never rebuilds the
+  // rows while the user is typing in one.
+  const MODEL_REFRESH_POLL_MS = 2500;
+  const MODEL_REFRESH_MAX_POLLS = 6;
+
+  function updateModelDatalists(data) {
+    for (const info of data.providers) {
+      const list = document.getElementById(`cli-model-list-${info.provider}`);
+      if (list) renderModelDatalist(list, info.known_models);
+    }
+  }
+
+  async function refreshProviderPanel(attempt = 0) {
     const requestId = ++providerPanelRequestId;
     let data;
     let error;
@@ -580,15 +617,28 @@
       error = err;
     }
     if (requestId !== providerPanelRequestId) return; // superseded by a newer refresh
-    providerPanelList.innerHTML = "";
     if (error) {
+      providerPanelList.innerHTML = "";
       providerPanelList.appendChild(el("div", { class: "hd-empty", text: t("history.loadError", { msg: error.message }) }, []));
       return;
     }
-    for (const info of data.providers) {
-      providerPanelList.appendChild(renderProviderRow(info));
+    if (attempt > 0 && providerPanelList.contains(document.activeElement)) {
+      // A re-poll must not wipe what the user is typing: refresh only the
+      // suggestion lists and the titlebar, not the rows.
+      updateModelDatalists(data);
+    } else {
+      providerPanelList.innerHTML = "";
+      for (const info of data.providers) {
+        providerPanelList.appendChild(renderProviderRow(info));
+      }
     }
     refreshProviderSelect(data);
+    if (needsModelRepoll(data.providers, attempt, MODEL_REFRESH_MAX_POLLS)) {
+      setTimeout(() => {
+        // A newer refresh (a click, a reopened panel) owns the polling now.
+        if (requestId === providerPanelRequestId) refreshProviderPanel(attempt + 1);
+      }, MODEL_REFRESH_POLL_MS);
+    }
   }
 
   // ---------- shared context (DEC-27) ----------

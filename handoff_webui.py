@@ -238,6 +238,9 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                             "cli_model": saved,
                             "known_models": catalog["models"],
                             "models_source": catalog["source"],
+                            # True while agy's list is being (re)fetched in
+                            # the background: the page asks again shortly.
+                            "models_refreshing": bool(catalog.get("refreshing")),
                             # A pinned model the CLI's own catalog no longer
                             # lists (e.g. retired); the panel offers "auto".
                             "model_stale": model_is_stale(saved, catalog),

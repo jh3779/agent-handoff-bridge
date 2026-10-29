@@ -206,28 +206,37 @@ def _start_agy_refresh() -> None:
     threading.Thread(target=_refresh_agy_models, name="agy-models-refresh", daemon=True).start()
 
 
-def _agy_live_models(wait: bool = False) -> list[dict]:
-    """The model list `agy models` reports, cached. Stale-while-revalidate:
-    by default this never blocks -- an expired or empty cache returns what it
-    has (possibly []) and refreshes in the background, so opening the Settings
-    panel is never held up by the CLI's network call. `wait=True` refreshes
-    inline instead."""
+def _agy_cache_view() -> dict:
+    """What the cache holds right now. Caller holds _AGY_MODELS_LOCK. `fresh`
+    means the last successful lookup is still inside the TTL."""
+    cache = _agy_models_cache
+    fresh = cache["ok_at"] is not None and time.monotonic() - cache["ok_at"] < _AGY_MODELS_TTL_SECONDS
+    return {"models": list(cache["models"]), "fresh": fresh, "refreshing": bool(cache.get("refreshing"))}
+
+
+def _agy_live_models(wait: bool = False) -> dict:
+    """The `agy models` list, cached: {"models", "fresh", "refreshing"}.
+    Stale-while-revalidate: by default this never blocks -- an expired or empty
+    cache returns what it has (possibly [], and then fresh is False) and
+    refreshes in the background, so opening the Settings panel is never held up
+    by the CLI's network call. `wait=True` refreshes inline instead."""
     now = time.monotonic()
     with _AGY_MODELS_LOCK:
         cache = _agy_models_cache
-        if cache["ok_at"] is not None and now - cache["ok_at"] < _AGY_MODELS_TTL_SECONDS:
-            return list(cache["models"])
+        view = _agy_cache_view()
+        if view["fresh"]:
+            return view
         if cache["failed_at"] is not None and now - cache["failed_at"] < _AGY_MODELS_FAILURE_BACKOFF_SECONDS:
-            return list(cache["models"])
+            return view
         if not wait:
             if not cache.get("refreshing"):
                 cache["refreshing"] = True
                 _start_agy_refresh()
-            return list(cache["models"])
+            return _agy_cache_view()
         cache["refreshing"] = True
     _refresh_agy_models()
     with _AGY_MODELS_LOCK:
-        return list(_agy_models_cache["models"])
+        return _agy_cache_view()
 
 
 def prewarm_agy_models() -> None:
@@ -239,7 +248,9 @@ def prewarm_agy_models() -> None:
 
 def cli_model_catalog(provider: str, live: bool = True, wait: bool = False) -> dict:
     """Model suggestions for one provider plus how far to trust them:
-    {"models": [...], "authoritative": bool, "source": str}. `authoritative`
+    {"models": [...], "authoritative": bool, "source": str, "refreshing": bool}.
+    `refreshing` means a background `agy models` lookup is in flight, so the
+    list may change shortly. `authoritative`
     means the list is the CLI's own current catalog (codex's cache, a live
     `agy models`), so a saved model missing from it is stale. Claude's list is
     only aliases and its --model also takes full model names, and agy's
@@ -249,16 +260,37 @@ def cli_model_catalog(provider: str, live: bool = True, wait: bool = False) -> d
     from the cache and refreshing in the background (see _agy_live_models)."""
     if provider == "codex":
         models = _codex_known_models()
-        return {"models": models, "authoritative": bool(models), "source": "codex-cache" if models else "none"}
+        return {
+            "models": models,
+            "authoritative": bool(models),
+            "source": "codex-cache" if models else "none",
+            "refreshing": False,
+        }
     if provider == "claude":
-        return {"models": list(_CLAUDE_KNOWN_MODELS), "authoritative": False, "source": "aliases"}
+        return {"models": list(_CLAUDE_KNOWN_MODELS), "authoritative": False, "source": "aliases", "refreshing": False}
     if provider == "agy":
+        refreshing = False
         if live and cli_available("agy"):
-            models = _agy_live_models(wait=wait)
-            if models:
-                return {"models": models, "authoritative": True, "source": "agy-live"}
-        return {"models": list(_AGY_KNOWN_MODELS), "authoritative": False, "source": "built-in"}
-    return {"models": [], "authoritative": False, "source": "none"}
+            state = _agy_live_models(wait=wait)
+            refreshing = state["refreshing"]
+            if state["models"]:
+                # Only a lookup that succeeded within the TTL counts as the CLI's
+                # current list. An expired or last-good list still makes useful
+                # suggestions but must not call a freshly pinned model stale.
+                fresh = state["fresh"]
+                return {
+                    "models": state["models"],
+                    "authoritative": fresh,
+                    "source": "agy-live" if fresh else "agy-cache",
+                    "refreshing": refreshing,
+                }
+        return {
+            "models": list(_AGY_KNOWN_MODELS),
+            "authoritative": False,
+            "source": "built-in",
+            "refreshing": refreshing,
+        }
+    return {"models": [], "authoritative": False, "source": "none", "refreshing": False}
 
 
 def model_is_stale(saved_model: str | None, catalog: dict) -> bool:

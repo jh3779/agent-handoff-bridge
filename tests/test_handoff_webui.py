@@ -2872,7 +2872,7 @@ class AgyLiveModelsTests(unittest.TestCase):
         ) as fetch:
             first = webui_credentials.cli_model_catalog("agy", wait=True)
             second = webui_credentials.cli_model_catalog("agy", wait=True)
-        self.assertEqual(first, {"models": live, "authoritative": True, "source": "agy-live"})
+        self.assertEqual(first, {"models": live, "authoritative": True, "source": "agy-live", "refreshing": False})
         self.assertEqual(second, first)
         self.assertEqual(fetch.call_count, 1)
 
@@ -2896,6 +2896,40 @@ class AgyLiveModelsTests(unittest.TestCase):
             with mock.patch("webui_credentials._fetch_agy_models", return_value=[]):
                 again = webui_credentials.cli_model_catalog("agy", wait=True)
         self.assertEqual(again["models"], live)
+        # Still useful as suggestions, but no longer the CLI's *current* list.
+        self.assertEqual(again["source"], "agy-cache")
+        self.assertFalse(again["authoritative"])
+
+    def test_an_expired_list_never_calls_a_pinned_model_stale(self):
+        # agy shipped a new model after our last successful lookup, the user pinned
+        # it, and the refresh failed: the old list lacks it, which proves nothing.
+        old_list = [{"id": "old-model", "label": "Old"}]
+        webui_credentials._agy_models_cache.update(
+            models=old_list, ok_at=time.monotonic() - webui_credentials._AGY_MODELS_TTL_SECONDS - 1
+        )
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "webui_credentials._start_agy_refresh"
+        ):
+            catalog = webui_credentials.cli_model_catalog("agy")
+        self.assertEqual(catalog["models"], old_list)
+        self.assertFalse(catalog["authoritative"])
+        self.assertFalse(webui_credentials.model_is_stale("brand-new-model", catalog))
+        # ...and the same pin is only judged once a fresh lookup is in.
+        webui_credentials._agy_models_cache.update(ok_at=time.monotonic())
+        with mock.patch("webui_credentials.cli_available", return_value=True):
+            fresh = webui_credentials.cli_model_catalog("agy")
+        self.assertTrue(webui_credentials.model_is_stale("brand-new-model", fresh))
+
+    def test_the_catalog_says_when_a_refresh_is_in_flight(self):
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "webui_credentials._start_agy_refresh"
+        ):
+            first = webui_credentials.cli_model_catalog("agy")
+            second = webui_credentials.cli_model_catalog("agy")
+        self.assertTrue(first["refreshing"])
+        self.assertTrue(second["refreshing"])
+        for provider in ("codex", "claude"):
+            self.assertFalse(webui_credentials.cli_model_catalog(provider, live=False)["refreshing"])
 
     def test_by_default_it_answers_at_once_and_refreshes_in_the_background(self):
         # The first `agy models` takes ~5s; the Settings panel must not wait for it.
@@ -2922,7 +2956,7 @@ class AgyLiveModelsTests(unittest.TestCase):
             webui_credentials._refresh_agy_models()
             second = webui_credentials.cli_model_catalog("agy")
         self.assertEqual(first["source"], "built-in")
-        self.assertEqual(second, {"models": live, "authoritative": True, "source": "agy-live"})
+        self.assertEqual(second, {"models": live, "authoritative": True, "source": "agy-live", "refreshing": False})
         self.assertFalse(webui_credentials._agy_models_cache["refreshing"])
 
     def test_prewarm_only_runs_when_agy_is_installed(self):
@@ -3195,9 +3229,21 @@ class CliProviderModelLiveServerTests(unittest.TestCase):
             agy = next(p for p in data["providers"] if p["provider"] == "agy")
             self.assertEqual(agy["known_models"], live)
             self.assertEqual(agy["models_source"], "agy-live")
+            self.assertFalse(agy["models_refreshing"])
             self._post("/api/cli-model", {"provider": "agy", "model": "gemini-4-argon-medium"})
             _, data = self._get("/api/providers")
             self.assertTrue(next(p for p in data["providers"] if p["provider"] == "agy")["model_stale"])
+
+    def test_providers_list_reports_a_refresh_in_flight_so_the_page_asks_again(self):
+        with mock.patch("webui_credentials.cli_available", return_value=True), mock.patch(
+            "handoff_webui.cli_available", return_value=True
+        ):
+            _, data = self._get("/api/providers")
+        by_name = {p["provider"]: p for p in data["providers"]}
+        self.assertTrue(by_name["agy"]["models_refreshing"])
+        self.assertEqual(by_name["agy"]["models_source"], "built-in")  # until the lookup lands
+        self.assertFalse(by_name["codex"]["models_refreshing"])
+        self.assertFalse(by_name["claude"]["models_refreshing"])
 
     def test_providers_list_has_no_cli_model_by_default(self):
         _, data = self._get("/api/providers")
@@ -3222,7 +3268,16 @@ class CliProviderModelLiveServerTests(unittest.TestCase):
         self.assertEqual(set(by_name), {"codex", "claude", "agy"})
         for info in by_name.values():
             self.assertEqual(
-                set(info), {"provider", "cli_detected", "cli_model", "known_models", "models_source", "model_stale"}
+                set(info),
+                {
+                    "provider",
+                    "cli_detected",
+                    "cli_model",
+                    "known_models",
+                    "models_source",
+                    "models_refreshing",
+                    "model_stale",
+                },
             )
         # claude's list doesn't depend on any local cache file, so it's a
         # reliable non-empty check at the HTTP layer too.
