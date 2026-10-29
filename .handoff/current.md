@@ -4564,10 +4564,13 @@ tag" rule by construction rather than by discipline.
   `releases/latest/download/latest.json` returns the same 0.5.1 manifest as the
   one uploaded. All required CI checks (branch-name + `check` on ubuntu/macOS/
   Windows, Python 3.11) passed on #102.
-- **Not verified**: launching the desktop GUI, the titlebar update badge, a
-  provider chat round trip, the Windows and Linux installers and the Windows
-  source zip being run, and the minisign signatures in `latest.json` checked
-  independently. If a real install is broken, publish a new patch version; do
+- **User-reported (2026-10-29, macOS Apple Silicon)**: the installed desktop app
+  auto-updated to v0.5.1 through the in-app updater with no problems, which
+  exercises the `latest.json` + `.app.tar.gz` + signature path end to end. Not
+  independently reproduced by the agent.
+- **Not verified**: a provider chat round trip in the GUI, the Windows and
+  Linux installers and the Windows source zip being run, and the minisign
+  signatures in `latest.json` checked independently outside the updater. If a real install is broken, publish a new patch version; do
   not replace the v0.5.1 assets.
 - **Remaining**: a manual install of the v0.5.1 build on a real machine
   (macOS `.dmg`, then confirm the update badge and a chat round trip);
