@@ -284,11 +284,45 @@ class ClassifyHandoffTests(unittest.TestCase):
         raw, parsed = self._codex_stream(
             [
                 {"type": "progress", "message": "indexing files", "status": "running"},
-                {"type": "system", "message": "quota and rate limit are just words here"},
+                {"type": "turn.started", "message": "quota and rate limit are just words here"},
                 {"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}},
             ]
         )
         needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertFalse(needed, msg=reason)
+
+    def test_a_single_unrecognized_event_as_the_only_stdout_line_is_still_a_signal(self):
+        # stdout that is one valid JSON object must not be mistaken for agy's envelope.
+        raw = json.dumps({"type": "warning", "message": "usage limit reached"})
+        parsed = hb.summarize_codex(hb.parse_jsonl(raw))
+        needed, reason = hb.classify_handoff(0, raw, "", parsed)
+        self.assertTrue(needed)
+        self.assertTrue(reason.startswith("rate_limit:"), msg=reason)
+
+    def test_an_event_type_that_is_normal_for_the_other_provider_is_not_hidden(self):
+        # "result" is a claude event; for codex it is unknown, and a new codex error
+        # event must not hide behind another provider's vocabulary (and vice versa).
+        codex_raw = "\n".join(
+            json.dumps(e)
+            for e in [
+                {"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}},
+                {"type": "result", "message": "usage limit reached"},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, codex_raw, "", hb.summarize_codex(hb.parse_jsonl(codex_raw)))
+        self.assertTrue(needed, msg=reason)
+        claude_raw = "\n".join(
+            json.dumps(e)
+            for e in [
+                {"type": "result", "result": "ok"},
+                {"type": "turn.completed", "message": "usage limit reached"},
+            ]
+        )
+        needed, reason = hb.classify_handoff(0, claude_raw, "", hb.summarize_claude(hb.parse_jsonl(claude_raw)))
+        self.assertTrue(needed, msg=reason)
+        # ...while each provider's own known types are still left out whole.
+        claude_ok = json.dumps({"type": "result", "result": "ok", "message": "quota and rate limit words"})
+        needed, reason = hb.classify_handoff(0, claude_ok, "", hb.summarize_claude(hb.parse_jsonl(claude_ok)))
         self.assertFalse(needed, msg=reason)
 
     def test_plain_text_and_stderr_signals_are_still_caught_next_to_json_events(self):

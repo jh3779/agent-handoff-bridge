@@ -1636,17 +1636,23 @@ def summarize_agy(stdout: str, stderr: str = "", exit_code: int = 0) -> dict[str
     return summary
 
 
-# Event types the codex and claude parsers understand. Their lines are dropped
-# from the signal scan whole: they carry the answer, narration and every tool's
-# echoed output, and a real failure among them (codex "error"/"turn.failed",
-# claude is_error results) is already in parsed["errors"].
-KNOWN_EVENT_TYPES = frozenset(
-    {
-        "thread.started", "turn.started", "turn.completed", "turn.failed", "error",
-        "item.started", "item.updated", "item.completed",
-        "system", "assistant", "user", "result", "stream_event", "rate_limit_event",
-    }
-)
+# Event types each parser understands. Their lines are dropped from the signal
+# scan whole: they carry the answer, narration and every tool's echoed output,
+# and a real failure among them (codex "error"/"turn.failed", claude is_error
+# results) is already in parsed["errors"]. The sets are per provider on purpose:
+# a type that is normal for one CLI ("result" for claude) is unknown for the
+# other, and must not hide that CLI's new error event.
+KNOWN_EVENT_TYPES_BY_PROVIDER = {
+    "codex": frozenset(
+        {"thread.started", "turn.started", "turn.completed", "turn.failed", "error",
+         "item.started", "item.updated", "item.completed"}
+    ),
+    "claude": frozenset(
+        {"system", "assistant", "user", "result", "error", "stream_event", "rate_limit_event"}
+    ),
+}
+# Used when the provider is not known (synthetic callers): the union.
+_ALL_KNOWN_EVENT_TYPES = frozenset().union(*KNOWN_EVENT_TYPES_BY_PROVIDER.values())
 # The fields of an *unrecognized* event that can say "usage limit reached".
 _UNKNOWN_EVENT_SIGNAL_FIELDS = ("error", "message", "status", "reason", "detail")
 
@@ -1689,12 +1695,17 @@ def _signal_scan_text(stdout: str, stderr: str, parsed: dict[str, Any]) -> str:
     plain text.
     """
     kept = [stderr]
+    provider = parsed.get("provider")
+    known_types = KNOWN_EVENT_TYPES_BY_PROVIDER.get(provider, _ALL_KNOWN_EVENT_TYPES)
     stripped_stdout = stdout.strip()
     whole_is_json = False
-    if stripped_stdout.startswith(("{", "[")):
+    # Only agy prints one (possibly pretty-printed, multi-line) JSON envelope; its
+    # failures are in parsed["errors"]. For the JSONL providers a single event
+    # on stdout must still go through the per-event check below.
+    if provider == "agy" and stripped_stdout.startswith(("{", "[")):
         try:
             json.loads(stripped_stdout)
-            whole_is_json = True  # e.g. agy's (possibly pretty-printed) envelope
+            whole_is_json = True
         except ValueError:
             pass
     if not whole_is_json:
@@ -1708,7 +1719,7 @@ def _signal_scan_text(stdout: str, stderr: str, parsed: dict[str, Any]) -> str:
                 except ValueError:
                     kept.append(line)  # looks like JSON but isn't: treat as text
                     continue
-                if isinstance(event, dict) and event.get("type") not in KNOWN_EVENT_TYPES:
+                if isinstance(event, dict) and event.get("type") not in known_types:
                     kept.append(_unknown_event_text(event))
                 continue  # a recognized event line: its errors are in parsed["errors"]
             kept.append(line)
