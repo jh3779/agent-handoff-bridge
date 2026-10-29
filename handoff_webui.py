@@ -59,6 +59,7 @@ from webui_chat_storage import (
     touch_registry,
 )
 import webui_common
+import webui_stdio
 from webui_common import (
     WorkspaceError,
     _bridge_check_for_update,
@@ -813,6 +814,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open a regular browser tab instead of a native app window, even if pywebview is installed.",
     )
     parser.add_argument("--no-browser", action="store_true", help="Do not open anything automatically.")
+    parser.add_argument(
+        "--stdio",
+        action="store_true",
+        help="Serve the same routes over stdin/stdout (one JSON request per line in, one JSON response per line "
+        "out) instead of a TCP port. This is how the desktop app talks to its bundled server: nothing listens "
+        "on the network. --host/--port/--browser/--no-browser are ignored.",
+    )
     return parser
 
 
@@ -958,6 +966,13 @@ def main(argv: list[str] | None = None) -> int:
     prewarm_agy_models()  # so the Settings panel's agy model list is usually ready on first open
 
     handler = build_handler(state)
+    if args.stdio:
+        # stdout becomes the frame channel, so anything else that prints (this
+        # app, a library) is pointed at stderr before the first frame is written.
+        webui_stdio.use_utf8_streams()
+        frames_out = sys.stdout
+        sys.stdout = sys.stderr
+        return webui_stdio.serve(handler, sys.stdin, frames_out, BRIDGE_VERSION)
     try:
         httpd = WebUIServer((args.host, args.port), handler)
     except OSError as exc:

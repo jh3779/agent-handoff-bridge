@@ -502,6 +502,17 @@ python3 handoff_webui.py --workspace /path/to/project --port 8787 --host 127.0.0
 - `--browser`: force a regular browser tab even if `pywebview` is installed.
 - `--no-browser`: don't open anything automatically; just serve (useful for
   scripting or when something else will hit the HTTP endpoints directly).
+- `--stdio`: serve the same endpoints with **no network port at all**. The
+  process reads one JSON request per line on stdin and writes one JSON response
+  per line on stdout (`{"id", "method", "path", "headers", "body"}` in,
+  `{"id", "status", "headers", "body", "encoding"}` out, plus a
+  `{"event": "ready"}` line first); requests run concurrently and answers can
+  come back out of order, matched by `id`. It exits when stdin closes. This is
+  the transport the desktop app is moving to, so the app does not open a
+  localhost server; `--host`, `--port` and the browser flags are ignored. The
+  route handlers are the unchanged HTTP ones (`webui_stdio.py` drives them over
+  in-memory streams). Nothing outside the process can reach it, which also
+  removes the local-HTTP exposure noted in the Security Model.
 
 `choose_ui_mode()` in `handoff_webui.py` is the pure function behind this
 native/browser decision — see `tests/test_handoff_webui.py`'s

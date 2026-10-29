@@ -45,6 +45,7 @@ COMMON_FILES = [
     "webui_chat_storage.py",
     "webui_credentials.py",
     "webui_bridge_run.py",
+    "webui_stdio.py",
     "webui/index.html",
     "webui/app.css",
     "webui/app.js",

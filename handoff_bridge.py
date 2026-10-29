@@ -172,6 +172,7 @@ INSTALL_FILES = [
     ("webui_chat_storage.py", "webui_chat_storage.py"),
     ("webui_credentials.py", "webui_credentials.py"),
     ("webui_bridge_run.py", "webui_bridge_run.py"),
+    ("webui_stdio.py", "webui_stdio.py"),
     ("webui/index.html", "webui/index.html"),
     ("webui/app.css", "webui/app.css"),
     ("webui/app.js", "webui/app.js"),
