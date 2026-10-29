@@ -508,11 +508,15 @@ python3 handoff_webui.py --workspace /path/to/project --port 8787 --host 127.0.0
   `{"id", "status", "headers", "body", "encoding"}` out, plus a
   `{"event": "ready"}` line first); requests run concurrently and answers can
   come back out of order, matched by `id`. It exits when stdin closes. This is
-  the transport the desktop app is moving to, so the app does not open a
-  localhost server; `--host`, `--port` and the browser flags are ignored. The
-  route handlers are the unchanged HTTP ones (`webui_stdio.py` drives them over
-  in-memory streams). Nothing outside the process can reach it, which also
-  removes the local-HTTP exposure noted in the Security Model.
+  the transport the desktop app is moving to. **The `--stdio` process itself
+  opens no port, but the desktop app still uses `127.0.0.1:8787` until its shell
+  and page are switched over to this transport** (a later change); until then
+  the localhost exposure described in the Security Model remains for the app.
+  `--host`, `--port` and the browser flags are ignored (a non-loopback
+  `--host` is not refused, since nothing is bound). The route handlers are the
+  unchanged HTTP ones (`webui_stdio.py` drives them over in-memory streams).
+  When stdin closes, requests already running are allowed to finish instead of
+  being abandoned, so a provider run is never left running unwatched.
 
 `choose_ui_mode()` in `handoff_webui.py` is the pure function behind this
 native/browser decision — see `tests/test_handoff_webui.py`'s

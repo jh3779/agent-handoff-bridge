@@ -7,8 +7,8 @@
 - **New: `handoff_webui.py --stdio`, the Web UI server without a network port.**
   It answers the same requests over stdin/stdout (one JSON line each way), so a
   desktop shell can talk to it without opening 127.0.0.1:8787. This is the first
-  step of making the desktop app a single self-contained program; the app itself
-  still uses the port until the shell and the page are switched over. See
+  step of making the desktop app a single self-contained program; **the app
+  itself still uses the port** until the shell and the page are switched over. See
   [CLI Reference](cli-reference.md).
 - **Fixed: a successful run could be reported as a handoff because a tool printed
   a trigger word.** The classifier used to cut the answer and tool output out of

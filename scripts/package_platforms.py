@@ -60,6 +60,8 @@ COMMON_FILES = [
     "tests/test_scan_secrets.py",
     "tests/test_check_branch_name.py",
     "tests/test_handoff_webui.py",
+    "tests/test_webui_stdio.py",
+    "tests/test_webui_frontend_logic.py",
     "tests/test_validate_handoff.py",
     "tests/test_build_updater_manifest.py",
     "tests/test_package_platforms.py",

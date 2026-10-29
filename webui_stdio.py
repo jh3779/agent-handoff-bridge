@@ -37,9 +37,12 @@ import time
 from typing import Any, TextIO
 
 SUPPORTED_METHODS = ("GET", "POST", "DELETE")
-# On EOF, how long to let requests that are already running finish before the
-# process exits anyway (their threads are daemons).
-SHUTDOWN_GRACE_SECONDS = 5.0
+# On EOF (the shell that started this process went away), requests that are
+# already running are NOT abandoned: a /api/run has a provider CLI underneath it,
+# and exiting while its thread waits would leave that CLI running with nothing
+# watching it. serve() waits for them to finish; the bridge's own per-provider
+# timeouts bound how long that can take. Pass a number of seconds to cap it.
+WAIT_FOR_IN_FLIGHT = None
 
 
 def _error_response(status: int, message: str) -> dict[str, Any]:
@@ -116,15 +119,27 @@ def dispatch(handler_class: type, frame: dict[str, Any]) -> dict[str, Any]:
     return _parse_http_response(handler.wfile.getvalue())
 
 
-def serve(handler_class: type, stdin: TextIO, out: TextIO, version: str) -> int:
-    """Read request frames from `stdin` until EOF, answering each on `out`."""
+def serve(
+    handler_class: type,
+    stdin: TextIO,
+    out: TextIO,
+    version: str,
+    wait_for_in_flight: float | None = WAIT_FOR_IN_FLIGHT,
+) -> int:
+    """Read request frames from `stdin` until EOF, answering each on `out`, then
+    wait for the requests still running (see WAIT_FOR_IN_FLIGHT)."""
     write_lock = threading.Lock()
 
     def send(frame: dict[str, Any]) -> None:
         line = json.dumps(frame, ensure_ascii=False) + "\n"
         with write_lock:
-            out.write(line)
-            out.flush()
+            try:
+                out.write(line)
+                out.flush()
+            except (OSError, ValueError):
+                # The reader is gone (closed pipe). The work already ran; there
+                # is nobody left to tell.
+                pass
 
     def handle(frame: dict[str, Any]) -> None:
         response = dispatch(handler_class, frame)
@@ -150,9 +165,12 @@ def serve(handler_class: type, stdin: TextIO, out: TextIO, version: str) -> int:
         workers.append(worker)
         workers = [w for w in workers if w.is_alive()]
 
-    deadline = time.monotonic() + SHUTDOWN_GRACE_SECONDS
-    for worker in workers:
-        worker.join(max(0.0, deadline - time.monotonic()))
+    running = [w for w in workers if w.is_alive()]
+    if running:
+        print(f"[stdio] input closed; waiting for {len(running)} running request(s) to finish", file=sys.stderr)
+    deadline = None if wait_for_in_flight is None else time.monotonic() + wait_for_in_flight
+    for worker in running:
+        worker.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
     return 0
 
 

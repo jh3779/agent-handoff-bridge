@@ -946,7 +946,7 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.reconfigure(line_buffering=True)
     augment_path_for_gui_launch()
     args = build_parser().parse_args(argv)
-    if not is_loopback_host(args.host):
+    if not args.stdio and not is_loopback_host(args.host):  # --stdio binds nothing
         print(f"refusing to bind to non-loopback host: {args.host!r}", file=sys.stderr)
         print(f"this server has no authentication -- only {sorted(LOOPBACK_HOSTS)} are allowed", file=sys.stderr)
         return 1

@@ -168,6 +168,51 @@ class DispatchBehaviorTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(response["body"]), bytes(range(256)))
 
 
+class ShutdownTests(unittest.TestCase):
+    """EOF on stdin means the shell is gone. A request that is still running has a
+    provider CLI under it, so it is finished, not abandoned."""
+
+    def serve_slow_then_eof(self, **kwargs):
+        _FakeHandler.gate.clear()
+        out = io.StringIO()
+        returned = []
+        stdin = io.StringIO(json.dumps({"id": "slow", "method": "GET", "path": "/slow"}) + "\n")
+
+        def run():
+            webui_stdio.serve(_FakeHandler, stdin, out, "x", **kwargs)
+            returned.append(time.monotonic())
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        time.sleep(0.4)  # EOF has been read by now; the request is still running
+        still_waiting = not returned
+        released_at = time.monotonic()
+        _FakeHandler.gate.set()
+        thread.join(10)
+        return out, still_waiting, returned, released_at
+
+    def test_serve_waits_for_a_running_request_after_eof(self):
+        out, still_waiting, returned, released_at = self.serve_slow_then_eof()
+        self.assertTrue(still_waiting, "serve() returned while a request was still running")
+        self.assertTrue(returned and returned[0] >= released_at)
+        ids = [json.loads(line).get("id") for line in out.getvalue().splitlines()]
+        self.assertIn("slow", ids)  # its answer was still written
+
+    def test_a_cap_can_still_be_set(self):
+        out, still_waiting, returned, released_at = self.serve_slow_then_eof(wait_for_in_flight=0.05)
+        self.assertFalse(still_waiting)  # gave up after the cap
+
+    def test_a_closed_output_pipe_does_not_raise(self):
+        class Closed(io.StringIO):
+            def write(self, _text):
+                raise BrokenPipeError("reader went away")
+
+        code = webui_stdio.serve(
+            _FakeHandler, io.StringIO(json.dumps({"id": 1, "method": "GET", "path": "/a"}) + "\n"), Closed(), "x"
+        )
+        self.assertEqual(code, 0)
+
+
 class ServeLoopTests(unittest.TestCase):
     def run_serve(self, lines, handler=_FakeHandler):
         out = io.StringIO()
@@ -233,24 +278,40 @@ class StdioProcessTests(unittest.TestCase):
     """`handoff_webui.py --stdio` as a real subprocess: nothing may listen, and
     stdout must carry frames only."""
 
-    def test_the_process_speaks_frames_on_stdout_and_exits_on_eof(self):
-        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as workspace:
+    def run_process(self, *extra_args, request=None):
+        # The process never has one of the temp dirs as its cwd, and cleanup errors
+        # are ignored: on Windows a just-exited process can still pin a directory
+        # for a moment, which says nothing about the transport.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home, tempfile.TemporaryDirectory(
+            ignore_cleanup_errors=True
+        ) as workspace:
             env = dict(os.environ)
             env["HOME"] = home
             env["USERPROFILE"] = home
             # No agy on the path: the startup prewarm must not run a real `agy models`.
             env["PATH"] = os.path.dirname(sys.executable) + os.pathsep + env.get("SystemRoot", "")
-            request = json.dumps({"id": 1, "method": "GET", "path": "/api/info"}) + "\n"
             result = subprocess.run(
-                [sys.executable, str(ROOT / "handoff_webui.py"), "--stdio", "--workspace", workspace],
-                input=request,
+                [sys.executable, str(ROOT / "handoff_webui.py"), "--stdio", "--workspace", workspace, *extra_args],
+                input=request or "",
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 timeout=60,
                 env=env,
-                cwd=workspace,
+                cwd=str(ROOT),
             )
+            return result, workspace
+
+    def test_a_non_loopback_host_is_ignored_in_stdio_mode(self):
+        # Nothing is bound, so --host must not make startup fail (it did, before).
+        result, _ = self.run_process("--host", "0.0.0.0")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        frames = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        self.assertEqual(frames[0]["event"], "ready")
+
+    def test_the_process_speaks_frames_on_stdout_and_exits_on_eof(self):
+        request = json.dumps({"id": 1, "method": "GET", "path": "/api/info"}) + "\n"
+        result, workspace = self.run_process(request=request)
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         lines = [line for line in result.stdout.splitlines() if line.strip()]
         frames = [json.loads(line) for line in lines]  # every stdout line is a frame
