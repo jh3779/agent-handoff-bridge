@@ -4564,13 +4564,23 @@ tag" rule by construction rather than by discipline.
   `releases/latest/download/latest.json` returns the same 0.5.1 manifest as the
   one uploaded. All required CI checks (branch-name + `check` on ubuntu/macOS/
   Windows, Python 3.11) passed on #102.
+- **Post-release checks on the published assets (2026-10-29, agent)**: the
+  released `agent-handoff-bridge-macos.zip` was downloaded and unpacked in a
+  clean folder outside the repo: `--version` 0.5.1 and `python3
+  handoff_bridge.py check` passed (640 tests, 1 dev-checkout-only test skipped).
+  The released `.dmg` was mounted read-only: it contains `agent-handoff-bridge.app`
+  at 0.5.1 whose five `Contents/MacOS` binaries have the same SHA-256 as the ones
+  in the updater `.app.tar.gz`, and `codesign --verify --deep --strict` printed no
+  error (the bundle is ad-hoc signed only). The mount was detached afterwards.
 - **User-reported (2026-10-29, macOS Apple Silicon)**: the installed desktop app
   auto-updated to v0.5.1 through the in-app updater with no problems, which
   exercises the `latest.json` + `.app.tar.gz` + signature path end to end. Not
   independently reproduced by the agent.
-- **Not verified**: a provider chat round trip in the GUI, the Windows and
-  Linux installers and the Windows source zip being run, and the minisign
-  signatures in `latest.json` checked independently outside the updater. If a real install is broken, publish a new patch version; do
+- **Not verified**: a provider chat round trip in the GUI and a fresh
+  drag-to-Applications install of the `.dmg` (only its contents were compared;
+  the user's installed app did auto-update), the Windows and Linux installers and
+  the Windows source zip being run, and the minisign signatures in `latest.json`
+  checked independently outside the updater. If a real install is broken, publish a new patch version; do
   not replace the v0.5.1 assets.
 - **Remaining**: a manual install of the v0.5.1 build on a real machine
   (macOS `.dmg`, then confirm the update badge and a chat round trip);
