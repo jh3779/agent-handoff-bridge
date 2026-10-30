@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.5.3 — 2026-10-30
+
 - **Added: the chat shows what the CLI is doing while it works.** The "Running…"
   bubble used to say nothing until the answer arrived, so a long run looked
   frozen. It now shows the step the CLI is on and how long the run has taken, for
@@ -13,13 +15,22 @@
   answer only when it is done, so for it the bubble says "Working…" with the
   elapsed time. The bubble's name label, which said "auto" while an automatic
   choice was running, now names the CLI that is actually working (and follows an
-  automatic fallback to the next one). To make this possible `handoff_bridge.py run --execute` now
-  points the provider's stdout straight at the run's `stdout.jsonl` instead of a
-  pipe, so the log grows during the run (and keeps what had been written if a
+  automatic fallback to the next one). To make this possible
+  `handoff_bridge.py run --execute` now points the provider's stdout straight at
+  the run's `stdout.jsonl` instead of a pipe, so the log grows during the run (and keeps what had been written if a
   run times out); the final log and everything derived from it are unchanged. The
   page asks the new read-only `GET /api/run-progress` once a second; it reads the
   tail of the current run's own log and stores nothing. See
   [CLI Reference](cli-reference.md) and [How It Works](how-it-works.md).
+
+- **Desktop installers are not signed at the OS level** (the in-app updater's
+  own signature is separate). Expect a warning on first launch: Windows
+  SmartScreen blocks the installer until you click "More info" and then "Run
+  anyway"; macOS Gatekeeper says the app cannot be verified until you
+  control-click it and choose "Open" (or use "Open Anyway" in System Settings,
+  Privacy & Security). This is not a malware detection. Details:
+  [README](https://github.com/jh3779/agent-handoff-bridge#download) and
+  [Security Model](https://github.com/jh3779/agent-handoff-bridge/blob/main/docs/security-model.md).
 
 ## v0.5.2 — 2026-10-29
 
