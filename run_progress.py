@@ -197,17 +197,21 @@ def newest_run_dir(workspace: Path, not_before_prefix: str) -> Path | None:
     """The newest `.handoff/runs/<stamp>-<provider>[-n]` created at or after
     `not_before_prefix`, so the previous run's directory is never mistaken for
     the one in progress."""
+    candidates: list[tuple[str, int, str]] = []
     try:
-        names = [
-            entry.name
-            for entry in runs_dir(workspace).iterdir()
-            if entry.is_dir() and entry.name[:16] >= not_before_prefix
-        ]
+        for entry in runs_dir(workspace).iterdir():
+            if entry.is_dir() and entry.name[:16] >= not_before_prefix:
+                # Within one second (an automatic fallback to the next provider
+                # right after the first failed) the name cannot say which came
+                # last -- "codex" sorts after "claude" -- so the directory's own
+                # time breaks the tie. Each run's directory is only touched
+                # while that run is the active one.
+                candidates.append((entry.name[:16], entry.stat().st_mtime_ns, entry.name))
     except OSError:
         return None
-    if not names:
+    if not candidates:
         return None
-    return runs_dir(workspace) / max(names)
+    return runs_dir(workspace) / max(candidates)[2]
 
 
 def read_progress(workspace: Path, not_before_prefix: str) -> dict[str, str]:

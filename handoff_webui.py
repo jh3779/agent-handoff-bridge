@@ -473,9 +473,18 @@ def build_handler(state: "AppState") -> type[BaseHTTPRequestHandler]:
                     auto_fallback = bool(body.get("auto_fallback", True))
                     workspace = session.workspace
                     prompt = build_run_prompt(text, attachments)
-                    state.mark_run_started(workspace)
                     records = run_provider_via_bridge(
-                        state.get_run_lock_for(workspace), workspace, provider, prompt, model, "continue", auto_fallback
+                        state.get_run_lock_for(workspace),
+                        workspace,
+                        provider,
+                        prompt,
+                        model,
+                        "continue",
+                        auto_fallback,
+                        # only once the lock is ours: a request that is turned
+                        # away with 409 must not move the clock that the
+                        # running one's progress is read against
+                        on_start=lambda: state.mark_run_started(workspace),
                     )
                     messages = []
                     for record in records:

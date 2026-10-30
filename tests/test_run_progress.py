@@ -19,6 +19,7 @@ import textwrap
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from unittest import mock
@@ -162,6 +163,17 @@ class RunDirectoryTests(unittest.TestCase):
         progress = rp.read_progress(self.workspace, "20261029T060100")
         self.assertEqual(progress, {"kind": "read", "detail": "a.py", "provider": "claude"})
 
+    def test_a_fallback_hop_in_the_same_second_picks_the_later_run_even_when_its_name_sorts_first(self):
+        # codex fails at once (not installed), claude takes over in the same
+        # second: "codex" > "claude" by name, but claude is the one running.
+        self.make_run("20261029T060100Z-codex", [codex_command_started("failed hop")])
+        self.make_run("20261029T060100Z-claude", [claude_tool_use("Read", {"file_path": "b.py"})])
+        runs = self.workspace / ".handoff" / "runs"
+        os.utime(runs / "20261029T060100Z-codex", ns=(1_000_000_000, 1_000_000_000))
+        os.utime(runs / "20261029T060100Z-claude", ns=(2_000_000_000, 2_000_000_000))
+        progress = rp.read_progress(self.workspace, "20261029T060100")
+        self.assertEqual(progress, {"kind": "read", "detail": "b.py", "provider": "claude"})
+
     def test_same_second_collision_suffix_is_handled(self):
         self.make_run("20261029T060100Z-codex-2", [codex_command_started("second")])
         progress = rp.read_progress(self.workspace, "20261029T060100")
@@ -255,6 +267,22 @@ class LiveStdoutTests(unittest.TestCase):
         run_dir = next((self.workspace / ".handoff" / "runs").iterdir())
         self.assertIn("sleep 99", (run_dir / "stdout.jsonl").read_text(encoding="utf-8"))
 
+    def test_the_log_is_left_exactly_as_the_provider_wrote_it(self):
+        # Not truncated and rewritten after the run: a stray non-UTF-8 byte
+        # stays in the file (the classifier still gets decodable text).
+        script = provider_script(
+            """
+            import sys
+            sys.stdin.read()
+            sys.stdout.buffer.write(b'{"type": "turn.started"}\\n\\xff\\n')
+            sys.stdout.flush()
+            """
+        )
+        with mock.patch.object(hb, "provider_command", return_value=script), contextlib.redirect_stdout(io.StringIO()):
+            hb.run_provider("codex", self.args(30), self.state())
+        run_dir = next((self.workspace / ".handoff" / "runs").iterdir())
+        self.assertEqual((run_dir / "stdout.jsonl").read_bytes(), b'{"type": "turn.started"}\n\xff\n')
+
     def test_stdout_and_stderr_still_reach_the_classifier_and_the_logs(self):
         script = provider_script(
             """
@@ -291,6 +319,23 @@ class RunProgressRouteTests(unittest.TestCase):
 
     def test_not_running_when_no_run_holds_the_workspace_lock(self):
         self.assertEqual(self.get(), {"running": False})
+
+    def test_a_run_request_turned_away_with_409_leaves_the_running_ones_progress_alone(self):
+        runs = self.workspace / ".handoff" / "runs"
+        self.state.mark_run_started(self.workspace)
+        started_with = self.state.run_started_prefix(self.workspace)
+        lock = self.state.get_run_lock_for(self.workspace)
+        with lock:
+            time.sleep(1.1)  # a clock that moved would now read a later second
+            request = urllib.request.Request(
+                self.base + "/api/run",
+                data=json.dumps({"provider": "codex", "text": "second"}).encode(),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with self.assertRaises(urllib.error.HTTPError):
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(self.state.run_started_prefix(self.workspace), started_with)
 
     def test_running_reports_the_current_runs_step_and_ignores_the_previous_run(self):
         runs = self.workspace / ".handoff" / "runs"

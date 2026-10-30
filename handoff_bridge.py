@@ -1948,13 +1948,19 @@ def run_provider(provider: str, args: argparse.Namespace, state: dict[str, Any],
         stderr = decode_timeout_output(exc.stderr) or "provider timed out"
     finally:
         live_stdout.close()
-    if not stdout:
+    # Text that came back through subprocess (a mocked run) still has to be
+    # written; what the provider already wrote to the file is the log as it
+    # was, and is left alone -- rewriting it would risk losing it (a timeout's
+    # partial output) in the moment between truncating and writing.
+    returned_stdout = bool(stdout)
+    if not returned_stdout:
         # What the provider wrote to the file (also what it had written when a
         # timeout killed it).
         stdout = read_text_lossy(stdout_path)
 
     duration_seconds = round(time.monotonic() - started_clock, 2)
-    stdout_path.write_text(stdout, encoding="utf-8")
+    if returned_stdout:
+        stdout_path.write_text(stdout, encoding="utf-8")
     (run_dir / "stderr.log").write_text(stderr, encoding="utf-8")
 
     if provider == "codex":
