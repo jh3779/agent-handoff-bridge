@@ -4617,3 +4617,44 @@ tag" rule by construction rather than by discipline.
   the live progress display, `agy` write-permission check, OpenCode. The repo
   folder's own `.handoff/current.md` (auto-archived by the real app) is still
   uncommitted and untouched, pending the user's decision.
+
+### 2026-10-30 — Checkpoint: v0.5.3 released (live run progress)
+
+- **Target**: Claude Code CLI (Sonnet 5.5), repo-level (release).
+- **State**: GitHub Release `v0.5.3` is published (not draft) from tag `v0.5.3` at
+  `f0eb161` (squash-merge of #116). Contents: the chat's "Running…" bubble shows
+  what the CLI is doing and the elapsed time (#113: `run_progress.py`,
+  `GET /api/run-progress`, provider stdout now written straight to the run's
+  `stdout.jsonl`), and names the CLI that is working instead of "auto" (#114).
+  Assets: both source zips, `latest.json` (the `releases/latest/download`
+  endpoint serves 0.5.3), `.dmg`, `.app.tar.gz` + `.sig`, nsis `-setup.exe`,
+  `.AppImage`; the three updater URLs return 200 and the uploaded macOS zip
+  hash-matches the local build. README download links point at v0.5.3.
+- **Review fixes before merging #113** (bot review, all real, each with a
+  regression test that fails on the old code): same-second fallback hop picked the
+  finished provider's run directory (name order: `codex` > `claude`) - ties now
+  break by directory mtime; `stdout.jsonl` was rewritten after the run - now left
+  as the provider wrote it; a 409'd `/api/run` moved the running request's
+  progress clock - the clock is now set via `on_start` once the lock is held.
+- **Verified**: required checks on #113/#114/#116 (3 OS, py3.11); full
+  `validate_handoff` 753/756 tests; real Chrome (CDP) with a slow fake codex
+  (header `auto` -> `codex`, steps change while the run goes); one real codex run
+  through the bridge (events appeared in the log during the run); for the tag,
+  `installer-build` run 40989104948 on 3 OS with the sidecar smoke; the shipped
+  macOS `.app` launched with a temp HOME (window, 5 IPC requests, no listening
+  socket, clean exit); the built macOS server sidecar run over stdin/stdout with a
+  fake codex - `/api/run-progress` went starting -> thinking -> command ->
+  thinking -> writing and `running:false` before/after; zip `check` outside the repo.
+- **Slip on the way**: the first release branch `release/v0.5.3` failed the
+  branch-name check (dots are not allowed) - reopened as `release/v0-5-3` (#115 ->
+  #116). Use `release/vX-Y-Z`.
+- **Not verified**: real Claude/Antigravity runs with live progress (agy only ever
+  shows "Working..."), the app on Windows/Linux, installing from the dmg/installer,
+  in-app update badge, folder picker / external link from the window, Windows
+  source zip, terminal `chat`/`run` progress (not implemented).
+- **Next (not started, needs the user's go-ahead)**: terminal `chat`/`run`
+  progress, a real Claude check of the live progress, `agy` write-permission
+  verification (`--dangerously-skip-permissions` / `--sandbox`), a Web UI banner
+  before an allow-all agy run, OpenCode support. The repo folder's own
+  `.handoff/current.md` (auto-archived by the real app) is still uncommitted and
+  untouched, pending the user's decision.
