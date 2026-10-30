@@ -4637,7 +4637,7 @@ tag" rule by construction rather than by discipline.
   as the provider wrote it; a 409'd `/api/run` moved the running request's
   progress clock - the clock is now set via `on_start` once the lock is held.
 - **Verified**: required checks on #113/#114/#116 (3 OS, py3.11); full
-  `validate_handoff` 753/756 tests; real Chrome (CDP) with a slow fake codex
+  `validate_handoff` (753 tests on #113, 756 with #114); real Chrome (CDP) with a slow fake codex
   (header `auto` -> `codex`, steps change while the run goes); one real codex run
   through the bridge (events appeared in the log during the run); for the tag,
   `installer-build` run 40989104948 on 3 OS with the sidecar smoke; the shipped
