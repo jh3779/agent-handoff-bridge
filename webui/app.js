@@ -588,6 +588,21 @@
     return meta.modelInherited === false ? meta.model || "" : defaultModel || "";
   }
 
+  // The running bubble's text: what the CLI says it is doing right now (the
+  // {kind, detail} from /api/run-progress; "working" until it says anything) and
+  // how long the run has taken. Pure; tested.
+  function runProgressText(progress, elapsedSeconds, translate) {
+    const kinds = ["working", "starting", "thinking", "command", "read", "edit", "write", "search", "web", "tool", "writing"];
+    const kind = progress && kinds.includes(progress.kind) ? progress.kind : "working";
+    const detail = progress && typeof progress.detail === "string" ? progress.detail : "";
+    const seconds = Math.max(0, Math.floor(elapsedSeconds) || 0);
+    const elapsed =
+      seconds >= 60
+        ? translate("progress.elapsedMinutes", { m: Math.floor(seconds / 60), s: seconds % 60 })
+        : translate("progress.elapsedSeconds", { s: seconds });
+    return `${translate("progress." + kind)}${detail ? `: ${detail}` : ""} · ${elapsed}`;
+  }
+
   // The warning shown when a pinned model is missing from the CLI's own
   // current list ("" = nothing to warn about). Pure; tested.
   function staleWarningText(info, providerLabel, translate) {
@@ -1193,12 +1208,51 @@
       el("div", { class: "avatar", text: "🤖" }, []),
       el("div", {}, [
         el("div", { class: "meta" }, [document.createTextNode(providerLabel)]),
-        el("div", { class: "bubble" }, [el("span", { class: "spinner" }, []), document.createTextNode(t("msg.running"))]),
+        el("div", { class: "bubble" }, [
+          el("span", { class: "spinner" }, []),
+          el("span", { class: "progress-text", text: t("msg.running") }, []),
+        ]),
       ]),
     ]);
     chatThread.appendChild(msg);
     chatThread.scrollTop = chatThread.scrollHeight;
     return msg;
+  }
+
+  // While a run is in flight, ask the server once a second what the CLI is doing
+  // and show it in the busy bubble (the terminal's "Running command ..." line).
+  // A failed or slow poll just leaves the last text; returns the stop function.
+  function startRunProgress(busyMsg, sessionId) {
+    const textEl = busyMsg.querySelector(".progress-text");
+    if (!textEl) return () => {};
+    const startedAt = Date.now();
+    let latest = null;
+    let polling = false;
+    let stopped = false;
+    const render = () => {
+      if (!stopped) textEl.textContent = runProgressText(latest, (Date.now() - startedAt) / 1000, t);
+    };
+    const poll = async () => {
+      if (polling || stopped) return;
+      polling = true;
+      try {
+        const data = await fetchJSON("/api/run-progress", sessionId);
+        if (data && data.running) latest = data;
+      } catch (err) {
+        // Progress is a nicety; the run itself reports its own failures.
+      } finally {
+        polling = false;
+      }
+    };
+    render();
+    const timer = setInterval(() => {
+      poll();
+      render();
+    }, 1000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
   }
 
   async function loadChatHistory() {
@@ -1323,6 +1377,7 @@
       updateSendState();
     }
     renderTabBar();
+    const stopRunProgress = busyMsg ? startRunProgress(busyMsg, sessionId) : () => {};
     try {
       const result = await postJSON(
         "/api/run",
@@ -1347,6 +1402,7 @@
         meta.hasUnseenReply = true;
       }
     } finally {
+      stopRunProgress();
       meta.runInFlight = false;
       if (sessionId === activeSessionId) {
         composerInput.disabled = false;

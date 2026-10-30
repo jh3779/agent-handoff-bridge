@@ -105,6 +105,44 @@ class NeedsModelRepollTests(unittest.TestCase):
 
 
 @unittest.skipUnless(NODE, "node is not installed")
+class RunProgressTextTests(unittest.TestCase):
+    """The running bubble's text, built from /api/run-progress (run_progress.py)."""
+
+    I18N_JS = APP_JS.parent / "i18n.js"
+
+    def text(self, progress, seconds, lang="en"):
+        # Real translations: i18n.js itself, with localStorage answering for `lang`.
+        script = "\n".join(
+            [
+                "const localStorage = {getItem() { return " + json.dumps("en" if lang == "en" else None) + "; }};",
+                self.I18N_JS.read_text(encoding="utf-8"),
+                _function_source("runProgressText"),
+                f"process.stdout.write(JSON.stringify(runProgressText({json.dumps(progress)}, {seconds}, AHB_I18N.t)));",
+            ]
+        )
+        result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        return json.loads(result.stdout)
+
+    def test_kind_detail_and_elapsed_time(self):
+        self.assertEqual(self.text({"kind": "command", "detail": "make test"}, 7.9), "Running command: make test · 7s")
+
+    def test_no_detail_means_no_colon(self):
+        self.assertEqual(self.text({"kind": "thinking", "detail": ""}, 0), "Thinking… · 0s")
+
+    def test_minutes_after_sixty_seconds(self):
+        self.assertEqual(self.text({"kind": "writing"}, 125), "Writing the answer… · 2m 5s")
+
+    def test_before_the_first_answer_and_for_unknown_kinds_it_says_working(self):
+        self.assertEqual(self.text(None, 3), "Working… · 3s")
+        self.assertEqual(self.text({"kind": "from-a-newer-server", "detail": "x"}, 3), "Working…: x · 3s")
+
+    def test_korean(self):
+        self.assertEqual(self.text({"kind": "read", "detail": "a.py"}, 61, "ko"), "파일 읽는 중: a.py · 1분 1초")
+
+
+@unittest.skipUnless(NODE, "node is not installed")
 class StaleWarningTests(unittest.TestCase):
     """A re-poll must be able to surface a newly stale model while the user is
     typing in a model field, without rebuilding (and so wiping) the rows."""

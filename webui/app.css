@@ -325,6 +325,10 @@ body {
 }
 .code-block code { white-space: pre; }
 
+.msg.busy .progress-text {
+  overflow-wrap: anywhere;
+}
+
 .spinner {
   display: inline-block; width: 11px; height: 11px; flex: none;
   border: 2px solid var(--outline); border-top-color: var(--primary);

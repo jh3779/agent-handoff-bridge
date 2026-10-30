@@ -4,6 +4,21 @@
 
 ## Unreleased
 
+- **Added: the chat shows what the CLI is doing while it works.** The "Running…"
+  bubble used to say nothing until the answer arrived, so a long run looked
+  frozen. It now shows the step the CLI is on and how long the run has taken, for
+  example "Running command: rg -n 'handoff' docs · 12s", "Thinking… · 5s" or
+  "Writing the answer… · 31s", like the line a terminal prints under its
+  spinner. Codex and Claude report their steps as they go; Antigravity prints its
+  answer only when it is done, so for it the bubble says "Working…" with the
+  elapsed time. To make this possible `handoff_bridge.py run --execute` now
+  points the provider's stdout straight at the run's `stdout.jsonl` instead of a
+  pipe, so the log grows during the run (and keeps what had been written if a
+  run times out); the final log and everything derived from it are unchanged. The
+  page asks the new read-only `GET /api/run-progress` once a second; it reads the
+  tail of the current run's own log and stores nothing. See
+  [CLI Reference](cli-reference.md) and [How It Works](how-it-works.md).
+
 ## v0.5.2 — 2026-10-29
 
 - **Changed: the app fills its window.** The page used to be a card of at most

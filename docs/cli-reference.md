@@ -532,6 +532,7 @@ Endpoints:
 | POST | `/api/chat` | Append one message to the current month's log |
 | POST | `/api/open-folder` | Switch the active workspace (validates the path is a real, absolute directory) |
 | POST | `/api/run` | Run `provider` (`auto`\|`codex`\|`claude`\|`agy`) with `text` as the turn prompt; persists and returns the resulting agent message(s) |
+| GET | `/api/run-progress` | What the provider CLI is doing right now while a `/api/run` is in flight: `{"running": true, "kind", "detail", "provider"}` (`kind` is one of `working`, `starting`, `thinking`, `command`, `read`, `edit`, `write`, `search`, `web`, `tool`, `writing`; `detail` is a short command, path or query). `{"running": false}` when nothing is running. Read-only: it tails the current run's own `stdout.jsonl` |
 | GET | `/api/history` | History drawer data: recently-opened workspaces grouped with their last 5 chat turns each (current workspace pinned first) |
 | GET | `/api/sessions` | List every open session (multi-session, M1 — see above) |
 | POST | `/api/sessions` | Create a new session, returns its `session_id` |

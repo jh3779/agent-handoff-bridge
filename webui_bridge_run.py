@@ -11,6 +11,7 @@ import os
 import subprocess
 import tempfile
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import webui_common
@@ -117,6 +118,7 @@ def run_provider_via_bridge(
     model: str | None,
     instruction_type: str,
     auto_fallback: bool = True,
+    on_start: Callable[[], None] | None = None,
 ) -> list[dict]:
     """Thin locking wrapper around `_run_provider_via_bridge_locked()`.
 
@@ -126,10 +128,16 @@ def run_provider_via_bridge(
     caller, `AppState.get_run_lock_for()` in handoff_webui.py, for why
     this must be *that* lock specifically -- keyed by workspace path, not
     a single global lock or one lock per session).
+
+    `on_start` runs once the lock is held and before the provider is
+    launched, so a request that is turned away never touches the state of
+    the run that is already going.
     """
     if not run_lock.acquire(blocking=False):
         raise RunAlreadyInProgressError("a provider run is already in progress; wait for it to finish")
     try:
+        if on_start is not None:
+            on_start()
         return _run_provider_via_bridge_locked(workspace, provider, prompt, model, instruction_type, auto_fallback)
     finally:
         run_lock.release()
