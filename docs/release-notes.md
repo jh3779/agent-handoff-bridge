@@ -11,7 +11,9 @@
   "Writing the answer… · 31s", like the line a terminal prints under its
   spinner. Codex and Claude report their steps as they go; Antigravity prints its
   answer only when it is done, so for it the bubble says "Working…" with the
-  elapsed time. To make this possible `handoff_bridge.py run --execute` now
+  elapsed time. The bubble's name label, which said "auto" while an automatic
+  choice was running, now names the CLI that is actually working (and follows an
+  automatic fallback to the next one). To make this possible `handoff_bridge.py run --execute` now
   points the provider's stdout straight at the run's `stdout.jsonl` instead of a
   pipe, so the log grows during the run (and keeps what had been written if a
   run times out); the final log and everything derived from it are unchanged. The

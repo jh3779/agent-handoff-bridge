@@ -143,6 +143,34 @@ class RunProgressTextTests(unittest.TestCase):
 
 
 @unittest.skipUnless(NODE, "node is not installed")
+class BusyProviderLabelTests(unittest.TestCase):
+    """The running bubble names the CLI that is actually working, not "auto"."""
+
+    def label(self, current, progress):
+        script = "\n".join(
+            [
+                _function_source("busyProviderLabel"),
+                f"process.stdout.write(JSON.stringify(busyProviderLabel({json.dumps(current)}, {json.dumps(progress)})));",
+            ]
+        )
+        result = subprocess.run([NODE, "-e", script], capture_output=True, text=True, encoding="utf-8", timeout=30, check=False)
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        return json.loads(result.stdout)
+
+    def test_the_running_provider_replaces_auto(self):
+        self.assertEqual(self.label("auto", {"running": True, "kind": "thinking", "provider": "claude"}), "claude")
+
+    def test_it_follows_an_automatic_fallback_to_the_next_provider(self):
+        self.assertEqual(self.label("codex", {"provider": "claude"}), "claude")
+
+    def test_no_provider_yet_keeps_what_is_shown(self):
+        self.assertEqual(self.label("auto", {"running": True, "kind": "working", "detail": ""}), "auto")
+        self.assertEqual(self.label("auto", {"provider": ""}), "auto")
+        self.assertEqual(self.label("auto", None), "auto")
+
+
+@unittest.skipUnless(NODE, "node is not installed")
 class StaleWarningTests(unittest.TestCase):
     """A re-poll must be able to surface a newly stale model while the user is
     typing in a model field, without rebuilding (and so wiping) the rows."""
