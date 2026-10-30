@@ -588,6 +588,13 @@
     return meta.modelInherited === false ? meta.model || "" : defaultModel || "";
   }
 
+  // The running bubble's name label: the provider the user picked ("auto" until
+  // a CLI is actually running), then the one /api/run-progress says is running
+  // -- which changes if an automatic fallback moves on to the next one. Pure; tested.
+  function busyProviderLabel(current, progress) {
+    return progress && typeof progress.provider === "string" && progress.provider ? progress.provider : current;
+  }
+
   // The running bubble's text: what the CLI says it is doing right now (the
   // {kind, detail} from /api/run-progress; "working" until it says anything) and
   // how long the run has taken. Pure; tested.
@@ -1225,6 +1232,7 @@
   function startRunProgress(busyMsg, sessionId) {
     const textEl = busyMsg.querySelector(".progress-text");
     if (!textEl) return () => {};
+    const nameEl = busyMsg.querySelector(".meta");
     const startedAt = Date.now();
     let latest = null;
     let polling = false;
@@ -1237,7 +1245,10 @@
       polling = true;
       try {
         const data = await fetchJSON("/api/run-progress", sessionId);
-        if (data && data.running) latest = data;
+        if (data && data.running) {
+          latest = data;
+          if (nameEl && !stopped) nameEl.textContent = busyProviderLabel(nameEl.textContent, data);
+        }
       } catch (err) {
         // Progress is a nicety; the run itself reports its own failures.
       } finally {
