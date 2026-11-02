@@ -6,3 +6,9 @@ remote/
 mobile-*-instruction.txt
 *.log
 webui/chat/
+
+# The handoff log is per-checkout working state (the app and the CLIs append
+# to it and the bridge moves old entries to archive/), not project content.
+# install_standard_files() creates a fresh one in a workspace that has none.
+current.md
+archive/

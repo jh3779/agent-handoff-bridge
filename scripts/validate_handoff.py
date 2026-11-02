@@ -97,7 +97,6 @@ REQUIRED_FILES = [
     "tests/test_agent_skills.py",
     ".gitignore",
     ".handoff/.gitignore",
-    ".handoff/current.md",
     ".handoff/task-template.md",
 ]
 
@@ -177,19 +176,19 @@ def check_required_files(root: Path) -> None:
 
 def check_contract_references(root: Path) -> None:
     expected = "docs/shared-agent-contract.md"
-    for rel_path in ["AGENTS.md", "CLAUDE.md", "handoff_bridge.py", ".handoff/current.md"]:
+    for rel_path in ["AGENTS.md", "CLAUDE.md", "handoff_bridge.py"]:
         text = (root / rel_path).read_text(encoding="utf-8")
         if expected not in text:
             fail(f"{rel_path} does not reference {expected}")
 
     playbook = "docs/verification-playbook.md"
-    for rel_path in ["AGENTS.md", "CLAUDE.md", "handoff_bridge.py", ".handoff/current.md"]:
+    for rel_path in ["AGENTS.md", "CLAUDE.md", "handoff_bridge.py"]:
         text = (root / rel_path).read_text(encoding="utf-8")
         if playbook not in text:
             fail(f"{rel_path} does not reference {playbook}")
 
     targeting = "docs/agent-targeting-protocol.md"
-    for rel_path in ["handoff_bridge.py", ".handoff/current.md", "docs/shared-agent-contract.md"]:
+    for rel_path in ["handoff_bridge.py", "docs/shared-agent-contract.md"]:
         text = (root / rel_path).read_text(encoding="utf-8")
         if targeting not in text:
             fail(f"{rel_path} does not reference {targeting}")
