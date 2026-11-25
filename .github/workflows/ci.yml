@@ -10,6 +10,10 @@ name: CI
 on:
   workflow_dispatch:
 
+# 최소 권한: 토큰은 저장소 읽기만 허용한다(쓰기가 필요한 잡이 생기면 그 잡에서만 올린다).
+permissions:
+  contents: read
+
 jobs:
   # Phase 7b M3: real, per-OS installer builds (.dmg/.msi+nsis/.deb+
   # AppImage+rpm) via `cargo tauri build`, unlike rust-build's placeholder-
