@@ -19,7 +19,6 @@ PACKAGE_NAME = "agent-handoff-bridge"
 COMMON_FILES = [
     ".gitignore",
     ".handoff/.gitignore",
-    ".handoff/current.md",
     ".handoff/task-template.md",
     "AGENTS.md",
     "CLAUDE.md",

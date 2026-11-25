@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+- **Changed: `.handoff/current.md` and `.handoff/archive/` are no longer tracked
+  in this repository.** They are the handoff log that the app and the CLIs append
+  to (and that the bridge trims into `archive/`), so every use of the repository
+  folder left uncommitted changes, and the source zips shipped the maintainer's
+  whole 300 KB work log. They are now listed in `.handoff/.gitignore`, removed
+  from the files `validate_handoff.py` requires and from the source zips, and
+  `install_standard_files()` still creates a fresh `current.md` in any workspace
+  that has none. Nothing changes for installed copies.
+
 ## v0.5.3 — 2026-10-30
 
 - **Added: the chat shows what the CLI is doing while it works.** The "Running…"

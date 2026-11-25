@@ -1031,10 +1031,17 @@ class ArchiveOldCurrentEntriesTests(unittest.TestCase):
         self.assertLess(seen["offset"], old_len)
         self.assertLessEqual(seen["offset"], seen["live_len"])
 
-    def test_the_archive_directory_is_not_git_ignored(self):
-        ignore_lines = (hb.BRIDGE_ROOT / ".handoff/.gitignore").read_text(encoding="utf-8").splitlines()
-        self.assertNotIn("archive/", [line.strip() for line in ignore_lines])
-        self.assertNotIn("archive", [line.strip().rstrip("/") for line in ignore_lines])
+    def test_the_log_and_its_archive_are_git_ignored_together(self):
+        # archive/ holds the only copy of the entries trimmed out of current.md,
+        # so it may be ignored only while current.md is too: ignoring just the
+        # archive while the trimmed log stays tracked would lose history from
+        # git, and ignoring just the log would leave the archive stranded.
+        ignore_lines = {
+            line.strip().rstrip("/")
+            for line in (hb.BRIDGE_ROOT / ".handoff/.gitignore").read_text(encoding="utf-8").splitlines()
+        }
+        self.assertIn("archive", ignore_lines)
+        self.assertIn("current.md", ignore_lines)
 
     def test_an_offset_pointing_into_archived_text_clamps_to_zero(self):
         hb.CURRENT_FILE.write_text(self._big_log(), encoding="utf-8")

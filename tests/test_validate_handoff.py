@@ -44,12 +44,7 @@ class InstallFilesCoverEveryRequiredFileTests(unittest.TestCase):
 
     def test_every_validator_required_file_is_actually_installed(self):
         installed_targets = {target for _source, target in hb.INSTALL_FILES}
-        # .handoff/current.md is a deliberate exception: install_standard_files()
-        # generates it dynamically (a starter template written only if it
-        # doesn't already exist) rather than copying a static file, so it
-        # has no INSTALL_FILES entry by design -- not the drift this test
-        # otherwise guards against.
-        required = (set(vh.REQUIRED_FILES) | set(vh.JSON_FILES) | set(vh.PYTHON_FILES)) - {".handoff/current.md"}
+        required = set(vh.REQUIRED_FILES) | set(vh.JSON_FILES) | set(vh.PYTHON_FILES)
         missing = required - installed_targets
         self.assertEqual(
             missing,

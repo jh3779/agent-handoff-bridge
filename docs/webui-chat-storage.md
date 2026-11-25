@@ -307,9 +307,9 @@ Free-form, per-*workspace* text that reaches every provider call. Lives at:
 Unlike `current.md` (the handoff *log* — what changed, what's next,
 machine-appended), this is free-form context the user writes once
 ("this project uses 4-space indent", "never touch `legacy/`") and is
-never auto-generated. Tracked in git like `current.md` (not gitignored) —
-meant to travel with the project and be visible to teammates/other
-agents, the same reasoning `current.md` already uses.
+never auto-generated. Tracked in git (not gitignored) — meant to travel
+with the project and be visible to teammates/other agents. (`current.md`,
+the machine-appended log, is the opposite: gitignored, local to a checkout.)
 
 `handoff_bridge.py`'s `build_prompt()` reads it via
 `read_text(SHARED_CONTEXT_FILE, "")`; if non-empty (after stripping),
