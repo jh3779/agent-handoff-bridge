@@ -50,7 +50,7 @@ jobs:
             expected-runner-arch: X64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Same guard as sidecar-build, same reason -- see that job's comment.
       - name: Verify runner OS/arch matches this leg's assumed target triple
         shell: bash
